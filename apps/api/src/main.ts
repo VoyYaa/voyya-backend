@@ -28,7 +28,7 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new AllExceptionsFilter());
 
   const port = process.env.PORT ? Number(process.env.PORT) : env.get('API_PORT');
-  await app.listen(port, '0.0.0.0');
+  await app.listen(port, '::');
   new Logger('Bootstrap').log(`VoyYa API listening on :${port} (${env.get('NODE_ENV')})`);
 }
 
