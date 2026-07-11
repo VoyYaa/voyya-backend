@@ -1,4 +1,4 @@
-﻿
+
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "admin";
 
