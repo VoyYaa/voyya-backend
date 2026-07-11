@@ -5,303 +5,308 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
-import type { ConductorAsignadoResumen, CrearSolicitudDTO } from '@voyya/shared';
+import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { AssignmentService } from '../assignment/assignment.service';
-import type { FestivosProvider } from './festivos/festivos.provider';
+import type { HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
 import { TripsService } from './trips.service';
 
-const SECRETO = 'test-secret-0123456789';
-const SIN_FESTIVOS: FestivosProvider = { esFestivo: () => false };
+const SECRET = 'test-secret-0123456789';
+const NO_HOLIDAYS: HolidaysProvider = { isHoliday: () => false };
 
 function fakeEnv(ttl = 120): EnvService {
-  const valores: Record<string, unknown> = {
+  const values: Record<string, unknown> = {
     QUOTE_TOKEN_TTL_SECONDS: ttl,
-    QUOTE_TOKEN_SECRET: SECRETO,
-    VENTANA_CANCELACION_MIN: 2,
+    QUOTE_TOKEN_SECRET: SECRET,
+    CANCELLATION_WINDOW_MIN: 2,
   };
-  return { get: (k: string) => valores[k] } as unknown as EnvService;
+  return { get: (k: string) => values[k] } as unknown as EnvService;
 }
 
-interface SolicitudFake {
-  id_solicitud: number;
-  id_cliente: number;
-  estado: string;
-  asignada_en: Date | null;
-  actualizado_en: Date;
-  // Campos usados por obtenerEstado / reconstruirTarifa (P1.1):
-  id_municipio?: number;
-  tipo_servicio?: string;
-  tarifa?: number;
-  comision?: number;
-  fecha_hora_solicitud?: Date;
+interface FakeTripRequest {
+  tripRequestId: number;
+  passengerId: number;
+  status: string;
+  assignedAt: Date | null;
+  updatedAt: Date;
+  municipalityId?: number;
+  serviceType?: string;
+  fare?: number;
+  commission?: number;
+  requestedAt?: Date;
 }
-interface EstadoFake {
-  cubierto?: boolean;
-  activa?: boolean;
-  solicitud?: SolicitudFake | null;
-  resumen?: ConductorAsignadoResumen | null;
+interface FakeState {
+  covered?: boolean;
+  active?: boolean;
+  tripRequest?: FakeTripRequest | null;
+  summary?: AssignedDriverSummary | null;
 }
 
-function fakeRepo(estado: EstadoFake): TripsRepository {
+function fakeRepo(state: FakeState): TripsRepository {
   return {
-    async puntoDentroDeCobertura(): Promise<boolean> {
-      return estado.cubierto ?? true;
+    async isPointInCoverage(): Promise<boolean> {
+      return state.covered ?? true;
     },
-    async getTarifaVigente(): Promise<unknown> {
+    async getActiveFareConfig(): Promise<unknown> {
       return {
-        tarifa_base: 8000,
-        recargo_nocturno_pct: 20,
-        recargo_festivo_pct: 15,
-        comision_pct: 8,
+        baseFare: 8000,
+        nightSurchargePct: 20,
+        holidaySurchargePct: 15,
+        commissionPct: 8,
       };
     },
-    async existeSolicitudActiva(): Promise<boolean> {
-      return estado.activa ?? false;
+    async hasActiveTripRequest(): Promise<boolean> {
+      return state.active ?? false;
     },
-    async crearSolicitud(): Promise<unknown> {
+    async createTripRequest(): Promise<unknown> {
       return {
-        id_solicitud: 123,
-        id_cliente: 1,
-        id_municipio: 1,
-        tipo_servicio: 'taxi',
-        lat_recogida: 6.9639,
-        lng_recogida: -75.4186,
-        fecha_hora_solicitud: new Date('2026-07-10T12:00:00.000Z'),
+        tripRequestId: 123,
+        passengerId: 1,
+        municipalityId: 1,
+        serviceType: 'taxi',
+        pickupLat: 6.9639,
+        pickupLng: -75.4186,
+        requestedAt: new Date('2026-07-10T12:00:00.000Z'),
       };
     },
-    async getSolicitud(): Promise<unknown> {
-      return estado.solicitud ?? null;
+    async getTripRequest(): Promise<unknown> {
+      return state.tripRequest ?? null;
     },
-    async actualizarEstado(): Promise<void> {
+    async updateStatus(): Promise<void> {
       return undefined;
     },
   } as unknown as TripsRepository;
 }
 
-function fakeAssignment(resumen: ConductorAsignadoResumen | null): AssignmentService {
+function fakeAssignment(summary: AssignedDriverSummary | null): AssignmentService {
   return {
-    async getResumenConductorAsignado(): Promise<ConductorAsignadoResumen | null> {
-      return resumen;
+    async getAssignedDriverSummary(): Promise<AssignedDriverSummary | null> {
+      return summary;
     },
   } as unknown as AssignmentService;
 }
 
-const ORIGEN = { lat: 6.9639, lng: -75.4186, direccion: 'Parque principal' };
-const DESTINO = { lat: 6.97, lng: -75.42, direccion: 'Hospital' };
+const ORIGIN = { lat: 6.9639, lng: -75.4186, address: 'Parque principal' };
+const DESTINATION = { lat: 6.97, lng: -75.42, address: 'Hospital' };
 
-function crearServicio(
-  estado: EstadoFake = {},
+function createService(
+  state: FakeState = {},
   ttl = 120,
 ): { service: TripsService; emitter: { emit: jest.Mock } } {
   const env = fakeEnv(ttl);
   const quote = new QuoteTokenService(env);
   const emitter = { emit: jest.fn(() => true) };
   const service = new TripsService(
-    fakeRepo(estado),
+    fakeRepo(state),
     quote,
     env,
     emitter as unknown as EventEmitter2,
-    SIN_FESTIVOS,
-    fakeAssignment(estado.resumen ?? null),
+    NO_HOLIDAYS,
+    fakeAssignment(state.summary ?? null),
   );
   return { service, emitter };
 }
 
-describe('TripsService.cotizar', () => {
-  it('dentro de cobertura → tarifa fija cerrada + token + efectivo', async () => {
-    const { service } = crearServicio({ cubierto: true, activa: false });
-    const r = await service.cotizar({
-      origen: ORIGEN,
-      destino: DESTINO,
-      id_municipio: 1,
-      tipo_servicio: 'taxi',
+describe('TripsService.quote', () => {
+  it('within coverage -> fixed closed fare + token + cash', async () => {
+    const { service } = createService({ covered: true, active: false });
+    const r = await service.quote({
+      origin: ORIGIN,
+      destination: DESTINATION,
+      municipality_id: 1,
+      service_type: 'taxi',
     });
-    expect(r.dentro_cobertura).toBe(true);
-    expect(r.metodo_pago).toBe('efectivo');
-    expect(r.tarifa.tarifa_base).toBe(8000);
-    expect(r.tarifa.total).toBeGreaterThanOrEqual(8000);
-    expect(r.cotizacion_token.length).toBeGreaterThan(0);
+    expect(r.within_coverage).toBe(true);
+    expect(r.payment_method).toBe('cash');
+    expect(r.fare.base_fare).toBe(8000);
+    expect(r.fare.total).toBeGreaterThanOrEqual(8000);
+    expect(r.quote_token.length).toBeGreaterThan(0);
     expect(r.eta).toBeNull();
   });
 
-  it('fuera de cobertura → 409 FUERA_DE_COBERTURA', async () => {
-    const { service } = crearServicio({ cubierto: false, activa: false });
+  it('out of coverage -> 409 OUT_OF_COVERAGE', async () => {
+    const { service } = createService({ covered: false, active: false });
     await expect(
-      service.cotizar({ origen: ORIGEN, destino: DESTINO, id_municipio: 1, tipo_servicio: 'taxi' }),
+      service.quote({
+        origin: ORIGIN,
+        destination: DESTINATION,
+        municipality_id: 1,
+        service_type: 'taxi',
+      }),
     ).rejects.toBeInstanceOf(ConflictException);
   });
 });
 
-describe('TripsService.crear', () => {
-  const dtoCon = (token: string): CrearSolicitudDTO => ({
-    origen: ORIGEN,
-    destino: DESTINO,
-    id_municipio: 1,
-    tipo_servicio: 'taxi',
-    metodo_pago: 'efectivo',
-    cotizacion_token: token,
+describe('TripsService.create', () => {
+  const dtoWith = (token: string): CreateTripRequestDTO => ({
+    origin: ORIGIN,
+    destination: DESTINATION,
+    municipality_id: 1,
+    service_type: 'taxi',
+    payment_method: 'cash',
+    quote_token: token,
   });
-  async function tokenValido(service: TripsService): Promise<string> {
-    const r = await service.cotizar({
-      origen: ORIGEN,
-      destino: DESTINO,
-      id_municipio: 1,
-      tipo_servicio: 'taxi',
+  async function validToken(service: TripsService): Promise<string> {
+    const r = await service.quote({
+      origin: ORIGIN,
+      destination: DESTINATION,
+      municipality_id: 1,
+      service_type: 'taxi',
     });
-    return r.cotizacion_token;
+    return r.quote_token;
   }
 
-  it('con token válido → crea, cierra la tarifa y emite solicitud.creada', async () => {
-    const { service, emitter } = crearServicio({ cubierto: true, activa: false });
-    const r = await service.crear(dtoCon(await tokenValido(service)), 1);
-    expect(r.id_solicitud).toBe(123);
-    expect(r.estado).toBe('pendiente_de_asignacion');
-    expect(r.tarifa.total).toBeGreaterThanOrEqual(8000);
-    expect(emitter.emit).toHaveBeenCalledWith('solicitud.creada', expect.anything());
+  it('with valid token -> creates, closes the fare and emits trip_request.created', async () => {
+    const { service, emitter } = createService({ covered: true, active: false });
+    const r = await service.create(dtoWith(await validToken(service)), 1);
+    expect(r.trip_request_id).toBe(123);
+    expect(r.status).toBe('pending_assignment');
+    expect(r.fare.total).toBeGreaterThanOrEqual(8000);
+    expect(emitter.emit).toHaveBeenCalledWith('trip_request.created', expect.anything());
   });
 
-  it('idempotencia: ya existe solicitud activa → 409 SOLICITUD_ACTIVA_EXISTENTE', async () => {
-    const { service } = crearServicio({ cubierto: true, activa: true });
-    await expect(service.crear(dtoCon(await tokenValido(service)), 1)).rejects.toBeInstanceOf(
+  it('idempotency: active trip request already exists -> 409 ACTIVE_TRIP_REQUEST_EXISTS', async () => {
+    const { service } = createService({ covered: true, active: true });
+    await expect(service.create(dtoWith(await validToken(service)), 1)).rejects.toBeInstanceOf(
       ConflictException,
     );
   });
 
-  it('P1.2: revalida cobertura al crear → 409 aunque el token sea válido', async () => {
-    // Token emitido cuando SÍ había cobertura...
-    const cubierto = crearServicio({ cubierto: true });
-    const token = await tokenValido(cubierto.service);
-    // ...pero al crear la cobertura ya no aplica (mismo secreto → token válido).
-    const sinCobertura = crearServicio({ cubierto: false, activa: false });
-    await expect(sinCobertura.service.crear(dtoCon(token), 1)).rejects.toBeInstanceOf(
+  it('revalidates coverage on create -> 409 even if the token is valid', async () => {
+    const covered = createService({ covered: true });
+    const token = await validToken(covered.service);
+    const uncovered = createService({ covered: false, active: false });
+    await expect(uncovered.service.create(dtoWith(token), 1)).rejects.toBeInstanceOf(
       ConflictException,
     );
   });
 
-  it('token expirado → 410 COTIZACION_EXPIRADA', async () => {
-    const expirador = new QuoteTokenService(fakeEnv(-10));
-    const tokenVencido = expirador.firmar({
-      id_municipio: 1,
-      tipo_servicio: 'taxi',
-      origen: { lat: ORIGEN.lat, lng: ORIGEN.lng },
-      destino: { lat: DESTINO.lat, lng: DESTINO.lng },
-      distancia_km: 1,
-      tarifa: {
-        tarifa_base: 8000,
-        recargo_nocturno: 0,
-        recargo_festivo: 0,
+  it('expired token -> 410 QUOTE_EXPIRED', async () => {
+    const expirer = new QuoteTokenService(fakeEnv(-10));
+    const expiredToken = expirer.sign({
+      municipalityId: 1,
+      serviceType: 'taxi',
+      origin: { lat: ORIGIN.lat, lng: ORIGIN.lng },
+      destination: { lat: DESTINATION.lat, lng: DESTINATION.lng },
+      distanceKm: 1,
+      fare: {
+        base_fare: 8000,
+        night_surcharge: 0,
+        holiday_surcharge: 0,
         total: 8000,
-        comision: 640,
-        moneda: 'COP',
+        commission: 640,
+        currency: 'COP',
       },
     });
-    const { service } = crearServicio({ cubierto: true, activa: false });
-    await expect(service.crear(dtoCon(tokenVencido), 1)).rejects.toBeInstanceOf(GoneException);
+    const { service } = createService({ covered: true, active: false });
+    await expect(service.create(dtoWith(expiredToken), 1)).rejects.toBeInstanceOf(GoneException);
   });
 });
 
-describe('TripsService.obtenerEstado (P1.1 · GET /trips/:id)', () => {
-  const base = (over: Partial<SolicitudFake>): SolicitudFake => ({
-    id_solicitud: 9,
-    id_cliente: 1,
-    estado: 'pendiente_de_asignacion',
-    asignada_en: null,
-    actualizado_en: new Date(),
-    id_municipio: 1,
-    tipo_servicio: 'taxi',
-    tarifa: 8000,
-    comision: 640,
-    fecha_hora_solicitud: new Date(),
+describe('TripsService.getStatus (GET /trips/:id)', () => {
+  const base = (over: Partial<FakeTripRequest>): FakeTripRequest => ({
+    tripRequestId: 9,
+    passengerId: 1,
+    status: 'pending_assignment',
+    assignedAt: null,
+    updatedAt: new Date(),
+    municipalityId: 1,
+    serviceType: 'taxi',
+    fare: 8000,
+    commission: 640,
+    requestedAt: new Date(),
     ...over,
   });
-  const RESUMEN: ConductorAsignadoResumen = {
-    nombre: 'Carlos Ruiz',
-    placa: 'ABC123',
-    modelo: 'Logan',
-    telefono_contacto: '3001234567',
+  const SUMMARY: AssignedDriverSummary = {
+    name: 'Carlos Ruiz',
+    plate: 'ABC123',
+    model: 'Logan',
+    contact_phone: '3001234567',
     eta: null,
   };
 
-  it('pendiente → conductor null, ui "buscando", tarifa cerrada', async () => {
-    const { service } = crearServicio({ solicitud: base({}) });
-    const r = await service.obtenerEstado(9, 1);
-    expect(r.estado).toBe('pendiente_de_asignacion');
-    expect(r.ui).toBe('buscando');
-    expect(r.conductor).toBeNull();
-    expect(r.tarifa.total).toBe(8000);
-    expect(r.tarifa.moneda).toBe('COP');
+  it('pending -> driver null, ui "searching", closed fare', async () => {
+    const { service } = createService({ tripRequest: base({}) });
+    const r = await service.getStatus(9, 1);
+    expect(r.status).toBe('pending_assignment');
+    expect(r.ui).toBe('searching');
+    expect(r.driver).toBeNull();
+    expect(r.fare.total).toBe(8000);
+    expect(r.fare.currency).toBe('COP');
   });
 
-  it('asignada → conductor presente, ui "conductor_asignado"', async () => {
-    const { service } = crearServicio({
-      solicitud: base({ estado: 'asignada', asignada_en: new Date() }),
-      resumen: RESUMEN,
+  it('assigned -> driver present, ui "driver_assigned"', async () => {
+    const { service } = createService({
+      tripRequest: base({ status: 'assigned', assignedAt: new Date() }),
+      summary: SUMMARY,
     });
-    const r = await service.obtenerEstado(9, 1);
-    expect(r.ui).toBe('conductor_asignado');
-    expect(r.conductor).toEqual(RESUMEN);
+    const r = await service.getStatus(9, 1);
+    expect(r.ui).toBe('driver_assigned');
+    expect(r.driver).toEqual(SUMMARY);
   });
 
-  it('no es el dueño → 403 NO_ES_DUENO', async () => {
-    const { service } = crearServicio({ solicitud: base({ id_cliente: 2 }) });
-    await expect(service.obtenerEstado(9, 1)).rejects.toBeInstanceOf(ForbiddenException);
+  it('not the owner -> 403 NOT_OWNER', async () => {
+    const { service } = createService({ tripRequest: base({ passengerId: 2 }) });
+    await expect(service.getStatus(9, 1)).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('no existe → 404 SOLICITUD_NO_EXISTE', async () => {
-    const { service } = crearServicio({ solicitud: null });
-    await expect(service.obtenerEstado(9, 1)).rejects.toBeInstanceOf(NotFoundException);
+  it('not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {
+    const { service } = createService({ tripRequest: null });
+    await expect(service.getStatus(9, 1)).rejects.toBeInstanceOf(NotFoundException);
   });
 });
 
-describe('TripsService.cancelar (R-03: ventana desde asignada_en)', () => {
-  const haceMin = (m: number): Date => new Date(Date.now() - m * 60_000);
-  const solic = (over: Partial<SolicitudFake>): SolicitudFake => ({
-    id_solicitud: 5,
-    id_cliente: 1,
-    estado: 'asignada',
-    asignada_en: haceMin(1),
-    actualizado_en: haceMin(1),
+describe('TripsService.cancel (free window from assignedAt)', () => {
+  const minutesAgo = (m: number): Date => new Date(Date.now() - m * 60_000);
+  const tr = (over: Partial<FakeTripRequest>): FakeTripRequest => ({
+    tripRequestId: 5,
+    passengerId: 1,
+    status: 'assigned',
+    assignedAt: minutesAgo(1),
+    updatedAt: minutesAgo(1),
     ...over,
   });
 
-  it('pendiente_de_asignacion → gratuita, sin penalidad, emite solicitud.cancelada', async () => {
-    const { service, emitter } = crearServicio({
-      solicitud: solic({ estado: 'pendiente_de_asignacion', asignada_en: null, actualizado_en: haceMin(10) }),
+  it('pending_assignment -> free, no penalty, emits trip_request.cancelled', async () => {
+    const { service, emitter } = createService({
+      tripRequest: tr({
+        status: 'pending_assignment',
+        assignedAt: null,
+        updatedAt: minutesAgo(10),
+      }),
     });
-    const r = await service.cancelar(5, 1, {});
-    expect(r.gratuita).toBe(true);
-    expect(r.penalidad_registrada).toBe(false);
-    expect(r.estado).toBe('cancelada_cliente');
-    expect(emitter.emit).toHaveBeenCalledWith('solicitud.cancelada', expect.anything());
+    const r = await service.cancel(5, 1, {});
+    expect(r.free_of_charge).toBe(true);
+    expect(r.penalty_recorded).toBe(false);
+    expect(r.status).toBe('cancelled_by_passenger');
+    expect(emitter.emit).toHaveBeenCalledWith('trip_request.cancelled', expect.anything());
   });
 
-  it('asignada hace ≤2 min → gratuita', async () => {
-    const { service } = crearServicio({ solicitud: solic({ asignada_en: haceMin(1) }) });
-    const r = await service.cancelar(5, 1, {});
-    expect(r.gratuita).toBe(true);
-    expect(r.penalidad_registrada).toBe(false);
+  it('assigned <=2 min ago -> free', async () => {
+    const { service } = createService({ tripRequest: tr({ assignedAt: minutesAgo(1) }) });
+    const r = await service.cancel(5, 1, {});
+    expect(r.free_of_charge).toBe(true);
+    expect(r.penalty_recorded).toBe(false);
   });
 
-  it('asignada hace >2 min → penalidad (mide desde asignada_en, NO actualizado_en)', async () => {
-    // actualizado_en es RECIENTE (el proxy antiguo daría "gratis"); asignada_en 5 min atrás.
-    const { service } = crearServicio({
-      solicitud: solic({ asignada_en: haceMin(5), actualizado_en: haceMin(0) }),
+  it('assigned >2 min ago -> penalty (measured from assignedAt, NOT updatedAt)', async () => {
+    const { service } = createService({
+      tripRequest: tr({ assignedAt: minutesAgo(5), updatedAt: minutesAgo(0) }),
     });
-    const r = await service.cancelar(5, 1, {});
-    expect(r.gratuita).toBe(false);
-    expect(r.penalidad_registrada).toBe(true);
+    const r = await service.cancel(5, 1, {});
+    expect(r.free_of_charge).toBe(false);
+    expect(r.penalty_recorded).toBe(true);
   });
 
-  it('no es el dueño → 403 NO_ES_DUENO', async () => {
-    const { service } = crearServicio({ solicitud: solic({ id_cliente: 2 }) });
-    await expect(service.cancelar(5, 1, {})).rejects.toBeInstanceOf(ForbiddenException);
+  it('not the owner -> 403 NOT_OWNER', async () => {
+    const { service } = createService({ tripRequest: tr({ passengerId: 2 }) });
+    await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(ForbiddenException);
   });
 
-  it('no existe → 404 SOLICITUD_NO_EXISTE', async () => {
-    const { service } = crearServicio({ solicitud: null });
-    await expect(service.cancelar(5, 1, {})).rejects.toBeInstanceOf(NotFoundException);
+  it('not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {
+    const { service } = createService({ tripRequest: null });
+    await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(NotFoundException);
   });
 });

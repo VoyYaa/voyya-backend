@@ -6,12 +6,6 @@ import {
 } from '@nestjs/common';
 import type { ZodSchema } from 'zod';
 
-/**
- * Pipe de validación con Zod. Reusa los esquemas de `@voyya/shared` (DRY: mismos
- * contratos back + front). Sustituye a class-validator (opcional en este proyecto).
- *
- * Uso: `@Body(new ZodValidationPipe(CrearSolicitudDTO)) dto: CrearSolicitudDTO`
- */
 @Injectable()
 export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
   constructor(private readonly schema: ZodSchema<T>) {}
@@ -20,10 +14,10 @@ export class ZodValidationPipe<T> implements PipeTransform<unknown, T> {
     const result = this.schema.safeParse(value);
     if (!result.success) {
       throw new BadRequestException({
-        codigo: 'DATOS_INVALIDOS',
-        mensaje: 'Solicitud inválida',
-        detalles: result.error.issues.map((i) => ({
-          campo: i.path.join('.'),
+        code: 'INVALID_DATA',
+        message: 'Solicitud inválida',
+        details: result.error.issues.map((i) => ({
+          field: i.path.join('.'),
           error: i.message,
         })),
       });

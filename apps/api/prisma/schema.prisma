@@ -1,594 +1,314 @@
-// =============================================================================
-// VoyYa — Esquema Prisma  ·  Feature: Solicitud y Asignación de Taxi (MVP)
-// -----------------------------------------------------------------------------
-// Fase Diseñar (ASDD) · Agente `arquitectura` · skill `arquitectura-modelo-datos`
-// Alcance de este esquema: entidades necesarias para CREAR SOLICITUD + ASIGNAR.
-//
-// REGLA DE ORO DEL MVP (no cruzar sin aprobación): 1 empresa (Cootrayal) ·
-// 1 municipio (Yarumal) · 1 modalidad (taxi) · pago en efectivo.
-//   - Los enums se mantienen COMPLETOS (moto/confort/envío, nequi/daviplata/…)
-//     para reactivar EV1+ SIN migración destructiva. En MVP solo se usan los
-//     valores `taxi` y `efectivo` (defaults). Ver docs/VoyYa/15-alcance-mvp.md §4.
-//
-// MULTI-TENANT (doc 05 · doc 14 §3):
-//   - Entidades del tenant llevan `id_empresa`: Conductor, Taxi, Asignacion.
-//   - Pasajero y SolicitudViaje son GLOBALES a la plataforma. El vínculo de una
-//     solicitud a un tenant llega vía la Asignacion (Conductor/Taxi asignado).
-//   - RLS por `id_empresa` como defensa en profundidad (bloque SQL al final).
-//
-// SCHEMA POR DOMINIO (doc 14 §4 · doc 12 §4.5): auth · tenancy · users · fleet ·
-//   trips · assignment · admin. Facilita extraer un dominio a otra DB si escala.
-//
-// MONEDA: los montos (tarifa, comisión, cuota) usan `Decimal` (numeric), NUNCA
-//   Float, por correctitud financiera. COP se maneja en pesos enteros.
-//
-// Base: docs/VoyYa/05-data-model.md · 11-decisions-resolved.md (§1.2 algoritmo,
-//   §2.3 máquina de estados) · 14-stack-tecnologico.md · 15-alcance-mvp.md.
-// =============================================================================
-
 generator client {
   provider        = "prisma-client-js"
-  // multiSchema: preview en Prisma 5.x (GA en Prisma 6). postgresqlExtensions:
-  // permite declarar PostGIS aquí; sus columnas geometry se crean por SQL raw
-  // (ver bloque al final) porque Prisma no gestiona tipos `geography`.
   previewFeatures = ["multiSchema", "postgresqlExtensions"]
 }
 
 datasource db {
-  provider = "postgresql"
-
-  // POOLING (Supabase PgBouncer, modo transaction): la app usa la URL con
-  // `?pgbouncer=true`; las migraciones usan una conexión DIRECTA sin pooler.
-  //   DATABASE_URL="postgresql://…:6543/postgres?pgbouncer=true&connection_limit=1"
-  //   DIRECT_URL="postgresql://…:5432/postgres"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
-
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
   extensions = [postgis]
   schemas    = ["auth", "tenancy", "users", "fleet", "trips", "assignment", "admin"]
 }
 
-// =============================================================================
-// ENUMS — Máquinas de estado y catálogos (fuente de verdad compartida con
-//          packages/shared/src/contracts/*.ts — deben coincidir 1:1).
-// =============================================================================
-
-/// Estado de la empresa (tenant). MVP: Cootrayal se crea directamente `activa`
-/// (sin flujo de aprobación, que es EV1). Ver doc 15 §4.
-enum EstadoEmpresa {
-  pendiente
-  activa
-  suspendida
-  rechazada
+enum CompanyStatus {
+  pending
+  active
+  suspended
+  rejected
 
   @@schema("tenancy")
 }
 
-/// Estado del conductor. La TOMA ÚNICA ATÓMICA depende de `disponible`:
-/// UPDATE … SET estado='en_servicio' WHERE estado='disponible' RETURNING *.
-enum EstadoConductor {
-  disponible
-  en_servicio
-  fuera_de_turno
-  inactivo
-  suspendido
-  bloqueado_documentos
+enum DriverStatus {
+  available
+  on_trip
+  off_shift
+  inactive
+  suspended
+  documents_blocked
 
   @@schema("fleet")
 }
 
-/// Máquina de estados de la SOLICITUD (doc 11 §2.3, completa).
-/// Alcance de ESTE feature: hasta `asignada` → `conductor_en_camino` → `en_curso`.
-/// `completada` y `no_show` pertenecen al ciclo siguiente (se dejan modeladas).
-enum EstadoSolicitud {
-  pendiente_de_asignacion
-  asignada
-  conductor_en_camino
-  en_curso
-  completada
-  cancelada_cliente
-  cancelada_conductor
-  sin_conductor
+enum TripStatus {
+  pending_assignment
+  assigned
+  driver_en_route
+  in_progress
+  completed
+  cancelled_by_passenger
+  cancelled_by_driver
+  no_driver
   no_show
-  expirada
+  expired
 
   @@schema("trips")
 }
 
-/// Máquina de estados de la ASIGNACION (doc 11 §2.3). Una SolicitudViaje puede
-/// tener múltiples Asignaciones (una por intento de la retry chain); solo una
-/// puede estar `aceptada` a la vez (índice único parcial en el bloque SQL).
-enum EstadoAsignacion {
-  creada
-  notificada
-  aceptada
-  rechazada
+enum AssignmentStatus {
+  created
+  notified
+  accepted
+  rejected
   timeout
-  cancelada
-  finalizada
+  cancelled
+  completed
 
   @@schema("assignment")
 }
 
-/// Modalidad de servicio. MVP: solo `taxi`. Resto reservado para EV1+.
-/// (En doc 05 la modalidad carro se llamó `estandar`; el MVP la nombra `taxi`.)
-enum TipoServicio {
+enum ServiceType {
   taxi
-  moto
-  confort
-  envio
+  motorcycle
+  comfort
+  delivery
 
   @@schema("trips")
 }
 
-/// Método de pago. MVP: solo `efectivo`. Resto reservado para EV1+ (recaudo digital).
-enum MetodoPago {
-  efectivo
+enum PaymentMethod {
+  cash
   nequi
   daviplata
-  tarjeta
+  card
 
   @@schema("trips")
 }
 
-// =============================================================================
-// DOMINIO: tenancy  —  Empresa (tenant) · Municipio
-// =============================================================================
+model Company {
+  companyId      Int           @id @default(autoincrement()) @map("company_id")
+  legalName      String        @map("legal_name")
+  taxId          String        @unique @map("tax_id")
+  type           String        @map("type")
+  municipalityId Int           @map("municipality_id")
+  vehicleCount   Int?          @map("vehicle_count")
+  contactEmail   String?       @map("contact_email")
+  status         CompanyStatus @default(active) @map("status")
+  membershipFee  Decimal?      @map("membership_fee") @db.Decimal(12, 2)
+  registeredAt   DateTime      @default(now()) @map("registered_at")
 
-model Empresa {
-  id_empresa       Int           @id @default(autoincrement())
-  razon_social     String
-  nit              String        @unique
-  tipo             String // cooperativa | empresa | sas
-  id_municipio     Int
-  n_vehiculos      Int?
-  correo_contacto  String?
-  estado           EstadoEmpresa @default(activa)
-  cuota_afiliacion Decimal?      @db.Decimal(12, 2)
-  fecha_registro   DateTime      @default(now())
+  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
+  drivers      Driver[]
+  vehicles     Vehicle[]
+  assignments  Assignment[]
 
-  municipio    Municipio    @relation(fields: [id_municipio], references: [id_municipio])
-  conductores  Conductor[]
-  taxis        Taxi[]
-  asignaciones Asignacion[]
-
-  @@index([id_municipio])
-  @@map("empresa")
+  @@index([municipalityId])
+  @@map("company")
   @@schema("tenancy")
 }
 
-model Municipio {
-  id_municipio       Int    @id @default(autoincrement())
-  nombre             String
-  departamento       String
-  /// GeoJSON del perímetro de servicio (editable por admin). La validación de
-  /// cobertura "punto ∈ polígono" se hace con PostGIS sobre una columna
-  /// geometry generada desde este JSON (ver bloque SQL: cobertura).
-  poligono_cobertura Json
-  estado             String @default("activo") // activo | inactivo
+model Municipality {
+  municipalityId  Int    @id @default(autoincrement()) @map("municipality_id")
+  name            String @map("name")
+  department      String @map("department")
+  coveragePolygon Json   @map("coverage_polygon")
+  status          String @default("active") @map("status")
 
-  empresas    Empresa[]
-  solicitudes SolicitudViaje[]
-  tarifas     ConfiguracionTarifa[]
-  parametros  ParametrosSistema[]
+  companies        Company[]
+  tripRequests     TripRequest[]
+  fareConfigs      FareConfig[]
+  systemParameters SystemParameter[]
 
-  @@map("municipio")
+  @@map("municipality")
   @@schema("tenancy")
 }
 
-// =============================================================================
-// DOMINIO: auth / users  —  Usuario (superclase) · Pasajero (GLOBAL)
-// =============================================================================
+model User {
+  userId        Int      @id @default(autoincrement()) @map("user_id")
+  firstName     String   @map("first_name")
+  lastName      String   @map("last_name")
+  email         String?  @unique @map("email")
+  phone         String   @unique @map("phone")
+  passwordHash  String?  @map("password_hash")
+  role          String   @map("role")
+  accountStatus String   @default("active") @map("account_status")
+  createdAt     DateTime @default(now()) @map("created_at")
 
-model Usuario {
-  id_usuario    Int      @id @default(autoincrement())
-  nombre        String
-  apellido      String
-  correo        String?  @unique // usado por admin/empresa
-  telefono      String   @unique // login del pasajero por OTP
-  contrasena    String? // hash bcrypt (admin/empresa); el pasajero no usa
-  rol           String // pasajero | conductor | empresa | admin | operador
-  estado_cuenta String   @default("activa") // activa | suspendida | inactiva
-  creado_en     DateTime @default(now())
+  passenger     Passenger?
+  driver        Driver?
+  refreshTokens RefreshToken[]
 
-  pasajero       Pasajero?
-  conductor      Conductor?
-  refresh_tokens RefreshToken[]
-
-  @@map("usuario")
+  @@map("user")
   @@schema("auth")
 }
 
-// -----------------------------------------------------------------------------
-// AUTENTICACIÓN — Sesiones y credenciales efímeras (ADR-005). Fase Diseñar.
-// GLOBALES AL USUARIO: NO llevan id_empresa ni RLS por tenant (una sesión/OTP no
-// pertenece a una empresa; el pasajero es global y el conductor se identifica por
-// su Usuario). Por eso NO se añaden a las políticas RLS del bloque SQL final.
-// Sin Redis (regla del MVP): el estado efímero vive en PostgreSQL con TTL + un job
-// de limpieza (@nestjs/schedule + advisory lock — ver bloque SQL (d)).
-// -----------------------------------------------------------------------------
-
-/// Refresh token de sesión. El JWT de acceso (15 min) es SIN ESTADO; el refresh SÍ
-/// es revocable. Se guarda SOLO el hash (SHA-256) del token opaco, nunca el valor.
-/// ROTACIÓN: al refrescar se marca `revocado=true` y se crea una fila nueva.
-/// REVOCACIÓN: logout (una fila) o suspensión del conductor (todas las del usuario,
-/// HU-AUTH-05). DETECCIÓN DE REÚSO: presentar un token ya `revocado` ⇒ revocar todo.
 model RefreshToken {
-  id         Int      @id @default(autoincrement())
-  id_usuario Int
-  /// SHA-256 (hex) del refresh token opaco de 256 bits. `@unique` ⇒ lookup directo.
-  /// SHA-256 (no bcrypt) porque el token es aleatorio de alta entropía: no hay que
-  /// frenar fuerza bruta y así se puede indexar para búsqueda O(1) por hash.
-  token_hash String   @unique
-  expira_en  DateTime
-  revocado   Boolean  @default(false)
-  /// User-Agent del dispositivo (diagnóstico / "cerrar otras sesiones"). Sin PII.
-  user_agent String?
-  creado_en  DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  revoked   Boolean  @default(false) @map("revoked")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  usuario Usuario @relation(fields: [id_usuario], references: [id_usuario], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
 
-  // Revocación masiva por usuario (logout-all y suspensión del conductor — HU-AUTH-05).
-  @@index([id_usuario, revocado])
-  // Barrido de expirados (job programado; sin Redis).
-  @@index([expira_en])
+  @@index([userId, revoked])
+  @@index([expiresAt])
   @@map("refresh_token")
   @@schema("auth")
 }
 
-/// Código OTP del pasajero (login por teléfono + SMS). Se guarda SOLO el hash del
-/// código (bcrypt, mismo hasher que PIN/contraseña — DRY), nunca el código en claro.
-/// Keyed por `telefono` (NO es FK a Usuario): el número puede no tener cuenta aún
-/// (auto-registro en la verificación). TTL corto + un solo uso (`consumido`) + tope
-/// de verificaciones (`intentos`) + rate-limit por teléfono (índice de abajo).
-model CodigoOtp {
+model OtpCode {
   id        Int      @id @default(autoincrement())
-  telefono  String
-  /// bcrypt del código (p.ej. 6 dígitos). Se COMPARA en la verificación (no se hace
-  /// lookup por él): por eso bcrypt es viable y protege un dump de DB dentro del TTL.
-  code_hash String
-  expira_en DateTime
-  /// Verificaciones fallidas contra ESTE código; al llegar al tope queda inutilizado.
-  intentos  Int      @default(0)
-  consumido Boolean  @default(false)
-  creado_en DateTime @default(now())
+  phone     String   @map("phone")
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  attempts  Int      @default(0) @map("attempts")
+  consumed  Boolean  @default(false) @map("consumed")
+  createdAt DateTime @default(now()) @map("created_at")
 
-  // Rate-limit por teléfono (contar códigos emitidos en la ventana) + traer el más
-  // reciente. El rate-limit por IP lo cubre @nestjs/throttler en el borde (no se
-  // duplica aquí, no se almacena IP → menos PII).
-  @@index([telefono, creado_en])
-  @@map("codigo_otp")
+  @@index([phone, createdAt])
+  @@map("otp_code")
   @@schema("auth")
 }
 
-/// Pasajero: GLOBAL a la plataforma (NO lleva id_empresa). Hereda de Usuario
-/// (PK = FK a Usuario, relación 1:1).
-model Pasajero {
-  id_cliente          Int        @id // = Usuario.id_usuario
-  metodo_pago_pref    MetodoPago @default(efectivo)
-  direccion_principal String?
-  contacto_confianza  String? // teléfono para SOS (EV1)
+model Passenger {
+  passengerId            Int           @id @map("passenger_id")
+  preferredPaymentMethod PaymentMethod @default(cash) @map("preferred_payment_method")
+  mainAddress            String?       @map("main_address")
+  trustedContact         String?       @map("trusted_contact")
 
-  usuario     Usuario          @relation(fields: [id_cliente], references: [id_usuario], onDelete: Cascade)
-  solicitudes SolicitudViaje[]
+  user         User          @relation(fields: [passengerId], references: [userId], onDelete: Cascade)
+  tripRequests TripRequest[]
 
-  @@map("pasajero")
+  @@map("passenger")
   @@schema("users")
 }
 
-// =============================================================================
-// DOMINIO: fleet  —  Conductor (TENANT) · Taxi (TENANT)
-// =============================================================================
+model Driver {
+  driverId          Int          @id @map("driver_id")
+  companyId         Int          @map("company_id")
+  nationalId        String       @unique @map("national_id")
+  pin               String       @map("pin")
+  license           String?      @map("license")
+  averageRating     Float?       @map("average_rating")
+  status            DriverStatus @default(off_shift) @map("status")
+  failedAttempts    Int          @default(0) @map("failed_attempts")
+  blockedUntil      DateTime?    @map("blocked_until")
+  currentLat        Float?       @map("current_lat")
+  currentLng        Float?       @map("current_lng")
+  locationUpdatedAt DateTime?    @map("location_updated_at")
+  currentVehicleId  Int?         @map("current_vehicle_id")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
 
-/// Conductor: pertenece a una Empresa (TENANT → lleva id_empresa). Hereda de
-/// Usuario (PK = FK a Usuario). Su `estado` y ubicación alimentan el motor
-/// nearest-first y la toma única atómica.
-model Conductor {
-  id_conductor          Int             @id // = Usuario.id_usuario
-  id_empresa            Int // TENANT
-  cedula                String          @unique // login (cédula + PIN)
-  pin                   String // hash bcrypt (enviado por SMS al crear)
-  licencia              String?
-  calificacion_promedio Float? // EV2 (calificaciones); nullable en MVP
-  estado                EstadoConductor @default(fuera_de_turno)
+  user           User         @relation(fields: [driverId], references: [userId], onDelete: Cascade)
+  company        Company      @relation(fields: [companyId], references: [companyId])
+  currentVehicle Vehicle?     @relation("DriverCurrentVehicle", fields: [currentVehicleId], references: [vehicleId])
+  assignments    Assignment[]
 
-  // Bloqueo temporal por PIN fallido (HU-AUTH-02). KISS elegido: contador en la
-  // propia fila del conductor en vez de una tabla IntentoLogin — sin tabla nueva,
-  // sin job de limpieza, y el estado vive junto a la entidad que se bloquea.
-  // Trade-off (documentado en ADR-005): permite lockout DIRIGIDO de una cédula
-  // concreta (DoS de disponibilidad); se mitiga con bloqueo TEMPORAL (bloqueado_hasta),
-  // throttler por IP en el borde, y que el login admin no comparte este vector.
-  intentos_fallidos Int       @default(0)
-  bloqueado_hasta   DateTime?
-
-  // Última ubicación conocida (capturada al iniciar turno / botón "Estoy aquí").
-  // NO es tracking en vivo (eso es EV1). Alimenta nearest-first y el ETA estático
-  // (ADR-003). La columna geometry + índice GiST se crean por SQL (bloque final).
-  lat_actual               Float?
-  lng_actual               Float?
-  ubicacion_actualizada_en DateTime?
-
-  // Taxi que conduce en el turno actual (el admin lo asocia — doc 11 §1.4).
-  id_taxi_actual Int?
-
-  actualizado_en DateTime @updatedAt
-
-  usuario      Usuario      @relation(fields: [id_conductor], references: [id_usuario], onDelete: Cascade)
-  empresa      Empresa      @relation(fields: [id_empresa], references: [id_empresa])
-  taxi_actual  Taxi?        @relation("ConductorTaxiActual", fields: [id_taxi_actual], references: [id_taxi])
-  asignaciones Asignacion[]
-
-  // Disponibilidad de flota por tenant (query caliente del motor de asignación).
-  @@index([id_empresa, estado])
-  @@map("conductor")
+  @@index([companyId, status])
+  @@map("driver")
   @@schema("fleet")
 }
 
-model Taxi {
-  id_taxi           Int     @id @default(autoincrement())
-  id_empresa        Int // TENANT
-  placa             String  @unique
-  modelo            String?
-  anio              Int?
-  tarjeta_operacion String?
-  estado            String  @default("activo") // activo | inactivo | en_mantenimiento
+model Vehicle {
+  vehicleId     Int     @id @default(autoincrement()) @map("vehicle_id")
+  companyId     Int     @map("company_id")
+  plate         String  @unique @map("plate")
+  model         String? @map("model")
+  year          Int?    @map("year")
+  operationCard String? @map("operation_card")
+  status        String  @default("active") @map("status")
 
-  empresa      Empresa      @relation(fields: [id_empresa], references: [id_empresa])
-  conductores  Conductor[]  @relation("ConductorTaxiActual")
-  asignaciones Asignacion[]
+  company     Company      @relation(fields: [companyId], references: [companyId])
+  drivers     Driver[]     @relation("DriverCurrentVehicle")
+  assignments Assignment[]
 
-  @@index([id_empresa, estado])
-  @@map("taxi")
+  @@index([companyId, status])
+  @@map("vehicle")
   @@schema("fleet")
 }
 
-// =============================================================================
-// DOMINIO: trips  —  SolicitudViaje (GLOBAL) · ConfiguracionTarifa
-// =============================================================================
+model TripRequest {
+  tripRequestId     Int           @id @default(autoincrement()) @map("trip_request_id")
+  passengerId       Int           @map("passenger_id")
+  municipalityId    Int           @map("municipality_id")
+  serviceType       ServiceType   @default(taxi) @map("service_type")
+  paymentMethod     PaymentMethod @default(cash) @map("payment_method")
+  pickupAddress     String        @map("pickup_address")
+  dropoffAddress    String        @map("dropoff_address")
+  pickupLat         Float         @map("pickup_lat")
+  pickupLng         Float         @map("pickup_lng")
+  dropoffLat        Float         @map("dropoff_lat")
+  dropoffLng        Float         @map("dropoff_lng")
+  requestedAt       DateTime      @default(now()) @map("requested_at")
+  status            TripStatus    @default(pending_assignment) @map("status")
+  assignedAt        DateTime?     @map("assigned_at")
+  type              String        @default("immediate") @map("type")
+  scheduledPickupAt DateTime?     @map("scheduled_pickup_at")
+  finishedAt        DateTime?     @map("finished_at")
+  distance          Float?        @map("distance")
+  fare              Decimal       @map("fare") @db.Decimal(12, 2)
+  commission        Decimal       @map("commission") @db.Decimal(12, 2)
+  netEarnings       Decimal?      @map("net_earnings") @db.Decimal(12, 2)
+  updatedAt         DateTime      @updatedAt @map("updated_at")
 
-/// SolicitudViaje: GLOBAL (la realiza un Pasajero global). NO lleva id_empresa;
-/// el vínculo al tenant llega por la Asignacion aceptada. La tarifa se CIERRA al
-/// confirmar (no cambia después). La comisión se registra pero NO se cobra en MVP.
-model SolicitudViaje {
-  id_solicitud  Int          @id @default(autoincrement())
-  id_cliente    Int
-  id_municipio  Int
-  tipo_servicio TipoServicio @default(taxi)
-  metodo_pago   MetodoPago   @default(efectivo)
+  passenger    Passenger    @relation(fields: [passengerId], references: [passengerId])
+  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
+  assignments  Assignment[]
 
-  direccion_recogida String
-  direccion_destino  String
-  lat_recogida       Float
-  lng_recogida       Float
-  lat_destino        Float
-  lng_destino        Float
-
-  fecha_hora_solicitud DateTime        @default(now())
-  estado               EstadoSolicitud @default(pendiente_de_asignacion)
-  /// Momento de la aceptación (se fija en la TOMA ÚNICA ATÓMICA, misma tx — ADR-002).
-  /// Base para la ventana gratuita de cancelación (2 min) — R-03.
-  asignada_en          DateTime?
-  tipo                 String          @default("inmediato") // inmediato | programado
-  fecha_hora_recogida  DateTime?
-  finalizacion         DateTime?
-  distancia            Float? // km (haversine o ruta)
-
-  tarifa             Decimal  @db.Decimal(12, 2) // cerrada al confirmar
-  comision           Decimal  @db.Decimal(12, 2) // registrada, no cobrada en MVP
-  ingresos_generados Decimal? @db.Decimal(12, 2)
-
-  actualizado_en DateTime @updatedAt
-
-  pasajero     Pasajero     @relation(fields: [id_cliente], references: [id_cliente])
-  municipio    Municipio    @relation(fields: [id_municipio], references: [id_municipio])
-  asignaciones Asignacion[]
-
-  // Cola operativa por municipio (vista del operador + barrido del motor).
-  @@index([id_municipio, estado, fecha_hora_solicitud])
-  // Filtrado por modalidad (doc 05). En MVP tipo_servicio es siempre `taxi`.
-  @@index([tipo_servicio, estado])
-  // GEOESPACIAL: la cercanía usa la columna geometry `ubicacion_recogida`
-  // (generada) + índice GiST creados por SQL (ver bloque final). Prisma no
-  // modela `geography`, por eso NO hay @@index geoespacial aquí.
-  @@map("solicitud_viaje")
+  @@index([municipalityId, status, requestedAt])
+  @@index([serviceType, status])
+  @@map("trip_request")
   @@schema("trips")
 }
 
-/// Tarifa por municipio y modalidad. MVP: 1 fila (taxi · Yarumal). Los valores
-/// por defecto son PLACEHOLDER — la tarifa oficial la fija la Alcaldía/Cootrayal
-/// (pendiente externo, doc 11 §1.3). Los cambios NO afectan viajes en curso.
-model ConfiguracionTarifa {
-  id_tarifa            Int          @id @default(autoincrement())
-  id_municipio         Int
-  tipo_servicio        TipoServicio @default(taxi)
-  tarifa_base          Decimal      @db.Decimal(12, 2)
-  recargo_nocturno_pct Decimal      @default(20) @db.Decimal(5, 2) // +20% 21:00–05:00
-  recargo_festivo_pct  Decimal      @default(15) @db.Decimal(5, 2) // +15% dom/festivos
-  comision_pct         Decimal      @default(8) @db.Decimal(5, 2) // comisión plataforma
-  fecha_desde          DateTime?    @db.Date
-  fecha_hasta          DateTime?    @db.Date
+model FareConfig {
+  fareConfigId        Int         @id @default(autoincrement()) @map("fare_config_id")
+  municipalityId      Int         @map("municipality_id")
+  serviceType         ServiceType @default(taxi) @map("service_type")
+  baseFare            Decimal     @map("base_fare") @db.Decimal(12, 2)
+  nightSurchargePct   Decimal     @default(20) @map("night_surcharge_pct") @db.Decimal(5, 2)
+  holidaySurchargePct Decimal     @default(15) @map("holiday_surcharge_pct") @db.Decimal(5, 2)
+  commissionPct       Decimal     @default(8) @map("commission_pct") @db.Decimal(5, 2)
+  validFrom           DateTime?   @map("valid_from") @db.Date
+  validTo             DateTime?   @map("valid_to") @db.Date
 
-  municipio Municipio @relation(fields: [id_municipio], references: [id_municipio])
+  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
 
-  // Lookup de la tarifa vigente por municipio + modalidad.
-  @@index([id_municipio, tipo_servicio])
-  @@map("configuracion_tarifa")
+  @@index([municipalityId, serviceType])
+  @@map("fare_config")
   @@schema("trips")
 }
 
-// =============================================================================
-// DOMINIO: assignment  —  Asignacion (TENANT)
-// =============================================================================
+model Assignment {
+  assignmentId       Int              @id @default(autoincrement()) @map("assignment_id")
+  tripRequestId      Int              @map("trip_request_id")
+  driverId           Int              @map("driver_id")
+  vehicleId          Int              @map("vehicle_id")
+  companyId          Int              @map("company_id")
+  status             AssignmentStatus @default(created) @map("status")
+  assignedBy         String           @default("system") @map("assigned_by")
+  attemptOrder       Int              @default(1) @map("attempt_order")
+  assignedAt         DateTime         @default(now()) @map("assigned_at")
+  notifiedAt         DateTime?        @map("notified_at")
+  respondedAt        DateTime?        @map("responded_at")
+  expiresAt          DateTime?        @map("expires_at")
+  cancellationReason String?          @map("cancellation_reason")
 
-/// Asignacion: un intento de emparejar una solicitud con un conductor. Es el
-/// puente al TENANT (lleva id_empresa denormalizado del conductor, para RLS y
-/// para filtrar sin JOIN en la ruta caliente). Ver doc 11 §2.3.
-model Asignacion {
-  id_asignacion Int              @id @default(autoincrement())
-  id_solicitud  Int
-  id_conductor  Int
-  id_taxi       Int
-  id_empresa    Int // TENANT (denormalizado del Conductor)
-  estado        EstadoAsignacion @default(creada)
-  asignado_por  String           @default("sistema") // sistema | admin | <id operador>
-  orden_intento Int              @default(1) // posición en la retry chain (1,2,3…)
+  tripRequest TripRequest @relation(fields: [tripRequestId], references: [tripRequestId])
+  driver      Driver      @relation(fields: [driverId], references: [driverId])
+  vehicle     Vehicle     @relation(fields: [vehicleId], references: [vehicleId])
+  company     Company     @relation(fields: [companyId], references: [companyId])
 
-  fecha_asignacion   DateTime  @default(now())
-  notificada_en      DateTime? // cuando se envió el push (estado `notificada`)
-  respondida_en      DateTime? // aceptada/rechazada/timeout
-  expira_en          DateTime? // fecha_asignacion + timeout_aceptacion_seg (countdown)
-  motivo_cancelacion String? // HU-09: cancelación del conductor con motivo
-
-  solicitud SolicitudViaje @relation(fields: [id_solicitud], references: [id_solicitud])
-  conductor Conductor      @relation(fields: [id_conductor], references: [id_conductor])
-  taxi      Taxi           @relation(fields: [id_taxi], references: [id_taxi])
-  empresa   Empresa        @relation(fields: [id_empresa], references: [id_empresa])
-
-  // Actividad/disponibilidad de conductor (doc 05).
-  @@index([id_conductor, estado, fecha_asignacion])
-  // Todas las asignaciones (intentos) de una solicitud.
-  @@index([id_solicitud, estado])
-  // Scoping por tenant (RLS + queries del dominio assignment).
-  @@index([id_empresa, estado])
-  // NOTA: "una sola Asignacion `aceptada` por solicitud" se garantiza con un
-  // ÍNDICE ÚNICO PARCIAL creado por SQL (Prisma no modela WHERE parcial):
-  //   CREATE UNIQUE INDEX … ON asignacion (id_solicitud) WHERE estado='aceptada';
-  @@map("asignacion")
+  @@index([driverId, status, assignedAt])
+  @@index([tripRequestId, status])
+  @@index([companyId, status])
+  @@map("assignment")
   @@schema("assignment")
 }
 
-// =============================================================================
-// DOMINIO: admin  —  ParametrosSistema
-// =============================================================================
+model SystemParameter {
+  id             Int    @id @default(autoincrement())
+  key            String @map("key")
+  value          String @map("value")
+  municipalityId Int?   @map("municipality_id")
 
-/// Parámetros configurables del motor y del negocio. Global (id_municipio NULL)
-/// o por municipio. Defaults sugeridos (a validar con la empresa — doc 05, §11):
-///   radio_busqueda_km=2 · radio_expansion_km=6 · timeout_aceptacion_seg=15 ·
-///   max_reintentos_automaticos=3 · ventana_desempate_viajes_horas=3 ·
-///   ventana_cancelacion_min=2 · cortesia_no_show_min=3 · velocidad_promedio_kmh=20
-model ParametrosSistema {
-  id           Int    @id @default(autoincrement())
-  clave        String // p.ej. radio_busqueda_km, timeout_aceptacion_seg
-  valor        String
-  id_municipio Int? // NULL = parámetro global; si no, específico del municipio
+  municipality Municipality? @relation(fields: [municipalityId], references: [municipalityId])
 
-  municipio Municipio? @relation(fields: [id_municipio], references: [id_municipio])
-
-  // Resolución en la app: buscar primero (clave, id_municipio) y caer a global
-  // (id_municipio NULL). NOTA: Postgres trata NULLs como distintos en índices
-  // únicos; con 1 municipio en MVP no hay colisión. Endurecer con NULLS NOT
-  // DISTINCT (PG15+) en el bloque SQL si se activa multi-municipio.
-  @@unique([clave, id_municipio])
-  @@map("parametros_sistema")
+  @@unique([key, municipalityId])
+  @@map("system_parameter")
   @@schema("admin")
 }
-
-// =============================================================================
-// BLOQUE SQL COMPLEMENTARIO  (ejecutar como migración raw tras `prisma migrate`)
-// -----------------------------------------------------------------------------
-// Prisma no gestiona: extensión PostGIS, columnas `geography`, índices GiST,
-// índice único parcial y políticas RLS. Se aplican con SQL en una migración
-// dedicada (prisma/migrations/xxxx_postgis_rls/migration.sql).
-//
-// (a) HABILITAR PostGIS
-// -----------------------------------------------------------------------------
-//   CREATE EXTENSION IF NOT EXISTS postgis;
-//
-//   -- Ubicación del conductor (nearest-first: candidatos cercanos al origen).
-//   ALTER TABLE fleet.conductor
-//     ADD COLUMN ubicacion_actual geography(Point, 4326)
-//     GENERATED ALWAYS AS (
-//       CASE WHEN lat_actual IS NOT NULL AND lng_actual IS NOT NULL
-//            THEN ST_SetSRID(ST_MakePoint(lng_actual, lat_actual), 4326)::geography
-//            ELSE NULL END
-//     ) STORED;
-//   CREATE INDEX idx_conductor_ubicacion_gist
-//     ON fleet.conductor USING GIST (ubicacion_actual);
-//
-//   -- Punto de recogida de la solicitud (cercanía / auditoría geoespacial).
-//   ALTER TABLE trips.solicitud_viaje
-//     ADD COLUMN ubicacion_recogida geography(Point, 4326)
-//     GENERATED ALWAYS AS (
-//       ST_SetSRID(ST_MakePoint(lng_recogida, lat_recogida), 4326)::geography
-//     ) STORED;
-//   CREATE INDEX idx_solicitud_recogida_gist
-//     ON trips.solicitud_viaje USING GIST (ubicacion_recogida);
-//
-//   -- Cobertura: polígono del municipio como geometry para "punto ∈ polígono".
-//   ALTER TABLE tenancy.municipio
-//     ADD COLUMN cobertura geometry(MultiPolygon, 4326)
-//     GENERATED ALWAYS AS (ST_SetSRID(ST_GeomFromGeoJSON(poligono_cobertura::text), 4326)) STORED;
-//   CREATE INDEX idx_municipio_cobertura_gist
-//     ON tenancy.municipio USING GIST (cobertura);
-//   -- Validación de cobertura (HU-04, "fuera de cobertura" → 409):
-//   --   SELECT ST_Covers(cobertura, ST_SetSRID(ST_MakePoint($lng,$lat),4326))
-//   --   FROM tenancy.municipio WHERE id_municipio = $id;
-//
-//   -- Candidatos nearest-first (dentro del radio, ordenados por distancia):
-//   --   SELECT c.id_conductor,
-//   --          ST_Distance(c.ubicacion_actual, $origen) AS distancia_m
-//   --   FROM fleet.conductor c
-//   --   WHERE c.id_empresa = $tenant
-//   --     AND c.estado = 'disponible'
-//   --     AND ST_DWithin(c.ubicacion_actual, $origen, $radio_km * 1000)
-//   --   ORDER BY distancia_m ASC     -- desempate: menos viajes recientes (app)
-//   --   LIMIT $max_reintentos;
-//
-// -----------------------------------------------------------------------------
-// TOMA ÚNICA ATÓMICA (índice único parcial) — ADR-002 / HU-08
-// -----------------------------------------------------------------------------
-//   CREATE UNIQUE INDEX uq_asignacion_aceptada_por_solicitud
-//     ON assignment.asignacion (id_solicitud) WHERE estado = 'aceptada';
-//   -- Segunda barrera. La primera es el UPDATE condicional sobre el conductor:
-//   --   UPDATE fleet.conductor SET estado='en_servicio'
-//   --   WHERE id_conductor=$1 AND estado='disponible' AND id_empresa=$tenant
-//   --   RETURNING *;              -- 0 filas ⇒ ya tomado ⇒ siguiente en la cadena
-//
-// -----------------------------------------------------------------------------
-// (b) POLÍTICAS RLS POR id_empresa (defensa en profundidad — doc 14 §3)
-// -----------------------------------------------------------------------------
-//   ALTER TABLE fleet.conductor        ENABLE ROW LEVEL SECURITY;
-//   ALTER TABLE fleet.taxi             ENABLE ROW LEVEL SECURITY;
-//   ALTER TABLE assignment.asignacion  ENABLE ROW LEVEL SECURITY;
-//   -- (Pasajero y SolicitudViaje son GLOBALES: no llevan RLS por empresa.)
-//   -- (auth.refresh_token, auth.codigo_otp y las credenciales de auth.usuario son
-//   --  GLOBALES AL USUARIO: TAMPOCO llevan RLS por empresa — ADR-005.)
-//
-//   CREATE POLICY tenant_isolation_conductor ON fleet.conductor
-//     USING (id_empresa = current_setting('app.current_empresa', true)::int);
-//   CREATE POLICY tenant_isolation_taxi ON fleet.taxi
-//     USING (id_empresa = current_setting('app.current_empresa', true)::int);
-//   CREATE POLICY tenant_isolation_asignacion ON assignment.asignacion
-//     USING (id_empresa = current_setting('app.current_empresa', true)::int);
-//
-//   -- IMPORTANTE: el rol que usa la app NO debe ser superusuario ni tener
-//   -- BYPASSRLS (si no, las políticas se ignoran). Migraciones corren con un
-//   -- rol distinto (dueño de las tablas) por la DIRECT_URL.
-//
-// -----------------------------------------------------------------------------
-// (c) FIJAR app.current_empresa POR TRANSACCIÓN (Prisma middleware / $transaction)
-// -----------------------------------------------------------------------------
-//   El TenantGuard extrae id_empresa del JWT y lo inyecta en cada transacción.
-//   Con Prisma se envuelve la operación en $transaction y se fija la GUC LOCAL
-//   (se limpia sola al COMMIT/ROLLBACK — seguro con PgBouncer transaction-mode):
-//
-//     await prisma.$transaction(async (tx) => {
-//       await tx.$executeRaw`SELECT set_config('app.current_empresa', ${String(idEmpresa)}, true)`;
-//       // …consultas del tenant: RLS filtra por id_empresa automáticamente…
-//     });
-//
-//   El tercer argumento `true` de set_config = LOCAL a la transacción. Usar
-//   set_config (no `SET LOCAL app.current_empresa = …`) porque acepta parámetro
-//   ligado y evita inyección SQL.
-//
-// -----------------------------------------------------------------------------
-// (d) LIMPIEZA DEL ESTADO EFÍMERO DE AUTH (sin Redis) — ADR-005
-// -----------------------------------------------------------------------------
-//   refresh_token y codigo_otp acumulan filas vencidas. Un job @nestjs/schedule,
-//   protegido con un ADVISORY LOCK de PostgreSQL (seguro con N instancias — doc 14
-//   §3), barre periódicamente (los TTL viven en env, no "mágicos"):
-//     DELETE FROM auth.codigo_otp    WHERE expira_en < now() OR consumido = true;
-//     DELETE FROM auth.refresh_token WHERE expira_en < now() OR revocado  = true;
-//   No requieren RLS (son globales al usuario); el DELETE por id_usuario en la
-//   suspensión del conductor (HU-AUTH-05) usa el índice (id_usuario, revocado).
-// =============================================================================

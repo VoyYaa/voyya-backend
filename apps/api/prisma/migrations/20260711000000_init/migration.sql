@@ -1,3 +1,4 @@
+﻿
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "admin";
 
@@ -23,305 +24,328 @@ CREATE SCHEMA IF NOT EXISTS "users";
 CREATE EXTENSION IF NOT EXISTS "postgis";
 
 -- CreateEnum
-CREATE TYPE "tenancy"."EstadoEmpresa" AS ENUM ('pendiente', 'activa', 'suspendida', 'rechazada');
+CREATE TYPE "tenancy"."CompanyStatus" AS ENUM ('pending', 'active', 'suspended', 'rejected');
 
 -- CreateEnum
-CREATE TYPE "fleet"."EstadoConductor" AS ENUM ('disponible', 'en_servicio', 'fuera_de_turno', 'inactivo', 'suspendido', 'bloqueado_documentos');
+CREATE TYPE "fleet"."DriverStatus" AS ENUM ('available', 'on_trip', 'off_shift', 'inactive', 'suspended', 
+'documents_blocked');
 
 -- CreateEnum
-CREATE TYPE "trips"."EstadoSolicitud" AS ENUM ('pendiente_de_asignacion', 'asignada', 'conductor_en_camino', 'en_curso', 'completada', 'cancelada_cliente', 'cancelada_conductor', 'sin_conductor', 'no_show', 'expirada');
+CREATE TYPE "trips"."TripStatus" AS ENUM ('pending_assignment', 'assigned', 'driver_en_route', 'in_progress', 
+'completed', 'cancelled_by_passenger', 'cancelled_by_driver', 'no_driver', 'no_show', 'expired');
 
 -- CreateEnum
-CREATE TYPE "assignment"."EstadoAsignacion" AS ENUM ('creada', 'notificada', 'aceptada', 'rechazada', 'timeout', 'cancelada', 'finalizada');
+CREATE TYPE "assignment"."AssignmentStatus" AS ENUM ('created', 'notified', 'accepted', 'rejected', 'timeout', 
+'cancelled', 'completed');
 
 -- CreateEnum
-CREATE TYPE "trips"."TipoServicio" AS ENUM ('taxi', 'moto', 'confort', 'envio');
+CREATE TYPE "trips"."ServiceType" AS ENUM ('taxi', 'motorcycle', 'comfort', 'delivery');
 
 -- CreateEnum
-CREATE TYPE "trips"."MetodoPago" AS ENUM ('efectivo', 'nequi', 'daviplata', 'tarjeta');
+CREATE TYPE "trips"."PaymentMethod" AS ENUM ('cash', 'nequi', 'daviplata', 'card');
 
 -- CreateTable
-CREATE TABLE "tenancy"."empresa" (
-    "id_empresa" SERIAL NOT NULL,
-    "razon_social" TEXT NOT NULL,
-    "nit" TEXT NOT NULL,
-    "tipo" TEXT NOT NULL,
-    "id_municipio" INTEGER NOT NULL,
-    "n_vehiculos" INTEGER,
-    "correo_contacto" TEXT,
-    "estado" "tenancy"."EstadoEmpresa" NOT NULL DEFAULT 'activa',
-    "cuota_afiliacion" DECIMAL(12,2),
-    "fecha_registro" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE "tenancy"."company" (
+    "company_id" SERIAL NOT NULL,
+    "legal_name" TEXT NOT NULL,
+    "tax_id" TEXT NOT NULL,
+    "type" TEXT NOT NULL,
+    "municipality_id" INTEGER NOT NULL,
+    "vehicle_count" INTEGER,
+    "contact_email" TEXT,
+    "status" "tenancy"."CompanyStatus" NOT NULL DEFAULT 'active',
+    "membership_fee" DECIMAL(12,2),
+    "registered_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "empresa_pkey" PRIMARY KEY ("id_empresa")
+    CONSTRAINT "company_pkey" PRIMARY KEY ("company_id")
 );
 
 -- CreateTable
-CREATE TABLE "tenancy"."municipio" (
-    "id_municipio" SERIAL NOT NULL,
-    "nombre" TEXT NOT NULL,
-    "departamento" TEXT NOT NULL,
-    "poligono_cobertura" JSONB NOT NULL,
-    "estado" TEXT NOT NULL DEFAULT 'activo',
+CREATE TABLE "tenancy"."municipality" (
+    "municipality_id" SERIAL NOT NULL,
+    "name" TEXT NOT NULL,
+    "department" TEXT NOT NULL,
+    "coverage_polygon" JSONB NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'active',
 
-    CONSTRAINT "municipio_pkey" PRIMARY KEY ("id_municipio")
+    CONSTRAINT "municipality_pkey" PRIMARY KEY ("municipality_id")
 );
 
 -- CreateTable
-CREATE TABLE "auth"."usuario" (
-    "id_usuario" SERIAL NOT NULL,
-    "nombre" TEXT NOT NULL,
-    "apellido" TEXT NOT NULL,
-    "correo" TEXT,
-    "telefono" TEXT NOT NULL,
-    "contrasena" TEXT,
-    "rol" TEXT NOT NULL,
-    "estado_cuenta" TEXT NOT NULL DEFAULT 'activa',
-    "creado_en" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+CREATE TABLE "auth"."user" (
+    "user_id" SERIAL NOT NULL,
+    "first_name" TEXT NOT NULL,
+    "last_name" TEXT NOT NULL,
+    "email" TEXT,
+    "phone" TEXT NOT NULL,
+    "password_hash" TEXT,
+    "role" TEXT NOT NULL,
+    "account_status" TEXT NOT NULL DEFAULT 'active',
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "usuario_pkey" PRIMARY KEY ("id_usuario")
+    CONSTRAINT "user_pkey" PRIMARY KEY ("user_id")
 );
 
 -- CreateTable
 CREATE TABLE "auth"."refresh_token" (
     "id" SERIAL NOT NULL,
-    "id_usuario" INTEGER NOT NULL,
+    "user_id" INTEGER NOT NULL,
     "token_hash" TEXT NOT NULL,
-    "expira_en" TIMESTAMP(3) NOT NULL,
-    "revocado" BOOLEAN NOT NULL DEFAULT false,
+    "expires_at" TIMESTAMP(3) NOT NULL,
+    "revoked" BOOLEAN NOT NULL DEFAULT false,
     "user_agent" TEXT,
-    "creado_en" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "refresh_token_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "auth"."codigo_otp" (
+CREATE TABLE "auth"."otp_code" (
     "id" SERIAL NOT NULL,
-    "telefono" TEXT NOT NULL,
+    "phone" TEXT NOT NULL,
     "code_hash" TEXT NOT NULL,
-    "expira_en" TIMESTAMP(3) NOT NULL,
-    "intentos" INTEGER NOT NULL DEFAULT 0,
-    "consumido" BOOLEAN NOT NULL DEFAULT false,
-    "creado_en" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "expires_at" TIMESTAMP(3) NOT NULL,
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "consumed" BOOLEAN NOT NULL DEFAULT false,
+    "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    CONSTRAINT "codigo_otp_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "otp_code_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
-CREATE TABLE "users"."pasajero" (
-    "id_cliente" INTEGER NOT NULL,
-    "metodo_pago_pref" "trips"."MetodoPago" NOT NULL DEFAULT 'efectivo',
-    "direccion_principal" TEXT,
-    "contacto_confianza" TEXT,
+CREATE TABLE "users"."passenger" (
+    "passenger_id" INTEGER NOT NULL,
+    "preferred_payment_method" "trips"."PaymentMethod" NOT NULL DEFAULT 'cash',
+    "main_address" TEXT,
+    "trusted_contact" TEXT,
 
-    CONSTRAINT "pasajero_pkey" PRIMARY KEY ("id_cliente")
+    CONSTRAINT "passenger_pkey" PRIMARY KEY ("passenger_id")
 );
 
 -- CreateTable
-CREATE TABLE "fleet"."conductor" (
-    "id_conductor" INTEGER NOT NULL,
-    "id_empresa" INTEGER NOT NULL,
-    "cedula" TEXT NOT NULL,
+CREATE TABLE "fleet"."driver" (
+    "driver_id" INTEGER NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "national_id" TEXT NOT NULL,
     "pin" TEXT NOT NULL,
-    "licencia" TEXT,
-    "calificacion_promedio" DOUBLE PRECISION,
-    "estado" "fleet"."EstadoConductor" NOT NULL DEFAULT 'fuera_de_turno',
-    "intentos_fallidos" INTEGER NOT NULL DEFAULT 0,
-    "bloqueado_hasta" TIMESTAMP(3),
-    "lat_actual" DOUBLE PRECISION,
-    "lng_actual" DOUBLE PRECISION,
-    "ubicacion_actualizada_en" TIMESTAMP(3),
-    "id_taxi_actual" INTEGER,
-    "actualizado_en" TIMESTAMP(3) NOT NULL,
+    "license" TEXT,
+    "average_rating" DOUBLE PRECISION,
+    "status" "fleet"."DriverStatus" NOT NULL DEFAULT 'off_shift',
+    "failed_attempts" INTEGER NOT NULL DEFAULT 0,
+    "blocked_until" TIMESTAMP(3),
+    "current_lat" DOUBLE PRECISION,
+    "current_lng" DOUBLE PRECISION,
+    "location_updated_at" TIMESTAMP(3),
+    "current_vehicle_id" INTEGER,
+    "updated_at" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "conductor_pkey" PRIMARY KEY ("id_conductor")
+    CONSTRAINT "driver_pkey" PRIMARY KEY ("driver_id")
 );
 
 -- CreateTable
-CREATE TABLE "fleet"."taxi" (
-    "id_taxi" SERIAL NOT NULL,
-    "id_empresa" INTEGER NOT NULL,
-    "placa" TEXT NOT NULL,
-    "modelo" TEXT,
-    "anio" INTEGER,
-    "tarjeta_operacion" TEXT,
-    "estado" TEXT NOT NULL DEFAULT 'activo',
+CREATE TABLE "fleet"."vehicle" (
+    "vehicle_id" SERIAL NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "plate" TEXT NOT NULL,
+    "model" TEXT,
+    "year" INTEGER,
+    "operation_card" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'active',
 
-    CONSTRAINT "taxi_pkey" PRIMARY KEY ("id_taxi")
+    CONSTRAINT "vehicle_pkey" PRIMARY KEY ("vehicle_id")
 );
 
 -- CreateTable
-CREATE TABLE "trips"."solicitud_viaje" (
-    "id_solicitud" SERIAL NOT NULL,
-    "id_cliente" INTEGER NOT NULL,
-    "id_municipio" INTEGER NOT NULL,
-    "tipo_servicio" "trips"."TipoServicio" NOT NULL DEFAULT 'taxi',
-    "metodo_pago" "trips"."MetodoPago" NOT NULL DEFAULT 'efectivo',
-    "direccion_recogida" TEXT NOT NULL,
-    "direccion_destino" TEXT NOT NULL,
-    "lat_recogida" DOUBLE PRECISION NOT NULL,
-    "lng_recogida" DOUBLE PRECISION NOT NULL,
-    "lat_destino" DOUBLE PRECISION NOT NULL,
-    "lng_destino" DOUBLE PRECISION NOT NULL,
-    "fecha_hora_solicitud" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "estado" "trips"."EstadoSolicitud" NOT NULL DEFAULT 'pendiente_de_asignacion',
-    "asignada_en" TIMESTAMP(3),
-    "tipo" TEXT NOT NULL DEFAULT 'inmediato',
-    "fecha_hora_recogida" TIMESTAMP(3),
-    "finalizacion" TIMESTAMP(3),
-    "distancia" DOUBLE PRECISION,
-    "tarifa" DECIMAL(12,2) NOT NULL,
-    "comision" DECIMAL(12,2) NOT NULL,
-    "ingresos_generados" DECIMAL(12,2),
-    "actualizado_en" TIMESTAMP(3) NOT NULL,
+CREATE TABLE "trips"."trip_request" (
+    "trip_request_id" SERIAL NOT NULL,
+    "passenger_id" INTEGER NOT NULL,
+    "municipality_id" INTEGER NOT NULL,
+    "service_type" "trips"."ServiceType" NOT NULL DEFAULT 'taxi',
+    "payment_method" "trips"."PaymentMethod" NOT NULL DEFAULT 'cash',
+    "pickup_address" TEXT NOT NULL,
+    "dropoff_address" TEXT NOT NULL,
+    "pickup_lat" DOUBLE PRECISION NOT NULL,
+    "pickup_lng" DOUBLE PRECISION NOT NULL,
+    "dropoff_lat" DOUBLE PRECISION NOT NULL,
+    "dropoff_lng" DOUBLE PRECISION NOT NULL,
+    "requested_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "status" "trips"."TripStatus" NOT NULL DEFAULT 'pending_assignment',
+    "assigned_at" TIMESTAMP(3),
+    "type" TEXT NOT NULL DEFAULT 'immediate',
+    "scheduled_pickup_at" TIMESTAMP(3),
+    "finished_at" TIMESTAMP(3),
+    "distance" DOUBLE PRECISION,
+    "fare" DECIMAL(12,2) NOT NULL,
+    "commission" DECIMAL(12,2) NOT NULL,
+    "net_earnings" DECIMAL(12,2),
+    "updated_at" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "solicitud_viaje_pkey" PRIMARY KEY ("id_solicitud")
+    CONSTRAINT "trip_request_pkey" PRIMARY KEY ("trip_request_id")
 );
 
 -- CreateTable
-CREATE TABLE "trips"."configuracion_tarifa" (
-    "id_tarifa" SERIAL NOT NULL,
-    "id_municipio" INTEGER NOT NULL,
-    "tipo_servicio" "trips"."TipoServicio" NOT NULL DEFAULT 'taxi',
-    "tarifa_base" DECIMAL(12,2) NOT NULL,
-    "recargo_nocturno_pct" DECIMAL(5,2) NOT NULL DEFAULT 20,
-    "recargo_festivo_pct" DECIMAL(5,2) NOT NULL DEFAULT 15,
-    "comision_pct" DECIMAL(5,2) NOT NULL DEFAULT 8,
-    "fecha_desde" DATE,
-    "fecha_hasta" DATE,
+CREATE TABLE "trips"."fare_config" (
+    "fare_config_id" SERIAL NOT NULL,
+    "municipality_id" INTEGER NOT NULL,
+    "service_type" "trips"."ServiceType" NOT NULL DEFAULT 'taxi',
+    "base_fare" DECIMAL(12,2) NOT NULL,
+    "night_surcharge_pct" DECIMAL(5,2) NOT NULL DEFAULT 20,
+    "holiday_surcharge_pct" DECIMAL(5,2) NOT NULL DEFAULT 15,
+    "commission_pct" DECIMAL(5,2) NOT NULL DEFAULT 8,
+    "valid_from" DATE,
+    "valid_to" DATE,
 
-    CONSTRAINT "configuracion_tarifa_pkey" PRIMARY KEY ("id_tarifa")
+    CONSTRAINT "fare_config_pkey" PRIMARY KEY ("fare_config_id")
 );
 
 -- CreateTable
-CREATE TABLE "assignment"."asignacion" (
-    "id_asignacion" SERIAL NOT NULL,
-    "id_solicitud" INTEGER NOT NULL,
-    "id_conductor" INTEGER NOT NULL,
-    "id_taxi" INTEGER NOT NULL,
-    "id_empresa" INTEGER NOT NULL,
-    "estado" "assignment"."EstadoAsignacion" NOT NULL DEFAULT 'creada',
-    "asignado_por" TEXT NOT NULL DEFAULT 'sistema',
-    "orden_intento" INTEGER NOT NULL DEFAULT 1,
-    "fecha_asignacion" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "notificada_en" TIMESTAMP(3),
-    "respondida_en" TIMESTAMP(3),
-    "expira_en" TIMESTAMP(3),
-    "motivo_cancelacion" TEXT,
+CREATE TABLE "assignment"."assignment" (
+    "assignment_id" SERIAL NOT NULL,
+    "trip_request_id" INTEGER NOT NULL,
+    "driver_id" INTEGER NOT NULL,
+    "vehicle_id" INTEGER NOT NULL,
+    "company_id" INTEGER NOT NULL,
+    "status" "assignment"."AssignmentStatus" NOT NULL DEFAULT 'created',
+    "assigned_by" TEXT NOT NULL DEFAULT 'system',
+    "attempt_order" INTEGER NOT NULL DEFAULT 1,
+    "assigned_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "notified_at" TIMESTAMP(3),
+    "responded_at" TIMESTAMP(3),
+    "expires_at" TIMESTAMP(3),
+    "cancellation_reason" TEXT,
 
-    CONSTRAINT "asignacion_pkey" PRIMARY KEY ("id_asignacion")
+    CONSTRAINT "assignment_pkey" PRIMARY KEY ("assignment_id")
 );
 
 -- CreateTable
-CREATE TABLE "admin"."parametros_sistema" (
+CREATE TABLE "admin"."system_parameter" (
     "id" SERIAL NOT NULL,
-    "clave" TEXT NOT NULL,
-    "valor" TEXT NOT NULL,
-    "id_municipio" INTEGER,
+    "key" TEXT NOT NULL,
+    "value" TEXT NOT NULL,
+    "municipality_id" INTEGER,
 
-    CONSTRAINT "parametros_sistema_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "system_parameter_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "empresa_nit_key" ON "tenancy"."empresa"("nit");
+CREATE UNIQUE INDEX "company_tax_id_key" ON "tenancy"."company"("tax_id");
 
 -- CreateIndex
-CREATE INDEX "empresa_id_municipio_idx" ON "tenancy"."empresa"("id_municipio");
+CREATE INDEX "company_municipality_id_idx" ON "tenancy"."company"("municipality_id");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "usuario_correo_key" ON "auth"."usuario"("correo");
+CREATE UNIQUE INDEX "user_email_key" ON "auth"."user"("email");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "usuario_telefono_key" ON "auth"."usuario"("telefono");
+CREATE UNIQUE INDEX "user_phone_key" ON "auth"."user"("phone");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "refresh_token_token_hash_key" ON "auth"."refresh_token"("token_hash");
 
 -- CreateIndex
-CREATE INDEX "refresh_token_id_usuario_revocado_idx" ON "auth"."refresh_token"("id_usuario", "revocado");
+CREATE INDEX "refresh_token_user_id_revoked_idx" ON "auth"."refresh_token"("user_id", "revoked");
 
 -- CreateIndex
-CREATE INDEX "refresh_token_expira_en_idx" ON "auth"."refresh_token"("expira_en");
+CREATE INDEX "refresh_token_expires_at_idx" ON "auth"."refresh_token"("expires_at");
 
 -- CreateIndex
-CREATE INDEX "codigo_otp_telefono_creado_en_idx" ON "auth"."codigo_otp"("telefono", "creado_en");
+CREATE INDEX "otp_code_phone_created_at_idx" ON "auth"."otp_code"("phone", "created_at");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "conductor_cedula_key" ON "fleet"."conductor"("cedula");
+CREATE UNIQUE INDEX "driver_national_id_key" ON "fleet"."driver"("national_id");
 
 -- CreateIndex
-CREATE INDEX "conductor_id_empresa_estado_idx" ON "fleet"."conductor"("id_empresa", "estado");
+CREATE INDEX "driver_company_id_status_idx" ON "fleet"."driver"("company_id", "status");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "taxi_placa_key" ON "fleet"."taxi"("placa");
+CREATE UNIQUE INDEX "vehicle_plate_key" ON "fleet"."vehicle"("plate");
 
 -- CreateIndex
-CREATE INDEX "taxi_id_empresa_estado_idx" ON "fleet"."taxi"("id_empresa", "estado");
+CREATE INDEX "vehicle_company_id_status_idx" ON "fleet"."vehicle"("company_id", "status");
 
 -- CreateIndex
-CREATE INDEX "solicitud_viaje_id_municipio_estado_fecha_hora_solicitud_idx" ON "trips"."solicitud_viaje"("id_municipio", "estado", "fecha_hora_solicitud");
+CREATE INDEX "trip_request_municipality_id_status_requested_at_idx" ON "trips"."trip_request"("municipality_id", 
+"status", "requested_at");
 
 -- CreateIndex
-CREATE INDEX "solicitud_viaje_tipo_servicio_estado_idx" ON "trips"."solicitud_viaje"("tipo_servicio", "estado");
+CREATE INDEX "trip_request_service_type_status_idx" ON "trips"."trip_request"("service_type", "status");
 
 -- CreateIndex
-CREATE INDEX "configuracion_tarifa_id_municipio_tipo_servicio_idx" ON "trips"."configuracion_tarifa"("id_municipio", "tipo_servicio");
+CREATE INDEX "fare_config_municipality_id_service_type_idx" ON "trips"."fare_config"("municipality_id", 
+"service_type");
 
 -- CreateIndex
-CREATE INDEX "asignacion_id_conductor_estado_fecha_asignacion_idx" ON "assignment"."asignacion"("id_conductor", "estado", "fecha_asignacion");
+CREATE INDEX "assignment_driver_id_status_assigned_at_idx" ON "assignment"."assignment"("driver_id", "status", 
+"assigned_at");
 
 -- CreateIndex
-CREATE INDEX "asignacion_id_solicitud_estado_idx" ON "assignment"."asignacion"("id_solicitud", "estado");
+CREATE INDEX "assignment_trip_request_id_status_idx" ON "assignment"."assignment"("trip_request_id", "status");
 
 -- CreateIndex
-CREATE INDEX "asignacion_id_empresa_estado_idx" ON "assignment"."asignacion"("id_empresa", "estado");
+CREATE INDEX "assignment_company_id_status_idx" ON "assignment"."assignment"("company_id", "status");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "parametros_sistema_clave_id_municipio_key" ON "admin"."parametros_sistema"("clave", "id_municipio");
+CREATE UNIQUE INDEX "system_parameter_key_municipality_id_key" ON "admin"."system_parameter"("key", "municipality_id");
 
 -- AddForeignKey
-ALTER TABLE "tenancy"."empresa" ADD CONSTRAINT "empresa_id_municipio_fkey" FOREIGN KEY ("id_municipio") REFERENCES "tenancy"."municipio"("id_municipio") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "tenancy"."company" ADD CONSTRAINT "company_municipality_id_fkey" FOREIGN KEY ("municipality_id") 
+REFERENCES "tenancy"."municipality"("municipality_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "auth"."refresh_token" ADD CONSTRAINT "refresh_token_id_usuario_fkey" FOREIGN KEY ("id_usuario") REFERENCES "auth"."usuario"("id_usuario") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "auth"."refresh_token" ADD CONSTRAINT "refresh_token_user_id_fkey" FOREIGN KEY ("user_id") REFERENCES 
+"auth"."user"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "users"."pasajero" ADD CONSTRAINT "pasajero_id_cliente_fkey" FOREIGN KEY ("id_cliente") REFERENCES "auth"."usuario"("id_usuario") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "users"."passenger" ADD CONSTRAINT "passenger_passenger_id_fkey" FOREIGN KEY ("passenger_id") REFERENCES 
+"auth"."user"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "fleet"."conductor" ADD CONSTRAINT "conductor_id_conductor_fkey" FOREIGN KEY ("id_conductor") REFERENCES "auth"."usuario"("id_usuario") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "fleet"."driver" ADD CONSTRAINT "driver_driver_id_fkey" FOREIGN KEY ("driver_id") REFERENCES 
+"auth"."user"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "fleet"."conductor" ADD CONSTRAINT "conductor_id_empresa_fkey" FOREIGN KEY ("id_empresa") REFERENCES "tenancy"."empresa"("id_empresa") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "fleet"."driver" ADD CONSTRAINT "driver_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES 
+"tenancy"."company"("company_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "fleet"."conductor" ADD CONSTRAINT "conductor_id_taxi_actual_fkey" FOREIGN KEY ("id_taxi_actual") REFERENCES "fleet"."taxi"("id_taxi") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "fleet"."driver" ADD CONSTRAINT "driver_current_vehicle_id_fkey" FOREIGN KEY ("current_vehicle_id") 
+REFERENCES "fleet"."vehicle"("vehicle_id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "fleet"."taxi" ADD CONSTRAINT "taxi_id_empresa_fkey" FOREIGN KEY ("id_empresa") REFERENCES "tenancy"."empresa"("id_empresa") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "fleet"."vehicle" ADD CONSTRAINT "vehicle_company_id_fkey" FOREIGN KEY ("company_id") REFERENCES 
+"tenancy"."company"("company_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "trips"."solicitud_viaje" ADD CONSTRAINT "solicitud_viaje_id_cliente_fkey" FOREIGN KEY ("id_cliente") REFERENCES "users"."pasajero"("id_cliente") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "trips"."trip_request" ADD CONSTRAINT "trip_request_passenger_id_fkey" FOREIGN KEY ("passenger_id") 
+REFERENCES "users"."passenger"("passenger_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "trips"."solicitud_viaje" ADD CONSTRAINT "solicitud_viaje_id_municipio_fkey" FOREIGN KEY ("id_municipio") REFERENCES "tenancy"."municipio"("id_municipio") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "trips"."trip_request" ADD CONSTRAINT "trip_request_municipality_id_fkey" FOREIGN KEY ("municipality_id") 
+REFERENCES "tenancy"."municipality"("municipality_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "trips"."configuracion_tarifa" ADD CONSTRAINT "configuracion_tarifa_id_municipio_fkey" FOREIGN KEY ("id_municipio") REFERENCES "tenancy"."municipio"("id_municipio") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "trips"."fare_config" ADD CONSTRAINT "fare_config_municipality_id_fkey" FOREIGN KEY ("municipality_id") 
+REFERENCES "tenancy"."municipality"("municipality_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "assignment"."asignacion" ADD CONSTRAINT "asignacion_id_solicitud_fkey" FOREIGN KEY ("id_solicitud") REFERENCES "trips"."solicitud_viaje"("id_solicitud") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "assignment"."assignment" ADD CONSTRAINT "assignment_trip_request_id_fkey" FOREIGN KEY ("trip_request_id") 
+REFERENCES "trips"."trip_request"("trip_request_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "assignment"."asignacion" ADD CONSTRAINT "asignacion_id_conductor_fkey" FOREIGN KEY ("id_conductor") REFERENCES "fleet"."conductor"("id_conductor") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "assignment"."assignment" ADD CONSTRAINT "assignment_driver_id_fkey" FOREIGN KEY ("driver_id") REFERENCES 
+"fleet"."driver"("driver_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "assignment"."asignacion" ADD CONSTRAINT "asignacion_id_taxi_fkey" FOREIGN KEY ("id_taxi") REFERENCES "fleet"."taxi"("id_taxi") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "assignment"."assignment" ADD CONSTRAINT "assignment_vehicle_id_fkey" FOREIGN KEY ("vehicle_id") 
+REFERENCES "fleet"."vehicle"("vehicle_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "assignment"."asignacion" ADD CONSTRAINT "asignacion_id_empresa_fkey" FOREIGN KEY ("id_empresa") REFERENCES "tenancy"."empresa"("id_empresa") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "assignment"."assignment" ADD CONSTRAINT "assignment_company_id_fkey" FOREIGN KEY ("company_id") 
+REFERENCES "tenancy"."company"("company_id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "admin"."parametros_sistema" ADD CONSTRAINT "parametros_sistema_id_municipio_fkey" FOREIGN KEY ("id_municipio") REFERENCES "tenancy"."municipio"("id_municipio") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "admin"."system_parameter" ADD CONSTRAINT "system_parameter_municipality_id_fkey" FOREIGN KEY 
+("municipality_id") REFERENCES "tenancy"."municipality"("municipality_id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+
 

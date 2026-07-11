@@ -2,7 +2,7 @@
   "name": "backend-yavoy",
   "version": "0.0.1",
   "private": true,
-  "description": "VoyYa Backend (standalone) — NestJS API + contratos compartidos (@voyya/shared). Deploy a Railway.",
+  "description": "VoyYa Backend (standalone) — NestJS API + shared contracts (@voyyaa/shared). Deploys to Railway.",
   "packageManager": "pnpm@10.24.0",
   "engines": {
     "node": ">=20"

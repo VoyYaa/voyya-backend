@@ -1,109 +1,98 @@
 import { Injectable } from '@nestjs/common';
-import type { ConfiguracionTarifa, SolicitudViaje } from '@prisma/client';
-import { type EstadoSolicitud, ESTADOS_SOLICITUD_ACTIVOS, type TipoServicio } from '@voyya/shared';
+import type { FareConfig, TripRequest } from '@prisma/client';
+import { type TripStatus, ACTIVE_TRIP_STATUSES, type ServiceType } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
-export interface CrearSolicitudData {
-  idCliente: number;
-  idMunicipio: number;
-  tipoServicio: TipoServicio;
-  metodoPago: 'efectivo';
-  direccionRecogida: string;
-  direccionDestino: string;
-  latRecogida: number;
-  lngRecogida: number;
-  latDestino: number;
-  lngDestino: number;
-  distanciaKm: number;
-  tarifaTotal: number;
-  comision: number;
+export interface CreateTripRequestData {
+  passengerId: number;
+  municipalityId: number;
+  serviceType: ServiceType;
+  paymentMethod: 'cash';
+  pickupAddress: string;
+  dropoffAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  dropoffLat: number;
+  dropoffLng: number;
+  distanceKm: number;
+  fareTotal: number;
+  commission: number;
 }
 
-/**
- * Acceso a datos del dominio TRIPS. SolicitudViaje, ConfiguracionTarifa y Municipio
- * son GLOBALES (sin RLS por empresa), por eso NO se envuelven en runInTenant.
- * La cobertura usa PostGIS (columna generada `cobertura`) vía $queryRaw.
- */
 @Injectable()
 export class TripsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getTarifaVigente(
-    idMunicipio: number,
-    tipoServicio: TipoServicio,
-  ): Promise<ConfiguracionTarifa | null> {
-    const hoy = new Date();
-    return this.prisma.configuracionTarifa.findFirst({
+  async getActiveFareConfig(
+    municipalityId: number,
+    serviceType: ServiceType,
+  ): Promise<FareConfig | null> {
+    const today = new Date();
+    return this.prisma.fareConfig.findFirst({
       where: {
-        id_municipio: idMunicipio,
-        tipo_servicio: tipoServicio,
+        municipalityId,
+        serviceType,
         AND: [
-          { OR: [{ fecha_desde: null }, { fecha_desde: { lte: hoy } }] },
-          { OR: [{ fecha_hasta: null }, { fecha_hasta: { gte: hoy } }] },
+          { OR: [{ validFrom: null }, { validFrom: { lte: today } }] },
+          { OR: [{ validTo: null }, { validTo: { gte: today } }] },
         ],
       },
-      orderBy: { fecha_desde: 'desc' },
+      orderBy: { validFrom: 'desc' },
     });
   }
 
-  /** ST_Covers(polígono_municipio, punto). `true` sólo si el punto está cubierto. */
-  async puntoDentroDeCobertura(
-    idMunicipio: number,
+  async isPointInCoverage(
+    municipalityId: number,
     lng: number,
     lat: number,
   ): Promise<boolean> {
-    const filas = await this.prisma.$queryRaw<Array<{ cubierto: boolean | null }>>`
-      SELECT ST_Covers(cobertura, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)) AS cubierto
-      FROM tenancy.municipio
-      WHERE id_municipio = ${idMunicipio}
+    const rows = await this.prisma.$queryRaw<Array<{ covered: boolean | null }>>`
+      SELECT ST_Covers(coverage, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)) AS covered
+      FROM tenancy.municipality
+      WHERE municipality_id = ${municipalityId}
     `;
-    return filas.length > 0 && filas[0]?.cubierto === true;
+    return rows.length > 0 && rows[0]?.covered === true;
   }
 
-  /** Idempotencia HU-04: un pasajero no puede tener dos solicitudes vivas. */
-  async existeSolicitudActiva(idCliente: number): Promise<boolean> {
-    const n = await this.prisma.solicitudViaje.count({
+  async hasActiveTripRequest(passengerId: number): Promise<boolean> {
+    const n = await this.prisma.tripRequest.count({
       where: {
-        id_cliente: idCliente,
-        estado: { in: [...ESTADOS_SOLICITUD_ACTIVOS] },
+        passengerId,
+        status: { in: [...ACTIVE_TRIP_STATUSES] },
       },
     });
     return n > 0;
   }
 
-  async crearSolicitud(data: CrearSolicitudData): Promise<SolicitudViaje> {
-    return this.prisma.solicitudViaje.create({
+  async createTripRequest(data: CreateTripRequestData): Promise<TripRequest> {
+    return this.prisma.tripRequest.create({
       data: {
-        id_cliente: data.idCliente,
-        id_municipio: data.idMunicipio,
-        tipo_servicio: data.tipoServicio,
-        metodo_pago: data.metodoPago,
-        direccion_recogida: data.direccionRecogida,
-        direccion_destino: data.direccionDestino,
-        lat_recogida: data.latRecogida,
-        lng_recogida: data.lngRecogida,
-        lat_destino: data.latDestino,
-        lng_destino: data.lngDestino,
-        distancia: data.distanciaKm,
-        tarifa: data.tarifaTotal,
-        comision: data.comision,
-        estado: 'pendiente_de_asignacion',
+        passengerId: data.passengerId,
+        municipalityId: data.municipalityId,
+        serviceType: data.serviceType,
+        paymentMethod: data.paymentMethod,
+        pickupAddress: data.pickupAddress,
+        dropoffAddress: data.dropoffAddress,
+        pickupLat: data.pickupLat,
+        pickupLng: data.pickupLng,
+        dropoffLat: data.dropoffLat,
+        dropoffLng: data.dropoffLng,
+        distance: data.distanceKm,
+        fare: data.fareTotal,
+        commission: data.commission,
+        status: 'pending_assignment',
       },
     });
   }
 
-  async getSolicitud(idSolicitud: number): Promise<SolicitudViaje | null> {
-    return this.prisma.solicitudViaje.findUnique({ where: { id_solicitud: idSolicitud } });
+  async getTripRequest(tripRequestId: number): Promise<TripRequest | null> {
+    return this.prisma.tripRequest.findUnique({ where: { tripRequestId } });
   }
 
-  /** Cambia el estado de la solicitud (transición ya validada por el service). */
-  async actualizarEstado(
-    idSolicitud: number,
-    estado: EstadoSolicitud,
-  ): Promise<void> {
-    await this.prisma.solicitudViaje.update({
-      where: { id_solicitud: idSolicitud },
-      data: { estado },
+  async updateStatus(tripRequestId: number, status: TripStatus): Promise<void> {
+    await this.prisma.tripRequest.update({
+      where: { tripRequestId },
+      data: { status },
     });
   }
 }

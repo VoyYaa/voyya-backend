@@ -11,76 +11,66 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import {
-  AceptarAsignacionDTO,
-  CancelarAsignacionConductorDTO,
-  type OfertasCercanasRespuesta,
-  RechazarAsignacionDTO,
-  type ResultadoAceptacion,
-  type ResultadoCancelacionConductor,
-} from '@voyya/shared';
+  AcceptAssignmentDTO,
+  CancelAssignmentByDriverDTO,
+  type CancelAssignmentByDriverResult,
+  type NearbyOffersResponse,
+  RejectAssignmentDTO,
+  type AcceptAssignmentResult,
+} from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentConductor, CurrentTenant } from '../tenancy/identity.decorators';
+import { CurrentDriver, CurrentTenant } from '../tenancy/identity.decorators';
 import { TenantGuard } from '../tenancy/tenant.guard';
 import { AssignmentService } from './assignment.service';
 
-/**
- * Endpoints del conductor sobre una asignación. Exigen JWT + rol `conductor`
- * (AuthGuard + RolesGuard globales) y tenant del JWT (TenantGuard). El estado HTTP
- * de `aceptar` refleja la toma única: aceptada → 200 · ya_tomada → 409 · expirada → 410.
- */
 @Controller('assignments')
-@Roles('conductor')
+@Roles('driver')
 @UseGuards(TenantGuard)
 export class AssignmentController {
   constructor(private readonly assignment: AssignmentService) {}
 
-  /**
-   * GET /assignments/cercanas — ofertas PENDIENTES del conductor autenticado.
-   * PUENTE de polling que consume apps/driver hasta el PUSH real (EV1). Tenant del JWT.
-   * TODO(EV1): complementar/reemplazar por push (Expo Notifications).
-   */
-  @Get('cercanas')
-  listarCercanas(
-    @CurrentTenant() idEmpresa: number,
-    @CurrentConductor() idConductor: number,
-  ): Promise<OfertasCercanasRespuesta> {
-    return this.assignment.listarCercanas(idConductor, idEmpresa);
+  @Get('nearby')
+  listNearby(
+    @CurrentTenant() companyId: number,
+    @CurrentDriver() driverId: number,
+  ): Promise<NearbyOffersResponse> {
+    return this.assignment.listNearby(driverId, companyId);
   }
 
-  @Post(':id/aceptar')
-  async aceptar(
-    @Param('id', ParseIntPipe) idAsignacion: number,
-    @Body(new ZodValidationPipe(AceptarAsignacionDTO)) dto: AceptarAsignacionDTO,
-    @CurrentTenant() idEmpresa: number,
-    @CurrentConductor() idConductor: number,
+  @Post(':id/accept')
+  async accept(
+    @Param('id', ParseIntPipe) assignmentId: number,
+    @Body(new ZodValidationPipe(AcceptAssignmentDTO)) dto: AcceptAssignmentDTO,
+    @CurrentTenant() companyId: number,
+    @CurrentDriver() driverId: number,
     @Res({ passthrough: true }) res: Response,
-  ): Promise<ResultadoAceptacion> {
-    const r = await this.assignment.aceptar(idAsignacion, idConductor, idEmpresa, dto);
-    res.status(r.resultado === 'aceptada' ? 200 : r.resultado === 'ya_tomada' ? 409 : 410);
+  ): Promise<AcceptAssignmentResult> {
+    const r = await this.assignment.accept(assignmentId, driverId, companyId, dto);
+    res.status(r.result === 'accepted' ? 200 : r.result === 'already_taken' ? 409 : 410);
     return r;
   }
 
-  @Post(':id/rechazar')
+  @Post(':id/reject')
   @HttpCode(200)
-  rechazar(
-    @Param('id', ParseIntPipe) idAsignacion: number,
-    @Body(new ZodValidationPipe(RechazarAsignacionDTO)) dto: RechazarAsignacionDTO,
-    @CurrentTenant() idEmpresa: number,
-    @CurrentConductor() idConductor: number,
+  reject(
+    @Param('id', ParseIntPipe) assignmentId: number,
+    @Body(new ZodValidationPipe(RejectAssignmentDTO)) dto: RejectAssignmentDTO,
+    @CurrentTenant() companyId: number,
+    @CurrentDriver() driverId: number,
   ): Promise<{ ok: true }> {
-    return this.assignment.rechazar(idAsignacion, idConductor, idEmpresa, dto);
+    return this.assignment.reject(assignmentId, driverId, companyId, dto);
   }
 
-  @Post(':id/cancelar')
+  @Post(':id/cancel')
   @HttpCode(200)
-  cancelar(
-    @Param('id', ParseIntPipe) idAsignacion: number,
-    @Body(new ZodValidationPipe(CancelarAsignacionConductorDTO))
-    dto: CancelarAsignacionConductorDTO,
-    @CurrentTenant() idEmpresa: number,
-    @CurrentConductor() idConductor: number,
-  ): Promise<ResultadoCancelacionConductor> {
-    return this.assignment.cancelarPorConductor(idAsignacion, idConductor, idEmpresa, dto);
+  cancel(
+    @Param('id', ParseIntPipe) assignmentId: number,
+    @Body(new ZodValidationPipe(CancelAssignmentByDriverDTO))
+    dto: CancelAssignmentByDriverDTO,
+    @CurrentTenant() companyId: number,
+    @CurrentDriver() driverId: number,
+  ): Promise<CancelAssignmentByDriverResult> {
+    return this.assignment.cancelByDriver(assignmentId, driverId, companyId, dto);
   }
 }

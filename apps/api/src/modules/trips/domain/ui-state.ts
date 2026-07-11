@@ -1,24 +1,19 @@
-import type { EstadoSolicitud, EstadoUIPasajero } from '@voyya/shared';
+import type { TripStatus, PassengerUiState } from '@voyyaa/shared';
 
-/**
- * Deriva el estado de UI del pasajero (borde de pantalla) desde el estado del viaje.
- * `estado` (en la respuesta) es la fuente precisa; `ui` es una pista gruesa de pantalla.
- * El enum de UI no cubre estados terminales, así que se mapean al más cercano.
- */
-export function estadoUIPasajero(estado: EstadoSolicitud): EstadoUIPasajero {
-  switch (estado) {
-    case 'pendiente_de_asignacion':
-      return 'buscando';
-    case 'asignada':
-    case 'conductor_en_camino':
-    case 'en_curso':
-    case 'completada':
-      return 'conductor_asignado';
-    case 'sin_conductor':
-    case 'cancelada_cliente':
-    case 'cancelada_conductor':
+export function passengerUiState(status: TripStatus): PassengerUiState {
+  switch (status) {
+    case 'pending_assignment':
+      return 'searching';
+    case 'assigned':
+    case 'driver_en_route':
+    case 'in_progress':
+    case 'completed':
+      return 'driver_assigned';
+    case 'no_driver':
+    case 'cancelled_by_passenger':
+    case 'cancelled_by_driver':
     case 'no_show':
-    case 'expirada':
-      return 'sin_conductor';
+    case 'expired':
+      return 'no_driver';
   }
 }

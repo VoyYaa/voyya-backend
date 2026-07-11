@@ -1,299 +1,207 @@
-// =============================================================================
-// VoyYa — Contrato compartido · Dominio TRIPS (solicitud de viaje)
-// -----------------------------------------------------------------------------
-// Fase Diseñar (ASDD) · Agente `arquitectura` · skill `arquitectura-contrato-api`
-// Fuente ÚNICA de verdad para backend (NestJS) y frontend (Expo/Vite). Validación
-// con Zod en ambos lados. Sin `any`. Los valores de enum COINCIDEN 1:1 con
-// prisma/schema.prisma.
-//
-// Cubre: cotizar tarifa, crear solicitud, cancelar solicitud (pasajero) y los
-// eventos in-process (NestJS EventEmitter — NO Kafka/RabbitMQ/Redis en MVP).
-// La aceptación/rechazo/cancelación del conductor viven en ./assignment.
-//
-// Alcance MVP (regla de oro): taxi · efectivo · 1 empresa · 1 municipio.
-// Los enums quedan completos para EV1+ sin migración.
-// =============================================================================
-
 import { z } from 'zod';
 
-// -----------------------------------------------------------------------------
-// Catálogos (enums espejo de Prisma)
-// -----------------------------------------------------------------------------
+export const ServiceType = z.enum(['taxi', 'motorcycle', 'comfort', 'delivery']);
+export type ServiceType = z.infer<typeof ServiceType>;
 
-export const TipoServicio = z.enum(['taxi', 'moto', 'confort', 'envio']);
-export type TipoServicio = z.infer<typeof TipoServicio>;
+export const PaymentMethod = z.enum(['cash', 'nequi', 'daviplata', 'card']);
+export type PaymentMethod = z.infer<typeof PaymentMethod>;
 
-export const MetodoPago = z.enum(['efectivo', 'nequi', 'daviplata', 'tarjeta']);
-export type MetodoPago = z.infer<typeof MetodoPago>;
-
-// -----------------------------------------------------------------------------
-// Máquina de estados de la SOLICITUD (doc 11 §2.3) — fuente de verdad compartida
-// -----------------------------------------------------------------------------
-
-export const EstadoSolicitud = z.enum([
-  'pendiente_de_asignacion',
-  'asignada',
-  'conductor_en_camino',
-  'en_curso',
-  'completada',
-  'cancelada_cliente',
-  'cancelada_conductor',
-  'sin_conductor',
+export const TripStatus = z.enum([
+  'pending_assignment',
+  'assigned',
+  'driver_en_route',
+  'in_progress',
+  'completed',
+  'cancelled_by_passenger',
+  'cancelled_by_driver',
+  'no_driver',
   'no_show',
-  'expirada',
+  'expired',
 ]);
-export type EstadoSolicitud = z.infer<typeof EstadoSolicitud>;
+export type TripStatus = z.infer<typeof TripStatus>;
 
-/// Transiciones válidas. Alcance de ESTE feature: hasta `en_curso`. Los estados
-/// terminales del ciclo siguiente se dejan por completitud (fuente de verdad).
-export const TRANSICIONES_SOLICITUD = {
-  pendiente_de_asignacion: ['asignada', 'sin_conductor', 'cancelada_cliente', 'expirada'],
-  asignada: ['conductor_en_camino', 'pendiente_de_asignacion', 'cancelada_cliente', 'cancelada_conductor'],
-  conductor_en_camino: ['en_curso', 'cancelada_cliente', 'cancelada_conductor', 'no_show'],
-  en_curso: ['completada'],
-  completada: [],
-  cancelada_cliente: [],
-  cancelada_conductor: [],
-  sin_conductor: [],
+export const TRIP_STATUS_TRANSITIONS = {
+  pending_assignment: ['assigned', 'no_driver', 'cancelled_by_passenger', 'expired'],
+  assigned: ['driver_en_route', 'pending_assignment', 'cancelled_by_passenger', 'cancelled_by_driver'],
+  driver_en_route: ['in_progress', 'cancelled_by_passenger', 'cancelled_by_driver', 'no_show'],
+  in_progress: ['completed'],
+  completed: [],
+  cancelled_by_passenger: [],
+  cancelled_by_driver: [],
+  no_driver: [],
   no_show: [],
-  expirada: [],
-} as const satisfies Record<EstadoSolicitud, readonly EstadoSolicitud[]>;
+  expired: [],
+} as const satisfies Record<TripStatus, readonly TripStatus[]>;
 
-export function puedeTransicionarSolicitud(
-  desde: EstadoSolicitud,
-  hacia: EstadoSolicitud,
-): boolean {
-  return (TRANSICIONES_SOLICITUD[desde] as readonly EstadoSolicitud[]).includes(hacia);
+export function canTransitionTripStatus(from: TripStatus, to: TripStatus): boolean {
+  return (TRIP_STATUS_TRANSITIONS[from] as readonly TripStatus[]).includes(to);
 }
 
-/// Estados de la UI del pasajero (bordes de pantalla — no son estados de DB).
-/// Derivados del estado de la solicitud + condiciones del cliente.
-export const EstadoUIPasajero = z.enum([
-  'calculando_tarifa', // cotizando antes de confirmar
-  'buscando',          // pendiente_de_asignacion / retry chain en curso
-  'conductor_asignado',
-  'sin_conductor',     // cadena agotada
-  'fuera_de_cobertura',
-  'sin_conexion',
+export const PassengerUiState = z.enum([
+  'calculating_fare',
+  'searching',
+  'driver_assigned',
+  'no_driver',
+  'out_of_coverage',
+  'offline',
 ]);
-export type EstadoUIPasajero = z.infer<typeof EstadoUIPasajero>;
+export type PassengerUiState = z.infer<typeof PassengerUiState>;
 
-// -----------------------------------------------------------------------------
-// Tipos base reutilizables
-// -----------------------------------------------------------------------------
-
-/// Coordenada WGS84. Rango de Colombia acotado para atrapar lat/lng invertidos.
-export const Coordenada = z.object({
+export const Coordinate = z.object({
   lat: z.number().min(-4.5).max(16),
   lng: z.number().min(-82).max(-66),
 });
-export type Coordenada = z.infer<typeof Coordenada>;
+export type Coordinate = z.infer<typeof Coordinate>;
 
-export const Ubicacion = Coordenada.extend({
-  direccion: z.string().min(3).max(255),
+export const Location = Coordinate.extend({
+  address: z.string().min(3).max(255),
 });
-export type Ubicacion = z.infer<typeof Ubicacion>;
+export type Location = z.infer<typeof Location>;
 
-/// Montos en COP, pesos ENTEROS (en DB son Decimal; sobre el cable van como number).
-const MontoCOP = z.number().int().nonnegative();
+const AmountCop = z.number().int().nonnegative();
 
-/// Desglose de la tarifa fija (transparencia: "sin cargos ocultos", doc 11 §1.3).
-export const DesgloseTarifa = z.object({
-  tarifa_base: MontoCOP,
-  recargo_nocturno: MontoCOP, // 0 si no aplica
-  recargo_festivo: MontoCOP,  // 0 si no aplica
-  total: MontoCOP,            // lo que ve y paga el pasajero
-  comision: MontoCOP,         // registrada, NO cobrada en MVP (informativa)
-  moneda: z.literal('COP'),
+export const FareBreakdown = z.object({
+  base_fare: AmountCop,
+  night_surcharge: AmountCop,
+  holiday_surcharge: AmountCop,
+  total: AmountCop,
+  commission: AmountCop,
+  currency: z.literal('COP'),
 });
-export type DesgloseTarifa = z.infer<typeof DesgloseTarifa>;
+export type FareBreakdown = z.infer<typeof FareBreakdown>;
 
-/// ETA estático mostrado como RANGO, nunca exacto (ADR-003).
-export const EtaEstimado = z.object({
-  min_minutos: z.number().int().nonnegative(),
-  max_minutos: z.number().int().nonnegative(),
-  es_estimado: z.literal(true), // recuerda al front que NO es GPS en vivo
+export const EstimatedEta = z.object({
+  min_minutes: z.number().int().nonnegative(),
+  max_minutes: z.number().int().nonnegative(),
+  is_estimate: z.literal(true),
 });
-export type EtaEstimado = z.infer<typeof EtaEstimado>;
+export type EstimatedEta = z.infer<typeof EstimatedEta>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 1 — COTIZAR tarifa (ver la tarifa fija ANTES de confirmar) · HU-04
-// -----------------------------------------------------------------------------
-// POST /trips/cotizar
-//   rol: pasajero   ·   tenant: N/A (solicitud global; se valida cobertura del municipio)
-//   200 Cotizacion   ·   400 datos inválidos   ·   409 FUERA_DE_COBERTURA
-// El servidor calcula la tarifa (NUNCA se confía en un precio del cliente).
-
-export const CotizarTarifaDTO = z.object({
-  origen: Ubicacion,
-  destino: Ubicacion,
-  id_municipio: z.number().int().positive(),
-  tipo_servicio: TipoServicio.default('taxi'),
+export const QuoteFareDTO = z.object({
+  origin: Location,
+  destination: Location,
+  municipality_id: z.number().int().positive(),
+  service_type: ServiceType.default('taxi'),
 });
-export type CotizarTarifaDTO = z.infer<typeof CotizarTarifaDTO>;
+export type QuoteFareDTO = z.infer<typeof QuoteFareDTO>;
 
-export const CotizacionRespuesta = z.object({
-  dentro_cobertura: z.literal(true),
-  tipo_servicio: TipoServicio,
-  metodo_pago: z.literal('efectivo'), // MVP
-  tarifa: DesgloseTarifa,
-  distancia_km: z.number().nonnegative(),
-  eta: EtaEstimado.nullable(), // null si aún no hay conductores en turno
-  // Token opaco que congela la cotización; se envía al crear para cerrar la
-  // tarifa exactamente como se mostró (evita recálculo divergente). TTL corto.
-  cotizacion_token: z.string().min(1),
+export const QuoteResponse = z.object({
+  within_coverage: z.literal(true),
+  service_type: ServiceType,
+  payment_method: z.literal('cash'),
+  fare: FareBreakdown,
+  distance_km: z.number().nonnegative(),
+  eta: EstimatedEta.nullable(),
+  quote_token: z.string().min(1),
 });
-export type CotizacionRespuesta = z.infer<typeof CotizacionRespuesta>;
+export type QuoteResponse = z.infer<typeof QuoteResponse>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 2 — CREAR solicitud · HU-04
-// -----------------------------------------------------------------------------
-// POST /trips
-//   rol: pasajero   ·   tenant: N/A (global)
-//   201 SolicitudCreada   ·   400 inválido   ·   401 no autenticado
-//   409 FUERA_DE_COBERTURA   ·   409 SOLICITUD_ACTIVA_EXISTENTE   ·   410 COTIZACION_EXPIRADA
-// Efecto: crea la solicitud en `pendiente_de_asignacion` y dispara el evento
-// `solicitud_creada` (lo consume el módulo assignment para arrancar nearest-first).
-
-export const CrearSolicitudDTO = z.object({
-  origen: Ubicacion,
-  destino: Ubicacion,
-  id_municipio: z.number().int().positive(),
-  tipo_servicio: TipoServicio.default('taxi'),
-  metodo_pago: MetodoPago.default('efectivo'),
-  // Reutiliza la cotización mostrada; el back revalida y cierra ese precio.
-  cotizacion_token: z.string().min(1),
+export const CreateTripRequestDTO = z.object({
+  origin: Location,
+  destination: Location,
+  municipality_id: z.number().int().positive(),
+  service_type: ServiceType.default('taxi'),
+  payment_method: PaymentMethod.default('cash'),
+  quote_token: z.string().min(1),
 });
-export type CrearSolicitudDTO = z.infer<typeof CrearSolicitudDTO>;
+export type CreateTripRequestDTO = z.infer<typeof CreateTripRequestDTO>;
 
-export const SolicitudCreada = z.object({
-  id_solicitud: z.number().int().positive(),
-  estado: EstadoSolicitud, // esperado: 'pendiente_de_asignacion'
-  tipo_servicio: TipoServicio,
-  metodo_pago: MetodoPago,
-  tarifa: DesgloseTarifa, // precio CERRADO al confirmar (no cambia)
-  fecha_hora_solicitud: z.string().datetime(),
+export const TripRequestCreated = z.object({
+  trip_request_id: z.number().int().positive(),
+  status: TripStatus,
+  service_type: ServiceType,
+  payment_method: PaymentMethod,
+  fare: FareBreakdown,
+  requested_at: z.string().datetime(),
 });
-export type SolicitudCreada = z.infer<typeof SolicitudCreada>;
+export type TripRequestCreated = z.infer<typeof TripRequestCreated>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 3 — CANCELAR solicitud (pasajero) · HU-05
-// -----------------------------------------------------------------------------
-// POST /trips/:id_solicitud/cancelar
-//   rol: pasajero (dueño de la solicitud)   ·   tenant: N/A
-//   200 SolicitudCancelada   ·   403 no es el dueño   ·   404 no existe
-//   409 ESTADO_NO_CANCELABLE (ya en_curso/completada)
-// Reglas (parámetro ventana_cancelacion_min = 2):
-//   - pendiente_de_asignacion  → cancelada_cliente, sin costo.
-//   - asignada ≤ 2 min          → gratuita; el conductor vuelve a `disponible`.
-//   - asignada > 2 min          → penalidad REGISTRADA (no se cobra en MVP, efectivo).
-// Emite `solicitud_cancelada` (assignment libera al conductor / detiene la cadena).
-
-export const CancelarSolicitudDTO = z.object({
-  motivo: z.string().max(280).optional(),
+export const CancelTripRequestDTO = z.object({
+  reason: z.string().max(280).optional(),
 });
-export type CancelarSolicitudDTO = z.infer<typeof CancelarSolicitudDTO>;
+export type CancelTripRequestDTO = z.infer<typeof CancelTripRequestDTO>;
 
-export const SolicitudCancelada = z.object({
-  id_solicitud: z.number().int().positive(),
-  estado: z.literal('cancelada_cliente'),
-  gratuita: z.boolean(),
-  penalidad_registrada: z.boolean(), // true si fue fuera de ventana (no cobrada)
-  cancelada_en: z.string().datetime(),
+export const TripRequestCancelled = z.object({
+  trip_request_id: z.number().int().positive(),
+  status: z.literal('cancelled_by_passenger'),
+  free_of_charge: z.boolean(),
+  penalty_recorded: z.boolean(),
+  cancelled_at: z.string().datetime(),
 });
-export type SolicitudCancelada = z.infer<typeof SolicitudCancelada>;
+export type TripRequestCancelled = z.infer<typeof TripRequestCancelled>;
 
-// -----------------------------------------------------------------------------
-// Estado en vivo de la solicitud (para el pasajero: polling GET o push por socket)
-// -----------------------------------------------------------------------------
-// GET /trips/:id_solicitud   ·   rol: pasajero dueño   ·   200 EstadoSolicitudViaje
-// El campo `conductor` llega solo cuando estado ∈ {asignada, conductor_en_camino, en_curso}.
-
-export const ConductorAsignadoResumen = z.object({
-  nombre: z.string(),
-  placa: z.string(),
-  modelo: z.string().nullable(),
-  telefono_contacto: z.string().nullable(), // botón "Llamar" (número intermediario)
-  eta: EtaEstimado.nullable(),
+export const AssignedDriverSummary = z.object({
+  name: z.string(),
+  plate: z.string(),
+  model: z.string().nullable(),
+  contact_phone: z.string().nullable(),
+  eta: EstimatedEta.nullable(),
 });
-export type ConductorAsignadoResumen = z.infer<typeof ConductorAsignadoResumen>;
+export type AssignedDriverSummary = z.infer<typeof AssignedDriverSummary>;
 
-export const EstadoSolicitudViaje = z.object({
-  id_solicitud: z.number().int().positive(),
-  estado: EstadoSolicitud,
-  ui: EstadoUIPasajero,
-  tarifa: DesgloseTarifa,
-  conductor: ConductorAsignadoResumen.nullable(),
-  actualizado_en: z.string().datetime(),
+export const TripRequestStatus = z.object({
+  trip_request_id: z.number().int().positive(),
+  status: TripStatus,
+  ui: PassengerUiState,
+  fare: FareBreakdown,
+  driver: AssignedDriverSummary.nullable(),
+  updated_at: z.string().datetime(),
 });
-export type EstadoSolicitudViaje = z.infer<typeof EstadoSolicitudViaje>;
+export type TripRequestStatus = z.infer<typeof TripRequestStatus>;
 
-// -----------------------------------------------------------------------------
-// Errores tipados del dominio (consistentes back↔front)
-// -----------------------------------------------------------------------------
-
-export const CodigoErrorTrips = z.enum([
-  'FUERA_DE_COBERTURA',        // 409 — origen/destino fuera del polígono
-  'COTIZACION_EXPIRADA',       // 410 — cotizacion_token vencido → recotizar
-  'SOLICITUD_ACTIVA_EXISTENTE',// 409 — el pasajero ya tiene una solicitud viva
-  'ESTADO_NO_CANCELABLE',      // 409 — ya en_curso/completada
-  'NO_ES_DUENO',               // 403
-  'SOLICITUD_NO_EXISTE',       // 404
-  'TARIFA_NO_CONFIGURADA',     // 409 — no hay ConfiguracionTarifa vigente
+export const TripErrorCode = z.enum([
+  'OUT_OF_COVERAGE',
+  'QUOTE_EXPIRED',
+  'ACTIVE_TRIP_REQUEST_EXISTS',
+  'STATUS_NOT_CANCELLABLE',
+  'NOT_OWNER',
+  'TRIP_REQUEST_NOT_FOUND',
+  'FARE_NOT_CONFIGURED',
 ]);
-export type CodigoErrorTrips = z.infer<typeof CodigoErrorTrips>;
+export type TripErrorCode = z.infer<typeof TripErrorCode>;
 
-export const ErrorTrips = z.object({
-  codigo: CodigoErrorTrips,
-  mensaje: z.string(),
+export const TripError = z.object({
+  code: TripErrorCode,
+  message: z.string(),
 });
-export type ErrorTrips = z.infer<typeof ErrorTrips>;
+export type TripError = z.infer<typeof TripError>;
 
-// -----------------------------------------------------------------------------
-// EVENTOS in-process del dominio trips (NestJS EventEmitter — doc 11 §3.5)
-// -----------------------------------------------------------------------------
-// Nombre estable + payload tipado. `emisor` produce, `consumidores` reaccionan.
-
-export const EVENTOS_TRIPS = {
-  /// emisor: trips  ·  consumidores: assignment (arranca nearest-first), notifications
-  SOLICITUD_CREADA: 'solicitud.creada',
-  /// emisor: trips  ·  consumidores: assignment (libera conductor/para la cadena), notifications
-  SOLICITUD_CANCELADA: 'solicitud.cancelada',
-  /// emisor: assignment→trips  ·  consumidores: notifications (avisa al pasajero), admin (alerta cola)
-  SOLICITUD_SIN_CONDUCTOR: 'solicitud.sin_conductor',
-  /// emisor: trips (scheduler)  ·  consumidores: assignment (aborta), notifications
-  SOLICITUD_EXPIRADA: 'solicitud.expirada',
+export const TRIPS_EVENTS = {
+  TRIP_REQUEST_CREATED: 'trip_request.created',
+  TRIP_REQUEST_CANCELLED: 'trip_request.cancelled',
+  TRIP_REQUEST_NO_DRIVER: 'trip_request.no_driver',
+  TRIP_REQUEST_EXPIRED: 'trip_request.expired',
 } as const;
-export type NombreEventoTrips = (typeof EVENTOS_TRIPS)[keyof typeof EVENTOS_TRIPS];
+export type TripsEventName = (typeof TRIPS_EVENTS)[keyof typeof TRIPS_EVENTS];
 
-export const SolicitudCreadaEvent = z.object({
-  id_solicitud: z.number().int().positive(),
-  id_cliente: z.number().int().positive(),
-  id_municipio: z.number().int().positive(),
-  tipo_servicio: TipoServicio,
-  origen: Coordenada,
-  ocurrido_en: z.string().datetime(),
+export const TripRequestCreatedEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
+  municipality_id: z.number().int().positive(),
+  service_type: ServiceType,
+  origin: Coordinate,
+  occurred_at: z.string().datetime(),
 });
-export type SolicitudCreadaEvent = z.infer<typeof SolicitudCreadaEvent>;
+export type TripRequestCreatedEvent = z.infer<typeof TripRequestCreatedEvent>;
 
-export const SolicitudCanceladaEvent = z.object({
-  id_solicitud: z.number().int().positive(),
-  cancelada_por: z.literal('pasajero'),
-  id_conductor_liberado: z.number().int().positive().nullable(),
-  ocurrido_en: z.string().datetime(),
+export const TripRequestCancelledEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  cancelled_by: z.literal('passenger'),
+  released_driver_id: z.number().int().positive().nullable(),
+  occurred_at: z.string().datetime(),
 });
-export type SolicitudCanceladaEvent = z.infer<typeof SolicitudCanceladaEvent>;
+export type TripRequestCancelledEvent = z.infer<typeof TripRequestCancelledEvent>;
 
-export const SolicitudSinConductorEvent = z.object({
-  id_solicitud: z.number().int().positive(),
-  intentos_realizados: z.number().int().nonnegative(),
-  radio_final_km: z.number().positive(),
-  ocurrido_en: z.string().datetime(),
+export const TripRequestNoDriverEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  attempts_made: z.number().int().nonnegative(),
+  final_radius_km: z.number().positive(),
+  occurred_at: z.string().datetime(),
 });
-export type SolicitudSinConductorEvent = z.infer<typeof SolicitudSinConductorEvent>;
+export type TripRequestNoDriverEvent = z.infer<typeof TripRequestNoDriverEvent>;
 
-export const SolicitudExpiradaEvent = z.object({
-  id_solicitud: z.number().int().positive(),
-  ocurrido_en: z.string().datetime(),
+export const TripRequestExpiredEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  occurred_at: z.string().datetime(),
 });
-export type SolicitudExpiradaEvent = z.infer<typeof SolicitudExpiradaEvent>;
+export type TripRequestExpiredEvent = z.infer<typeof TripRequestExpiredEvent>;

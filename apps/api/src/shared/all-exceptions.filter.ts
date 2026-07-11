@@ -8,12 +8,6 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
-/**
- * Filtro global de excepciones (C-4). Nunca filtra stack ni detalle interno al
- * cliente: los `HttpException` reenvían su cuerpo tipado ({ codigo, mensaje, … });
- * cualquier otro error responde 500 genérico y se registra SOLO el mensaje en
- * servidor (sin stack, sin PII).
- */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -24,16 +18,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
       const body = exception.getResponse();
-      res.status(status).json(typeof body === 'string' ? { mensaje: body } : body);
+      res.status(status).json(typeof body === 'string' ? { message: body } : body);
       return;
     }
 
     this.logger.error(
-      `Error no controlado: ${exception instanceof Error ? exception.message : String(exception)}`,
+      `Unhandled error: ${exception instanceof Error ? exception.message : String(exception)}`,
     );
     res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
-      codigo: 'ERROR_INTERNO',
-      mensaje: 'Error interno del servidor',
+      code: 'INTERNAL_ERROR',
+      message: 'Error interno del servidor',
     });
   }
 }

@@ -1,11 +1,11 @@
 import { type ExecutionContext, ForbiddenException } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
-import type { Rol } from '@voyya/shared';
-import type { RequestConTenant, UsuarioAutenticado } from '../../tenancy/tenant-request';
+import type { Role } from '@voyyaa/shared';
+import type { AuthenticatedUser, RequestWithTenant } from '../../tenancy/tenant-request';
 import { RolesGuard } from './roles.guard';
 
-function contexto(user?: UsuarioAutenticado): ExecutionContext {
-  const req = { user } as RequestConTenant;
+function context(user?: AuthenticatedUser): ExecutionContext {
+  const req = { user } as RequestWithTenant;
   return {
     getHandler: () => () => undefined,
     getClass: () => class {},
@@ -13,31 +13,31 @@ function contexto(user?: UsuarioAutenticado): ExecutionContext {
   } as unknown as ExecutionContext;
 }
 
-function guardCon(roles: Rol[] | undefined): RolesGuard {
+function guardWith(roles: Role[] | undefined): RolesGuard {
   const reflector = { getAllAndOverride: () => roles } as unknown as Reflector;
   return new RolesGuard(reflector);
 }
 
 describe('RolesGuard', () => {
-  it('sin @Roles → permite', () => {
-    const guard = guardCon(undefined);
-    expect(guard.canActivate(contexto({ id_usuario: 1, rol: 'pasajero' }))).toBe(true);
+  it('no @Roles -> allows', () => {
+    const guard = guardWith(undefined);
+    expect(guard.canActivate(context({ userId: 1, role: 'passenger' }))).toBe(true);
   });
 
-  it('rol coincide → permite', () => {
-    const guard = guardCon(['conductor']);
-    expect(guard.canActivate(contexto({ id_usuario: 1, rol: 'conductor', id_empresa: 2 }))).toBe(true);
+  it('role matches -> allows', () => {
+    const guard = guardWith(['driver']);
+    expect(guard.canActivate(context({ userId: 1, role: 'driver', companyId: 2 }))).toBe(true);
   });
 
-  it('rol no autorizado → 403 PROHIBIDO', () => {
-    const guard = guardCon(['conductor']);
-    expect(() => guard.canActivate(contexto({ id_usuario: 1, rol: 'pasajero' }))).toThrow(
+  it('role not authorized -> 403 FORBIDDEN', () => {
+    const guard = guardWith(['driver']);
+    expect(() => guard.canActivate(context({ userId: 1, role: 'passenger' }))).toThrow(
       ForbiddenException,
     );
   });
 
-  it('sin usuario → 403', () => {
-    const guard = guardCon(['admin']);
-    expect(() => guard.canActivate(contexto(undefined))).toThrow(ForbiddenException);
+  it('no user -> 403', () => {
+    const guard = guardWith(['admin']);
+    expect(() => guard.canActivate(context(undefined))).toThrow(ForbiddenException);
   });
 });

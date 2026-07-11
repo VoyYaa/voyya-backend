@@ -1,388 +1,355 @@
 import { Injectable } from '@nestjs/common';
-import type { Asignacion, Prisma } from '@prisma/client';
+import type { Assignment, Prisma } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
-export interface SolicitudInfo {
-  id_solicitud: number;
-  id_cliente: number;
-  id_municipio: number;
-  direccion_recogida: string;
-  direccion_destino: string;
-  lat_recogida: number;
-  lng_recogida: number;
-  tarifa: number;
-  estado: string;
+export interface TripRequestInfo {
+  tripRequestId: number;
+  passengerId: number;
+  municipalityId: number;
+  pickupAddress: string;
+  dropoffAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  fare: number;
+  status: string;
 }
 
-export interface DatosPasajero {
-  nombre: string;
-  telefono: string;
-  direccion_recogida: string;
+export interface PassengerData {
+  name: string;
+  phone: string;
+  pickupAddress: string;
 }
 
-export interface ConductorAsignadoRow {
-  nombre: string;
-  telefono: string;
-  placa: string;
-  modelo: string | null;
+export interface AssignedDriverRow {
+  name: string;
+  phone: string;
+  plate: string;
+  model: string | null;
   lat: number | null;
   lng: number | null;
 }
 
-/** Oferta pendiente para el polling del conductor (GET /assignments/cercanas). */
-export interface OfertaPendiente {
-  id_asignacion: number;
-  id_solicitud: number;
-  expira_en: Date;
-  direccion_recogida: string;
-  direccion_destino: string;
-  lat_recogida: number;
-  lng_recogida: number;
-  tarifa: number;
+export interface PendingOffer {
+  assignmentId: number;
+  tripRequestId: number;
+  expiresAt: Date;
+  pickupAddress: string;
+  dropoffAddress: string;
+  pickupLat: number;
+  pickupLng: number;
+  fare: number;
 }
 
-export interface CrearAsignacionData {
-  idSolicitud: number;
-  idConductor: number;
-  idTaxi: number;
-  idEmpresa: number;
-  ordenIntento: number;
-  expiraEn: Date;
+export interface CreateAssignmentData {
+  tripRequestId: number;
+  driverId: number;
+  vehicleId: number;
+  companyId: number;
+  attemptOrder: number;
+  expiresAt: Date;
 }
 
-/**
- * Acceso a datos del motor de asignación.
- *
- * - Operaciones sobre tablas TENANT (fleet.conductor, assignment.asignacion) reciben
- *   `tx` y DEBEN ejecutarse dentro de `prisma.runInTenant(idEmpresa, ...)`.
- * - DEFENSA EN PROFUNDIDAD (C-2): todas filtran `id_empresa` EXPLÍCITO en el WHERE,
- *   no solo por RLS. Si la RLS quedara inactiva (owner-bypass), el tenant sigue aislado.
- * - Lecturas GLOBALES (solicitud_viaje, empresa, pasajero) usan el cliente directo.
- * - `marcarSolicitudAsignada` escribe trips.solicitud_viaje DENTRO de la transacción
- *   de la toma única: excepción MANDADA por ADR-002.
- */
 @Injectable()
 export class AssignmentRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  // --- Lecturas GLOBALES (sin tenant) ---------------------------------------
-
-  async resolveEmpresaActiva(idMunicipio: number): Promise<number | null> {
-    const empresa = await this.prisma.empresa.findFirst({
-      where: { id_municipio: idMunicipio, estado: 'activa' },
-      orderBy: { id_empresa: 'asc' },
-      select: { id_empresa: true },
+  async resolveActiveCompany(municipalityId: number): Promise<number | null> {
+    const company = await this.prisma.company.findFirst({
+      where: { municipalityId, status: 'active' },
+      orderBy: { companyId: 'asc' },
+      select: { companyId: true },
     });
-    return empresa?.id_empresa ?? null;
+    return company?.companyId ?? null;
   }
 
-  async getSolicitudInfo(idSolicitud: number): Promise<SolicitudInfo | null> {
-    const s = await this.prisma.solicitudViaje.findUnique({
-      where: { id_solicitud: idSolicitud },
+  async getTripRequestInfo(tripRequestId: number): Promise<TripRequestInfo | null> {
+    const t = await this.prisma.tripRequest.findUnique({
+      where: { tripRequestId },
       select: {
-        id_solicitud: true,
-        id_cliente: true,
-        id_municipio: true,
-        direccion_recogida: true,
-        direccion_destino: true,
-        lat_recogida: true,
-        lng_recogida: true,
-        tarifa: true,
-        estado: true,
+        tripRequestId: true,
+        passengerId: true,
+        municipalityId: true,
+        pickupAddress: true,
+        dropoffAddress: true,
+        pickupLat: true,
+        pickupLng: true,
+        fare: true,
+        status: true,
       },
     });
-    if (!s) return null;
-    return { ...s, tarifa: Number(s.tarifa) };
+    if (!t) return null;
+    return { ...t, fare: Number(t.fare) };
   }
 
-  async getDatosPasajero(idSolicitud: number): Promise<DatosPasajero | null> {
-    const s = await this.prisma.solicitudViaje.findUnique({
-      where: { id_solicitud: idSolicitud },
+  async getPassengerData(tripRequestId: number): Promise<PassengerData | null> {
+    const t = await this.prisma.tripRequest.findUnique({
+      where: { tripRequestId },
       select: {
-        direccion_recogida: true,
-        pasajero: {
-          select: { usuario: { select: { nombre: true, apellido: true, telefono: true } } },
+        pickupAddress: true,
+        passenger: {
+          select: { user: { select: { firstName: true, lastName: true, phone: true } } },
         },
       },
     });
-    if (!s) return null;
-    const u = s.pasajero.usuario;
+    if (!t) return null;
+    const u = t.passenger.user;
     return {
-      nombre: `${u.nombre} ${u.apellido}`.trim(),
-      telefono: u.telefono,
-      direccion_recogida: s.direccion_recogida,
+      name: `${u.firstName} ${u.lastName}`.trim(),
+      phone: u.phone,
+      pickupAddress: t.pickupAddress,
     };
   }
 
-  // --- Escrituras/lecturas TENANT (dentro de runInTenant, id_empresa explícito) ---
-
-  async crearAsignacionNotificada(
+  async createNotifiedAssignment(
     tx: Prisma.TransactionClient,
-    data: CrearAsignacionData,
-  ): Promise<Asignacion> {
-    return tx.asignacion.create({
+    data: CreateAssignmentData,
+  ): Promise<Assignment> {
+    return tx.assignment.create({
       data: {
-        id_solicitud: data.idSolicitud,
-        id_conductor: data.idConductor,
-        id_taxi: data.idTaxi,
-        id_empresa: data.idEmpresa,
-        estado: 'notificada',
-        asignado_por: 'sistema',
-        orden_intento: data.ordenIntento,
-        notificada_en: new Date(),
-        expira_en: data.expiraEn,
+        tripRequestId: data.tripRequestId,
+        driverId: data.driverId,
+        vehicleId: data.vehicleId,
+        companyId: data.companyId,
+        status: 'notified',
+        assignedBy: 'system',
+        attemptOrder: data.attemptOrder,
+        notifiedAt: new Date(),
+        expiresAt: data.expiresAt,
       },
     });
   }
 
-  async getAsignacion(
+  async getAssignment(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
-  ): Promise<Asignacion | null> {
-    return tx.asignacion.findFirst({
-      where: { id_asignacion: idAsignacion, id_empresa: idEmpresa },
+    assignmentId: number,
+    companyId: number,
+  ): Promise<Assignment | null> {
+    return tx.assignment.findFirst({
+      where: { assignmentId, companyId },
     });
   }
 
-  async getAsignacionActiva(
+  async getActiveAssignment(
     tx: Prisma.TransactionClient,
-    idSolicitud: number,
-    idEmpresa: number,
-  ): Promise<Asignacion | null> {
-    return tx.asignacion.findFirst({
+    tripRequestId: number,
+    companyId: number,
+  ): Promise<Assignment | null> {
+    return tx.assignment.findFirst({
       where: {
-        id_solicitud: idSolicitud,
-        id_empresa: idEmpresa,
-        estado: { in: ['notificada', 'aceptada'] },
+        tripRequestId,
+        companyId,
+        status: { in: ['notified', 'accepted'] },
       },
-      orderBy: { id_asignacion: 'desc' },
+      orderBy: { assignmentId: 'desc' },
     });
   }
 
-  /** Datos del conductor asignado (aceptada) para el estado del pasajero (P1.1). */
-  async getConductorAsignado(
+  async getAssignedDriver(
     tx: Prisma.TransactionClient,
-    idSolicitud: number,
-    idEmpresa: number,
-  ): Promise<ConductorAsignadoRow | null> {
-    const asig = await tx.asignacion.findFirst({
-      where: { id_solicitud: idSolicitud, id_empresa: idEmpresa, estado: 'aceptada' },
+    tripRequestId: number,
+    companyId: number,
+  ): Promise<AssignedDriverRow | null> {
+    const a = await tx.assignment.findFirst({
+      where: { tripRequestId, companyId, status: 'accepted' },
       select: {
-        conductor: {
+        driver: {
           select: {
-            lat_actual: true,
-            lng_actual: true,
-            usuario: { select: { nombre: true, apellido: true, telefono: true } },
+            currentLat: true,
+            currentLng: true,
+            user: { select: { firstName: true, lastName: true, phone: true } },
           },
         },
-        taxi: { select: { placa: true, modelo: true } },
+        vehicle: { select: { plate: true, model: true } },
       },
     });
-    if (!asig) return null;
-    const u = asig.conductor.usuario;
+    if (!a) return null;
+    const u = a.driver.user;
     return {
-      nombre: `${u.nombre} ${u.apellido}`.trim(),
-      telefono: u.telefono,
-      placa: asig.taxi.placa,
-      modelo: asig.taxi.modelo,
-      lat: asig.conductor.lat_actual,
-      lng: asig.conductor.lng_actual,
+      name: `${u.firstName} ${u.lastName}`.trim(),
+      phone: u.phone,
+      plate: a.vehicle.plate,
+      model: a.vehicle.model,
+      lat: a.driver.currentLat,
+      lng: a.driver.currentLng,
     };
   }
 
-  /**
-   * Ofertas PENDIENTES del conductor (polling · GET /assignments/cercanas): estado
-   * `creada`/`notificada` y no expiradas, del tenant. Lectura pura (no toca estados).
-   */
-  async getOfertasPendientes(
+  async getPendingOffers(
     tx: Prisma.TransactionClient,
-    idConductor: number,
-    idEmpresa: number,
-  ): Promise<OfertaPendiente[]> {
-    const filas = await tx.asignacion.findMany({
+    driverId: number,
+    companyId: number,
+  ): Promise<PendingOffer[]> {
+    const rows = await tx.assignment.findMany({
       where: {
-        id_conductor: idConductor,
-        id_empresa: idEmpresa,
-        estado: { in: ['creada', 'notificada'] },
-        expira_en: { gt: new Date() },
+        driverId,
+        companyId,
+        status: { in: ['created', 'notified'] },
+        expiresAt: { gt: new Date() },
       },
-      orderBy: { fecha_asignacion: 'desc' },
+      orderBy: { assignedAt: 'desc' },
       select: {
-        id_asignacion: true,
-        id_solicitud: true,
-        expira_en: true,
-        solicitud: {
+        assignmentId: true,
+        tripRequestId: true,
+        expiresAt: true,
+        tripRequest: {
           select: {
-            direccion_recogida: true,
-            direccion_destino: true,
-            lat_recogida: true,
-            lng_recogida: true,
-            tarifa: true,
+            pickupAddress: true,
+            dropoffAddress: true,
+            pickupLat: true,
+            pickupLng: true,
+            fare: true,
           },
         },
       },
     });
-    return filas
-      .filter((f): f is typeof f & { expira_en: Date } => f.expira_en !== null)
-      .map((f) => ({
-        id_asignacion: f.id_asignacion,
-        id_solicitud: f.id_solicitud,
-        expira_en: f.expira_en,
-        direccion_recogida: f.solicitud.direccion_recogida,
-        direccion_destino: f.solicitud.direccion_destino,
-        lat_recogida: f.solicitud.lat_recogida,
-        lng_recogida: f.solicitud.lng_recogida,
-        tarifa: Number(f.solicitud.tarifa),
+    return rows
+      .filter((r): r is typeof r & { expiresAt: Date } => r.expiresAt !== null)
+      .map((r) => ({
+        assignmentId: r.assignmentId,
+        tripRequestId: r.tripRequestId,
+        expiresAt: r.expiresAt,
+        pickupAddress: r.tripRequest.pickupAddress,
+        dropoffAddress: r.tripRequest.dropoffAddress,
+        pickupLat: r.tripRequest.pickupLat,
+        pickupLng: r.tripRequest.pickupLng,
+        fare: Number(r.tripRequest.fare),
       }));
   }
 
-  /** Última ubicación conocida del conductor (para la distancia al origen). */
-  async getUbicacionConductor(
+  async getDriverLocation(
     tx: Prisma.TransactionClient,
-    idConductor: number,
-    idEmpresa: number,
+    driverId: number,
+    companyId: number,
   ): Promise<{ lat: number | null; lng: number | null } | null> {
-    const c = await tx.conductor.findFirst({
-      where: { id_conductor: idConductor, id_empresa: idEmpresa },
-      select: { lat_actual: true, lng_actual: true },
+    const d = await tx.driver.findFirst({
+      where: { driverId, companyId },
+      select: { currentLat: true, currentLng: true },
     });
-    if (!c) return null;
-    return { lat: c.lat_actual, lng: c.lng_actual };
+    if (!d) return null;
+    return { lat: d.currentLat, lng: d.currentLng };
   }
 
-  /**
-   * TOMA ÚNICA ATÓMICA (ADR-002 · HU-08). El recurso escaso es la disponibilidad
-   * del conductor. 0 filas ⇒ ya no está 'disponible' ⇒ perdió la carrera.
-   */
-  async tomarConductor(
+  async takeDriver(
     tx: Prisma.TransactionClient,
-    idConductor: number,
-    idEmpresa: number,
+    driverId: number,
+    companyId: number,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_conductor: number }>>`
-      UPDATE fleet.conductor
-         SET estado = 'en_servicio', actualizado_en = now()
-       WHERE id_conductor = ${idConductor}
-         AND estado = 'disponible'
-         AND id_empresa = ${idEmpresa}
-      RETURNING id_conductor
+    const rows = await tx.$queryRaw<Array<{ driver_id: number }>>`
+      UPDATE fleet.driver
+         SET status = 'on_trip', updated_at = now()
+       WHERE driver_id = ${driverId}
+         AND status = 'available'
+         AND company_id = ${companyId}
+      RETURNING driver_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  /** Libera al conductor (en_servicio → disponible) de forma igualmente atómica. */
-  async liberarConductor(
+  async releaseDriver(
     tx: Prisma.TransactionClient,
-    idConductor: number,
-    idEmpresa: number,
+    driverId: number,
+    companyId: number,
   ): Promise<void> {
     await tx.$executeRaw`
-      UPDATE fleet.conductor
-         SET estado = 'disponible', actualizado_en = now()
-       WHERE id_conductor = ${idConductor}
-         AND estado = 'en_servicio'
-         AND id_empresa = ${idEmpresa}
+      UPDATE fleet.driver
+         SET status = 'available', updated_at = now()
+       WHERE driver_id = ${driverId}
+         AND status = 'on_trip'
+         AND company_id = ${companyId}
     `;
   }
 
-  async marcarAsignacionAceptada(
+  async markAssignmentAccepted(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
+    assignmentId: number,
+    companyId: number,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_asignacion: number }>>`
-      UPDATE assignment.asignacion
-         SET estado = 'aceptada', respondida_en = now()
-       WHERE id_asignacion = ${idAsignacion}
-         AND id_empresa = ${idEmpresa}
-         AND estado = 'notificada'
-      RETURNING id_asignacion
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = 'accepted', responded_at = now()
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status = 'notified'
+      RETURNING assignment_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  /**
-   * ADR-002: cambia la solicitud a `asignada` en la MISMA transacción de la toma.
-   * R-03: fija `asignada_en` = now() como base de la ventana gratuita de cancelación.
-   * (solicitud_viaje es GLOBAL, sin RLS por empresa → no lleva id_empresa.)
-   */
-  async marcarSolicitudAsignada(
+  async markTripRequestAssigned(
     tx: Prisma.TransactionClient,
-    idSolicitud: number,
+    tripRequestId: number,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_solicitud: number }>>`
-      UPDATE trips.solicitud_viaje
-         SET estado = 'asignada', asignada_en = now(), actualizado_en = now()
-       WHERE id_solicitud = ${idSolicitud}
-         AND estado = 'pendiente_de_asignacion'
-      RETURNING id_solicitud
+    const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
+      UPDATE trips.trip_request
+         SET status = 'assigned', assigned_at = now(), updated_at = now()
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'pending_assignment'
+      RETURNING trip_request_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  async marcarTimeout(
+  async markTimeout(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
+    assignmentId: number,
+    companyId: number,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_asignacion: number }>>`
-      UPDATE assignment.asignacion
-         SET estado = 'timeout', respondida_en = now()
-       WHERE id_asignacion = ${idAsignacion}
-         AND id_empresa = ${idEmpresa}
-         AND estado = 'notificada'
-      RETURNING id_asignacion
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = 'timeout', responded_at = now()
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status = 'notified'
+      RETURNING assignment_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  async marcarRechazada(
+  async markRejected(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
-    motivo: string | null,
+    assignmentId: number,
+    companyId: number,
+    reason: string | null,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_asignacion: number }>>`
-      UPDATE assignment.asignacion
-         SET estado = 'rechazada', respondida_en = now(), motivo_cancelacion = ${motivo}
-       WHERE id_asignacion = ${idAsignacion}
-         AND id_empresa = ${idEmpresa}
-         AND estado = 'notificada'
-      RETURNING id_asignacion
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = 'rejected', responded_at = now(), cancellation_reason = ${reason}
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status = 'notified'
+      RETURNING assignment_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  async marcarCanceladaConductor(
+  async markCancelledByDriver(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
-    motivo: string,
+    assignmentId: number,
+    companyId: number,
+    reason: string,
   ): Promise<boolean> {
-    const filas = await tx.$queryRaw<Array<{ id_asignacion: number }>>`
-      UPDATE assignment.asignacion
-         SET estado = 'cancelada', respondida_en = now(), motivo_cancelacion = ${motivo}
-       WHERE id_asignacion = ${idAsignacion}
-         AND id_empresa = ${idEmpresa}
-         AND estado = 'aceptada'
-      RETURNING id_asignacion
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = 'cancelled', responded_at = now(), cancellation_reason = ${reason}
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status = 'accepted'
+      RETURNING assignment_id
     `;
-    return filas.length === 1;
+    return rows.length === 1;
   }
 
-  /** Cancela cualquier asignación viva de una solicitud (cancelación del pasajero). */
-  async marcarAsignacionCancelada(
+  async markAssignmentCancelled(
     tx: Prisma.TransactionClient,
-    idAsignacion: number,
-    idEmpresa: number,
+    assignmentId: number,
+    companyId: number,
   ): Promise<void> {
     await tx.$executeRaw`
-      UPDATE assignment.asignacion
-         SET estado = 'cancelada', respondida_en = now()
-       WHERE id_asignacion = ${idAsignacion}
-         AND id_empresa = ${idEmpresa}
-         AND estado IN ('notificada', 'aceptada')
+      UPDATE assignment.assignment
+         SET status = 'cancelled', responded_at = now()
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status IN ('notified', 'accepted')
     `;
   }
 }

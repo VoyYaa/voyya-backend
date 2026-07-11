@@ -14,14 +14,6 @@ import { RolesGuard } from './modules/auth/guards/roles.guard';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
 
-/**
- * Módulo raíz. Monolito modular: cada dominio es un módulo con frontera propia; la
- * comunicación inter-módulo es por eventos in-process (EventEmitter, sin broker).
- *
- * Guards GLOBALES en ORDEN (ADR-005 §7): Throttler → Auth → Roles (los tres en este
- * array para garantizar el orden). El TenantGuard corre después, por controlador.
- * ScheduleModule habilita el barrido de OTP/refresh vencidos (AuthCleanupService).
- */
 @Module({
   imports: [
     AppConfigModule,

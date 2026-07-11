@@ -1,77 +1,56 @@
-import type { DesgloseTarifa } from '@voyya/shared';
-import type { FestivosProvider } from '../festivos/festivos.provider';
-import { esDomingoEnBogota, horaEnBogota } from './bogota-time';
+import type { FareBreakdown } from '@voyyaa/shared';
+import type { HolidaysProvider } from '../holidays/holidays.provider';
+import { isSundayInBogota, hourInBogota } from './bogota-time';
 
-/**
- * Cálculo de TARIFA FIJA del taxi (HU-04). Función PURA (sin DB, sin Nest) salvo el
- * puerto de festivos que recibe por parámetro (DIP): trivialmente testeable.
- * La tarifa se CIERRA al confirmar.
- *
- * R-01: nocturno/festivo se evalúan en `America/Bogota` (no la hora del proceso).
- * R-02: los festivos de calendario los provee un `FestivosProvider` (puerto).
- *
- * Reglas (doc requisitos §HU-04, schema ConfiguracionTarifa):
- *   total = tarifa_base + recargo_nocturno? + recargo_festivo?
- *   comisión = total * comision_pct  (se REGISTRA, no se cobra en MVP)
- * Montos en COP, pesos ENTEROS.
- */
-
-export interface ParametrosTarifa {
-  /** COP entero. */
-  tarifaBase: number;
-  /** Porcentaje, p.ej. 20 = +20% en horario nocturno. */
-  recargoNocturnoPct: number;
-  /** Porcentaje, p.ej. 15 = +15% en domingo/festivo. */
-  recargoFestivoPct: number;
-  /** Porcentaje de comisión de plataforma, p.ej. 8. */
-  comisionPct: number;
+export interface FareParams {
+  baseFare: number;
+  nightSurchargePct: number;
+  holidaySurchargePct: number;
+  commissionPct: number;
 }
 
-export interface ContextoTarifa {
-  /** Instante de la cotización (se interpreta en Bogotá). */
-  fecha: Date;
+export interface FareContext {
+  date: Date;
 }
 
-/** Nocturno: 21:00–04:59 (inclusive), en hora de Bogotá. */
-export const HORA_INICIO_NOCTURNO = 21;
-export const HORA_FIN_NOCTURNO = 5;
+export const NIGHT_START_HOUR = 21;
+export const NIGHT_END_HOUR = 5;
 
-export function esHorarioNocturno(fecha: Date): boolean {
-  const hora = horaEnBogota(fecha);
-  return hora >= HORA_INICIO_NOCTURNO || hora < HORA_FIN_NOCTURNO;
+export function isNightTime(date: Date): boolean {
+  const hour = hourInBogota(date);
+  return hour >= NIGHT_START_HOUR || hour < NIGHT_END_HOUR;
 }
 
-/** Festivo = domingo (Bogotá) o festivo de calendario provisto por el puerto. */
-export function esDiaFestivo(fecha: Date, festivos: FestivosProvider): boolean {
-  return esDomingoEnBogota(fecha) || festivos.esFestivo(fecha);
+export function isHoliday(date: Date, holidays: HolidaysProvider): boolean {
+  return isSundayInBogota(date) || holidays.isHoliday(date);
 }
 
-const porcentaje = (base: number, pct: number): number => Math.round((base * pct) / 100);
+const percentage = (base: number, pct: number): number => Math.round((base * pct) / 100);
 
-export function calcularTarifa(
-  params: ParametrosTarifa,
-  ctx: ContextoTarifa,
-  festivos: FestivosProvider,
-): DesgloseTarifa {
-  const tarifaBase = Math.round(params.tarifaBase);
+export function calculateFare(
+  params: FareParams,
+  ctx: FareContext,
+  holidays: HolidaysProvider,
+): FareBreakdown {
+  const baseFare = Math.round(params.baseFare);
 
-  const recargoNocturno = esHorarioNocturno(ctx.fecha)
-    ? porcentaje(tarifaBase, params.recargoNocturnoPct)
+  const nightSurcharge = isNightTime(ctx.date)
+    ? percentage(baseFare, params.nightSurchargePct)
     : 0;
 
-  const recargoFestivo = esDiaFestivo(ctx.fecha, festivos)
-    ? porcentaje(tarifaBase, params.recargoFestivoPct)
+  const holidaySurcharge = isHoliday(ctx.date, holidays)
+    ? percentage(baseFare, params.holidaySurchargePct)
     : 0;
 
-  const total = tarifaBase + recargoNocturno + recargoFestivo;
-  const comision = porcentaje(total, params.comisionPct);
+  const total = baseFare + nightSurcharge + holidaySurcharge;
+  const commission = percentage(total, params.commissionPct);
 
   return {
-    tarifa_base: tarifaBase,
-    recargo_nocturno: recargoNocturno,
-    recargo_festivo: recargoFestivo,
+    base_fare: baseFare,
+    night_surcharge: nightSurcharge,
+    holiday_surcharge: holidaySurcharge,
     total,
-    comision,
-    moneda: 'COP',
+    commission,
+    currency: 'COP',
   };
 }

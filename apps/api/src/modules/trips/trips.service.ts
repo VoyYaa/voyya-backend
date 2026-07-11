@@ -10,48 +10,41 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import {
-  type AsignacionCanceladaConductorEvent,
-  type CancelarSolicitudDTO,
-  type CotizacionRespuesta,
-  type CotizarTarifaDTO,
-  type CrearSolicitudDTO,
-  type DesgloseTarifa,
-  type EstadoSolicitud,
-  type EstadoSolicitudViaje,
-  EVENTOS_ASSIGNMENT,
-  EVENTOS_TRIPS,
-  MaquinaEstadosViaje,
-  type SolicitudCancelada,
-  type SolicitudCanceladaEvent,
-  type SolicitudCreada,
-  type SolicitudCreadaEvent,
-  type SolicitudSinConductorEvent,
-} from '@voyya/shared';
-import type { SolicitudViaje } from '@prisma/client';
+  type AssignmentCancelledByDriverEvent,
+  type CancelTripRequestDTO,
+  type CreateTripRequestDTO,
+  type FareBreakdown,
+  type QuoteFareDTO,
+  type QuoteResponse,
+  type TripRequestCancelled,
+  type TripRequestCancelledEvent,
+  type TripRequestCreated,
+  type TripRequestCreatedEvent,
+  type TripRequestNoDriverEvent,
+  type TripRequestStatus,
+  type TripStatus,
+  ASSIGNMENT_EVENTS,
+  TRIPS_EVENTS,
+  TripStateMachine,
+} from '@voyyaa/shared';
+import type { TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
 import { AssignmentService } from '../assignment/assignment.service';
-import { calcularTarifa } from './domain/fare.calculator';
+import { calculateFare } from './domain/fare.calculator';
 import { haversineKm } from './domain/geo';
-import { estadoUIPasajero } from './domain/ui-state';
-import { FESTIVOS_PROVIDER, type FestivosProvider } from './festivos/festivos.provider';
+import { passengerUiState } from './domain/ui-state';
+import { HOLIDAYS_PROVIDER, type HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService, type QuotePayload } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
 
 const EPS = 1e-6;
 
-/** Estados en los que la solicitud tiene un conductor asignado (para el resumen). */
-const ESTADOS_CON_CONDUCTOR: readonly EstadoSolicitud[] = [
-  'asignada',
-  'conductor_en_camino',
-  'en_curso',
+const STATUSES_WITH_DRIVER: readonly TripStatus[] = [
+  'assigned',
+  'driver_en_route',
+  'in_progress',
 ];
 
-/**
- * Dominio TRIPS: cotizar (tarifa fija) → crear (cierra tarifa) → cancelar (ventana).
- * Es el ÚNICO escritor de `solicitud_viaje`, salvo la toma única atómica del módulo
- * assignment (excepción mandada por ADR-002: conductor + asignación + solicitud en
- * una sola transacción). El resto de transiciones llegan por eventos.
- */
 @Injectable()
 export class TripsService {
   private readonly logger = new Logger(TripsService.name);
@@ -61,339 +54,304 @@ export class TripsService {
     private readonly quoteToken: QuoteTokenService,
     private readonly env: EnvService,
     private readonly emitter: EventEmitter2,
-    @Inject(FESTIVOS_PROVIDER) private readonly festivos: FestivosProvider,
+    @Inject(HOLIDAYS_PROVIDER) private readonly holidays: HolidaysProvider,
     private readonly assignment: AssignmentService,
   ) {}
 
-  // ---------------------------------------------------------------------------
-  // HU-04 · COTIZAR (ver tarifa fija ANTES de confirmar)
-  // ---------------------------------------------------------------------------
-  async cotizar(dto: CotizarTarifaDTO): Promise<CotizacionRespuesta> {
-    await this.asegurarCobertura(dto.id_municipio, dto.origen, dto.destino);
+  async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
+    await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    const config = await this.repo.getTarifaVigente(dto.id_municipio, dto.tipo_servicio);
+    const config = await this.repo.getActiveFareConfig(dto.municipality_id, dto.service_type);
     if (!config) {
       throw new ConflictException({
-        codigo: 'TARIFA_NO_CONFIGURADA',
-        mensaje: 'No hay tarifa vigente para este municipio/servicio',
+        code: 'FARE_NOT_CONFIGURED',
+        message: 'No hay tarifa vigente para este municipio/servicio',
       });
     }
 
-    const distanciaKm = redondear3(haversineKm(dto.origen, dto.destino));
-    const tarifa = calcularTarifa(
+    const distanceKm = round3(haversineKm(dto.origin, dto.destination));
+    const fare = calculateFare(
       {
-        tarifaBase: Number(config.tarifa_base),
-        recargoNocturnoPct: Number(config.recargo_nocturno_pct),
-        recargoFestivoPct: Number(config.recargo_festivo_pct),
-        comisionPct: Number(config.comision_pct),
+        baseFare: Number(config.baseFare),
+        nightSurchargePct: Number(config.nightSurchargePct),
+        holidaySurchargePct: Number(config.holidaySurchargePct),
+        commissionPct: Number(config.commissionPct),
       },
-      { fecha: new Date() },
-      this.festivos,
+      { date: new Date() },
+      this.holidays,
     );
 
-    const cotizacion_token = this.quoteToken.firmar({
-      id_municipio: dto.id_municipio,
-      tipo_servicio: dto.tipo_servicio,
-      origen: { lat: dto.origen.lat, lng: dto.origen.lng },
-      destino: { lat: dto.destino.lat, lng: dto.destino.lng },
-      distancia_km: distanciaKm,
-      tarifa,
+    const quote_token = this.quoteToken.sign({
+      municipalityId: dto.municipality_id,
+      serviceType: dto.service_type,
+      origin: { lat: dto.origin.lat, lng: dto.origin.lng },
+      destination: { lat: dto.destination.lat, lng: dto.destination.lng },
+      distanceKm,
+      fare,
     });
 
     return {
-      dentro_cobertura: true,
-      tipo_servicio: dto.tipo_servicio,
-      metodo_pago: 'efectivo',
-      tarifa,
-      distancia_km: distanciaKm,
-      // ETA null en la cotización: aún no hay conductor asignado (ADR-003).
+      within_coverage: true,
+      service_type: dto.service_type,
+      payment_method: 'cash',
+      fare,
+      distance_km: distanceKm,
       eta: null,
-      cotizacion_token,
+      quote_token,
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // HU-04 · CREAR (cierra la tarifa exactamente como se cotizó)
-  // ---------------------------------------------------------------------------
-  async crear(dto: CrearSolicitudDTO, idCliente: number): Promise<SolicitudCreada> {
-    const verificacion = this.quoteToken.verificar(dto.cotizacion_token);
-    if (!verificacion.ok) {
-      if (verificacion.razon === 'expirado') {
+  async create(dto: CreateTripRequestDTO, passengerId: number): Promise<TripRequestCreated> {
+    const verification = this.quoteToken.verify(dto.quote_token);
+    if (!verification.ok) {
+      if (verification.reason === 'expired') {
         throw new GoneException({
-          codigo: 'COTIZACION_EXPIRADA',
-          mensaje: 'La cotización venció, vuelve a cotizar',
+          code: 'QUOTE_EXPIRED',
+          message: 'La cotización venció, vuelve a cotizar',
         });
       }
       throw new BadRequestException({
-        codigo: 'DATOS_INVALIDOS',
-        mensaje: 'cotizacion_token inválido',
+        code: 'QUOTE_INVALID',
+        message: 'quote_token inválido',
       });
     }
 
-    const payload = verificacion.payload;
-    if (!this.tokenCoincideConDto(payload, dto)) {
+    const payload = verification.payload;
+    if (!this.tokenMatchesDto(payload, dto)) {
       throw new BadRequestException({
-        codigo: 'DATOS_INVALIDOS',
-        mensaje: 'La cotización no corresponde a la solicitud enviada',
+        code: 'QUOTE_MISMATCH',
+        message: 'La cotización no corresponde a la solicitud enviada',
       });
     }
 
-    // P1.2: revalida cobertura al CREAR (no solo en cotizar) → 409 FUERA_DE_COBERTURA.
-    await this.asegurarCobertura(dto.id_municipio, dto.origen, dto.destino);
+    await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    // Idempotencia: un pasajero no puede tener dos solicitudes vivas a la vez.
-    if (await this.repo.existeSolicitudActiva(idCliente)) {
+    if (await this.repo.hasActiveTripRequest(passengerId)) {
       throw new ConflictException({
-        codigo: 'SOLICITUD_ACTIVA_EXISTENTE',
-        mensaje: 'Ya tienes una solicitud en curso',
+        code: 'ACTIVE_TRIP_REQUEST_EXISTS',
+        message: 'Ya tienes una solicitud en curso',
       });
     }
 
-    const solicitud = await this.repo.crearSolicitud({
-      idCliente,
-      idMunicipio: dto.id_municipio,
-      tipoServicio: dto.tipo_servicio,
-      metodoPago: 'efectivo',
-      direccionRecogida: dto.origen.direccion,
-      direccionDestino: dto.destino.direccion,
-      latRecogida: dto.origen.lat,
-      lngRecogida: dto.origen.lng,
-      latDestino: dto.destino.lat,
-      lngDestino: dto.destino.lng,
-      distanciaKm: payload.distancia_km,
-      // Tarifa CERRADA: se persiste el total y la comisión firmados en la cotización.
-      tarifaTotal: payload.tarifa.total,
-      comision: payload.tarifa.comision,
+    const tripRequest = await this.repo.createTripRequest({
+      passengerId,
+      municipalityId: dto.municipality_id,
+      serviceType: dto.service_type,
+      paymentMethod: 'cash',
+      pickupAddress: dto.origin.address,
+      dropoffAddress: dto.destination.address,
+      pickupLat: dto.origin.lat,
+      pickupLng: dto.origin.lng,
+      dropoffLat: dto.destination.lat,
+      dropoffLng: dto.destination.lng,
+      distanceKm: payload.distanceKm,
+      fareTotal: payload.fare.total,
+      commission: payload.fare.commission,
     });
 
-    this.emitirSolicitudCreada(solicitud);
+    this.emitTripRequestCreated(tripRequest);
 
     return {
-      id_solicitud: solicitud.id_solicitud,
-      estado: 'pendiente_de_asignacion',
-      tipo_servicio: dto.tipo_servicio,
-      metodo_pago: 'efectivo',
-      tarifa: payload.tarifa,
-      fecha_hora_solicitud: solicitud.fecha_hora_solicitud.toISOString(),
+      trip_request_id: tripRequest.tripRequestId,
+      status: 'pending_assignment',
+      service_type: dto.service_type,
+      payment_method: 'cash',
+      fare: payload.fare,
+      requested_at: tripRequest.requestedAt.toISOString(),
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // HU-05 · CANCELAR (pasajero)
-  // ---------------------------------------------------------------------------
-  async cancelar(
-    idSolicitud: number,
-    idCliente: number,
-    _dto: CancelarSolicitudDTO,
-  ): Promise<SolicitudCancelada> {
-    const solicitud = await this.repo.getSolicitud(idSolicitud);
-    if (!solicitud) {
+  async cancel(
+    tripRequestId: number,
+    passengerId: number,
+    _dto: CancelTripRequestDTO,
+  ): Promise<TripRequestCancelled> {
+    const tripRequest = await this.repo.getTripRequest(tripRequestId);
+    if (!tripRequest) {
       throw new NotFoundException({
-        codigo: 'SOLICITUD_NO_EXISTE',
-        mensaje: 'La solicitud no existe',
+        code: 'TRIP_REQUEST_NOT_FOUND',
+        message: 'La solicitud no existe',
       });
     }
-    if (solicitud.id_cliente !== idCliente) {
-      throw new ForbiddenException({ codigo: 'NO_ES_DUENO', mensaje: 'No eres el dueño' });
+    if (tripRequest.passengerId !== passengerId) {
+      throw new ForbiddenException({ code: 'NOT_OWNER', message: 'No eres el dueño' });
     }
 
-    if (!MaquinaEstadosViaje.solicitud.puede(solicitud.estado, 'cancelada_cliente')) {
+    if (
+      !TripStateMachine.tripRequest.canTransition(tripRequest.status, 'cancelled_by_passenger')
+    ) {
       throw new ConflictException({
-        codigo: 'ESTADO_NO_CANCELABLE',
-        mensaje: 'La solicitud ya no se puede cancelar',
+        code: 'STATUS_NOT_CANCELLABLE',
+        message: 'La solicitud ya no se puede cancelar',
       });
     }
 
-    // Ventana gratuita (HU-05): pendiente = siempre gratis; asignada = ≤ ventana min.
-    const ventanaMin = this.env.get('VENTANA_CANCELACION_MIN');
-    let gratuita = true;
-    if (solicitud.estado !== 'pendiente_de_asignacion') {
-      // R-03: la ventana gratuita se mide desde la ACEPTACIÓN (asignada_en), no
-      // desde el último update. Fallback defensivo a actualizado_en si faltara.
-      const referencia = solicitud.asignada_en ?? solicitud.actualizado_en;
-      const minutos = minutosDesde(referencia);
-      gratuita = minutos <= ventanaMin;
+    const windowMin = this.env.get('CANCELLATION_WINDOW_MIN');
+    let freeOfCharge = true;
+    if (tripRequest.status !== 'pending_assignment') {
+      const reference = tripRequest.assignedAt ?? tripRequest.updatedAt;
+      freeOfCharge = minutesSince(reference) <= windowMin;
     }
-    const penalidad_registrada = !gratuita; // se REGISTRA, no se cobra (efectivo · MVP)
+    const penalty_recorded = !freeOfCharge;
 
-    await this.repo.actualizarEstado(idSolicitud, 'cancelada_cliente');
+    await this.repo.updateStatus(tripRequestId, 'cancelled_by_passenger');
 
-    // assignment reacciona: libera al conductor / detiene la cadena.
-    const evento: SolicitudCanceladaEvent = {
-      id_solicitud: idSolicitud,
-      cancelada_por: 'pasajero',
-      id_conductor_liberado: null,
-      ocurrido_en: new Date().toISOString(),
+    const event: TripRequestCancelledEvent = {
+      trip_request_id: tripRequestId,
+      cancelled_by: 'passenger',
+      released_driver_id: null,
+      occurred_at: new Date().toISOString(),
     };
-    this.emitter.emit(EVENTOS_TRIPS.SOLICITUD_CANCELADA, evento);
+    this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_CANCELLED, event);
 
-    if (penalidad_registrada) {
+    if (penalty_recorded) {
       this.logger.warn(
-        `Penalidad registrada (no cobrada) por cancelación tardía solicitud=${idSolicitud}`,
+        `Penalty recorded (not charged) for late cancellation tripRequest=${tripRequestId}`,
       );
     }
 
     return {
-      id_solicitud: idSolicitud,
-      estado: 'cancelada_cliente',
-      gratuita,
-      penalidad_registrada,
-      cancelada_en: new Date().toISOString(),
+      trip_request_id: tripRequestId,
+      status: 'cancelled_by_passenger',
+      free_of_charge: freeOfCharge,
+      penalty_recorded,
+      cancelled_at: new Date().toISOString(),
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // P1.1 · GET /trips/:id — estado del viaje para el pasajero DUEÑO
-  // ---------------------------------------------------------------------------
-  async obtenerEstado(idSolicitud: number, idCliente: number): Promise<EstadoSolicitudViaje> {
-    const s = await this.repo.getSolicitud(idSolicitud);
-    if (!s) {
+  async getStatus(tripRequestId: number, passengerId: number): Promise<TripRequestStatus> {
+    const t = await this.repo.getTripRequest(tripRequestId);
+    if (!t) {
       throw new NotFoundException({
-        codigo: 'SOLICITUD_NO_EXISTE',
-        mensaje: 'La solicitud no existe',
+        code: 'TRIP_REQUEST_NOT_FOUND',
+        message: 'La solicitud no existe',
       });
     }
-    if (s.id_cliente !== idCliente) {
-      throw new ForbiddenException({ codigo: 'NO_ES_DUENO', mensaje: 'No eres el dueño' });
+    if (t.passengerId !== passengerId) {
+      throw new ForbiddenException({ code: 'NOT_OWNER', message: 'No eres el dueño' });
     }
 
-    const conConductor = ESTADOS_CON_CONDUCTOR.includes(s.estado);
-    const conductor = conConductor
-      ? await this.assignment.getResumenConductorAsignado(idSolicitud)
+    const driver = STATUSES_WITH_DRIVER.includes(t.status)
+      ? await this.assignment.getAssignedDriverSummary(tripRequestId)
       : null;
 
     return {
-      id_solicitud: s.id_solicitud,
-      estado: s.estado,
-      ui: estadoUIPasajero(s.estado),
-      tarifa: await this.reconstruirTarifa(s),
-      conductor,
-      actualizado_en: s.actualizado_en.toISOString(),
+      trip_request_id: t.tripRequestId,
+      status: t.status,
+      ui: passengerUiState(t.status),
+      fare: await this.rebuildFare(t),
+      driver,
+      updated_at: t.updatedAt.toISOString(),
     };
   }
 
-  /**
-   * Reconstruye el desglose de tarifa (el modelo persiste total + comisión). El total
-   * es SIEMPRE el CERRADO al confirmar; los recargos se recalculan de forma determinista
-   * desde la config vigente y la fecha de la solicitud. Si hay drift de config, degrada
-   * a una representación plana anclada al total.
-   */
-  private async reconstruirTarifa(s: SolicitudViaje): Promise<DesgloseTarifa> {
-    const total = Number(s.tarifa);
-    const comision = Number(s.comision);
-    const config = await this.repo.getTarifaVigente(s.id_municipio, s.tipo_servicio);
+  private async rebuildFare(t: TripRequest): Promise<FareBreakdown> {
+    const total = Number(t.fare);
+    const commission = Number(t.commission);
+    const config = await this.repo.getActiveFareConfig(t.municipalityId, t.serviceType);
     if (config) {
-      const d = calcularTarifa(
+      const d = calculateFare(
         {
-          tarifaBase: Number(config.tarifa_base),
-          recargoNocturnoPct: Number(config.recargo_nocturno_pct),
-          recargoFestivoPct: Number(config.recargo_festivo_pct),
-          comisionPct: Number(config.comision_pct),
+          baseFare: Number(config.baseFare),
+          nightSurchargePct: Number(config.nightSurchargePct),
+          holidaySurchargePct: Number(config.holidaySurchargePct),
+          commissionPct: Number(config.commissionPct),
         },
-        { fecha: s.fecha_hora_solicitud },
-        this.festivos,
+        { date: t.requestedAt },
+        this.holidays,
       );
-      if (d.total === total) return { ...d, comision };
+      if (d.total === total) return { ...d, commission };
     }
     return {
-      tarifa_base: total,
-      recargo_nocturno: 0,
-      recargo_festivo: 0,
+      base_fare: total,
+      night_surcharge: 0,
+      holiday_surcharge: 0,
       total,
-      comision,
-      moneda: 'COP',
+      commission,
+      currency: 'COP',
     };
   }
 
-  // ---------------------------------------------------------------------------
-  // Reacciones a eventos del motor (trips = único escritor de solicitud_viaje)
-  // ---------------------------------------------------------------------------
-
-  /** Cadena agotada → la solicitud pasa a `sin_conductor`. */
-  @OnEvent(EVENTOS_TRIPS.SOLICITUD_SIN_CONDUCTOR)
-  async onSinConductor(ev: SolicitudSinConductorEvent): Promise<void> {
-    await this.transicionar(ev.id_solicitud, 'sin_conductor');
+  @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_NO_DRIVER)
+  async onNoDriver(ev: TripRequestNoDriverEvent): Promise<void> {
+    await this.transition(ev.trip_request_id, 'no_driver');
   }
 
-  /** Conductor canceló tras aceptar (HU-09) → reabrir y relanzar el motor. */
-  @OnEvent(EVENTOS_ASSIGNMENT.ASIGNACION_CANCELADA_CONDUCTOR)
-  async onCanceladaConductor(ev: AsignacionCanceladaConductorEvent): Promise<void> {
-    const solicitud = await this.repo.getSolicitud(ev.id_solicitud);
-    if (!solicitud) return;
-    if (!MaquinaEstadosViaje.solicitud.puede(solicitud.estado, 'pendiente_de_asignacion')) {
+  @OnEvent(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER)
+  async onCancelledByDriver(ev: AssignmentCancelledByDriverEvent): Promise<void> {
+    const tripRequest = await this.repo.getTripRequest(ev.trip_request_id);
+    if (!tripRequest) return;
+    if (
+      !TripStateMachine.tripRequest.canTransition(tripRequest.status, 'pending_assignment')
+    ) {
       return;
     }
-    await this.repo.actualizarEstado(ev.id_solicitud, 'pendiente_de_asignacion');
-    // Reusa el evento canónico de creación para relanzar nearest-first.
-    this.emitirSolicitudCreada({ ...solicitud, estado: 'pendiente_de_asignacion' });
+    await this.repo.updateStatus(ev.trip_request_id, 'pending_assignment');
+    this.emitTripRequestCreated({ ...tripRequest, status: 'pending_assignment' });
   }
 
-  // ---------------------------------------------------------------------------
-  // Privados
-  // ---------------------------------------------------------------------------
-
-  private async transicionar(
-    idSolicitud: number,
-    hacia: Parameters<typeof MaquinaEstadosViaje.solicitud.assert>[1],
+  private async transition(
+    tripRequestId: number,
+    to: Parameters<typeof TripStateMachine.tripRequest.assert>[1],
   ): Promise<void> {
-    const solicitud = await this.repo.getSolicitud(idSolicitud);
-    if (!solicitud) return;
-    if (!MaquinaEstadosViaje.solicitud.puede(solicitud.estado, hacia)) {
+    const tripRequest = await this.repo.getTripRequest(tripRequestId);
+    if (!tripRequest) return;
+    if (!TripStateMachine.tripRequest.canTransition(tripRequest.status, to)) {
       this.logger.warn(
-        `Transición ignorada solicitud=${idSolicitud}: ${solicitud.estado} → ${hacia}`,
+        `Transition ignored tripRequest=${tripRequestId}: ${tripRequest.status} -> ${to}`,
       );
       return;
     }
-    await this.repo.actualizarEstado(idSolicitud, hacia);
+    await this.repo.updateStatus(tripRequestId, to);
   }
 
-  private emitirSolicitudCreada(solicitud: SolicitudViaje): void {
-    const evento: SolicitudCreadaEvent = {
-      id_solicitud: solicitud.id_solicitud,
-      id_cliente: solicitud.id_cliente,
-      id_municipio: solicitud.id_municipio,
-      tipo_servicio: solicitud.tipo_servicio,
-      origen: { lat: solicitud.lat_recogida, lng: solicitud.lng_recogida },
-      ocurrido_en: new Date().toISOString(),
+  private emitTripRequestCreated(tripRequest: TripRequest): void {
+    const event: TripRequestCreatedEvent = {
+      trip_request_id: tripRequest.tripRequestId,
+      passenger_id: tripRequest.passengerId,
+      municipality_id: tripRequest.municipalityId,
+      service_type: tripRequest.serviceType,
+      origin: { lat: tripRequest.pickupLat, lng: tripRequest.pickupLng },
+      occurred_at: new Date().toISOString(),
     };
-    this.emitter.emit(EVENTOS_TRIPS.SOLICITUD_CREADA, evento);
+    this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_CREATED, event);
   }
 
-  private async asegurarCobertura(
-    idMunicipio: number,
-    origen: { lat: number; lng: number },
-    destino: { lat: number; lng: number },
+  private async ensureCoverage(
+    municipalityId: number,
+    origin: { lat: number; lng: number },
+    destination: { lat: number; lng: number },
   ): Promise<void> {
-    const [origenOk, destinoOk] = await Promise.all([
-      this.repo.puntoDentroDeCobertura(idMunicipio, origen.lng, origen.lat),
-      this.repo.puntoDentroDeCobertura(idMunicipio, destino.lng, destino.lat),
+    const [originOk, destinationOk] = await Promise.all([
+      this.repo.isPointInCoverage(municipalityId, origin.lng, origin.lat),
+      this.repo.isPointInCoverage(municipalityId, destination.lng, destination.lat),
     ]);
-    if (!origenOk || !destinoOk) {
+    if (!originOk || !destinationOk) {
       throw new ConflictException({
-        codigo: 'FUERA_DE_COBERTURA',
-        mensaje: 'El origen o el destino está fuera del área de cobertura',
+        code: 'OUT_OF_COVERAGE',
+        message: 'El origen o el destino está fuera del área de cobertura',
       });
     }
   }
 
-  private tokenCoincideConDto(payload: QuotePayload, dto: CrearSolicitudDTO): boolean {
+  private tokenMatchesDto(payload: QuotePayload, dto: CreateTripRequestDTO): boolean {
     return (
-      payload.id_municipio === dto.id_municipio &&
-      payload.tipo_servicio === dto.tipo_servicio &&
-      casiIgual(payload.origen.lat, dto.origen.lat) &&
-      casiIgual(payload.origen.lng, dto.origen.lng) &&
-      casiIgual(payload.destino.lat, dto.destino.lat) &&
-      casiIgual(payload.destino.lng, dto.destino.lng)
+      payload.municipalityId === dto.municipality_id &&
+      payload.serviceType === dto.service_type &&
+      almostEqual(payload.origin.lat, dto.origin.lat) &&
+      almostEqual(payload.origin.lng, dto.origin.lng) &&
+      almostEqual(payload.destination.lat, dto.destination.lat) &&
+      almostEqual(payload.destination.lng, dto.destination.lng)
     );
   }
 }
 
-function casiIgual(a: number, b: number): boolean {
+function almostEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < EPS;
 }
-function redondear3(n: number): number {
+function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
 }
-function minutosDesde(fecha: Date): number {
-  return (Date.now() - fecha.getTime()) / 60000;
+function minutesSince(date: Date): number {
+  return (Date.now() - date.getTime()) / 60000;
 }

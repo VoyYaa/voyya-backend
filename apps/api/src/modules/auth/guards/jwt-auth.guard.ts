@@ -6,18 +6,12 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { JwtService } from '@nestjs/jwt';
-import { JwtAccessPayload } from '@voyya/shared';
+import { JwtAccessPayload } from '@voyyaa/shared';
 import type { Request } from 'express';
 import { EnvService } from '../../../config/env.service';
-import type { RequestConTenant, UsuarioAutenticado } from '../../tenancy/tenant-request';
+import type { RequestWithTenant, AuthenticatedUser } from '../../tenancy/tenant-request';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
-/**
- * AuthGuard GLOBAL (ADR-005 §7). Salta rutas `@Public()`; en el resto exige
- * `Authorization: Bearer <access_token>`, verifica firma+expiración y puebla
- * `req.user`. El FALLBACK de cabeceras de dev está CENTRALIZADO aquí y GATED:
- * solo si `AUTH_DEV_HEADERS===true` Y `NODE_ENV!=='production'` (ADR-005 §8 · C-1).
- */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(
@@ -33,57 +27,57 @@ export class JwtAuthGuard implements CanActivate {
     ]);
     if (isPublic) return true;
 
-    const req = context.switchToHttp().getRequest<RequestConTenant>();
+    const req = context.switchToHttp().getRequest<RequestWithTenant>();
 
-    const token = extraerBearer(req);
+    const token = extractBearer(req);
     if (token) {
-      const user = this.verificar(token);
-      if (!user) throw sesionRequerida();
+      const user = this.verify(token);
+      if (!user) throw sessionRequired();
       req.user = user;
       return true;
     }
 
-    if (this.devHeadersHabilitado()) {
-      const user = usuarioDesdeHeaders(req);
+    if (this.devHeadersEnabled()) {
+      const user = userFromHeaders(req);
       if (user) {
         req.user = user;
         return true;
       }
     }
 
-    throw sesionRequerida();
+    throw sessionRequired();
   }
 
-  private verificar(token: string): UsuarioAutenticado | null {
+  private verify(token: string): AuthenticatedUser | null {
     let decoded: unknown;
     try {
       decoded = this.jwt.verify(token);
     } catch {
-      return null; // firma inválida o expirado
+      return null;
     }
     const parsed = JwtAccessPayload.safeParse(decoded);
     if (!parsed.success || parsed.data.type !== 'access') return null;
     return {
-      id_usuario: parsed.data.sub,
-      rol: parsed.data.rol,
-      id_empresa: parsed.data.id_empresa,
+      userId: parsed.data.sub,
+      role: parsed.data.role,
+      companyId: parsed.data.company_id,
     };
   }
 
-  private devHeadersHabilitado(): boolean {
+  private devHeadersEnabled(): boolean {
     return this.env.get('AUTH_DEV_HEADERS') === true && this.env.get('NODE_ENV') !== 'production';
   }
 }
 
-function sesionRequerida(): UnauthorizedException {
-  return new UnauthorizedException({ codigo: 'SESION_REQUERIDA', mensaje: 'Sesión requerida' });
+function sessionRequired(): UnauthorizedException {
+  return new UnauthorizedException({ code: 'SESSION_REQUIRED', message: 'Sesión requerida' });
 }
 
-function extraerBearer(req: Request): string | null {
+function extractBearer(req: Request): string | null {
   const h = req.headers.authorization;
   if (typeof h !== 'string') return null;
-  const [tipo, valor] = h.split(' ');
-  return tipo === 'Bearer' && valor ? valor : null;
+  const [type, value] = h.split(' ');
+  return type === 'Bearer' && value ? value : null;
 }
 
 function num(v: unknown): number | undefined {
@@ -91,13 +85,12 @@ function num(v: unknown): number | undefined {
   return n !== undefined && Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
-/** Identidad desde cabeceras de dev (solo cuando el gate está activo). */
-function usuarioDesdeHeaders(req: RequestConTenant): UsuarioAutenticado | null {
-  const idConductor = num(req.headers['x-conductor-id']);
-  if (idConductor !== undefined) {
-    return { id_usuario: idConductor, rol: 'conductor', id_empresa: num(req.headers['x-empresa-id']) };
+function userFromHeaders(req: RequestWithTenant): AuthenticatedUser | null {
+  const driverId = num(req.headers['x-driver-id']);
+  if (driverId !== undefined) {
+    return { userId: driverId, role: 'driver', companyId: num(req.headers['x-company-id']) };
   }
-  const idCliente = num(req.headers['x-cliente-id']);
-  if (idCliente !== undefined) return { id_usuario: idCliente, rol: 'pasajero' };
+  const passengerId = num(req.headers['x-passenger-id']);
+  if (passengerId !== undefined) return { userId: passengerId, role: 'passenger' };
   return null;
 }

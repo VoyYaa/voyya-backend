@@ -1,8 +1,8 @@
 {
-  "name": "@voyya/shared",
+  "name": "@voyyaa/shared",
   "version": "0.0.1",
   "private": true,
-  "description": "Contratos Zod, DTOs, tipos y máquina de estados compartidos (fuente única de verdad back + front).",
+  "description": "Shared Zod contracts, DTOs, types and trip state machine (single source of truth for backend and frontend).",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -17,7 +17,7 @@
     "dev": "tsc -p tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint \"src/**/*.ts\"",
-    "test": "echo \"(shared) sin tests unitarios propios\" && exit 0",
+    "test": "echo \"(shared) no unit tests\" && exit 0",
     "clean": "rimraf dist"
   },
   "dependencies": {

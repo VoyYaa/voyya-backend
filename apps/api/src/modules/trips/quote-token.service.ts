@@ -1,27 +1,21 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import type { DesgloseTarifa } from '@voyya/shared';
+import type { FareBreakdown } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 
-/**
- * Cotización firmada (HMAC-SHA256) con TTL corto. Congela la tarifa mostrada en
- * `cotizar` para que `crear` cierre EXACTAMENTE ese precio (evita recálculo
- * divergente) sin guardar estado en servidor. No transporta PII.
- */
 export interface QuotePayload {
-  id_municipio: number;
-  tipo_servicio: string;
-  origen: { lat: number; lng: number };
-  destino: { lat: number; lng: number };
-  distancia_km: number;
-  tarifa: DesgloseTarifa;
-  /** epoch en segundos. */
+  municipalityId: number;
+  serviceType: string;
+  origin: { lat: number; lng: number };
+  destination: { lat: number; lng: number };
+  distanceKm: number;
+  fare: FareBreakdown;
   exp: number;
 }
 
-export type VerificacionQuote =
+export type QuoteVerification =
   | { ok: true; payload: QuotePayload }
-  | { ok: false; razon: 'invalido' | 'expirado' };
+  | { ok: false; reason: 'invalid' | 'expired' };
 
 function base64url(buf: Buffer | string): string {
   return (typeof buf === 'string' ? Buffer.from(buf) : buf).toString('base64url');
@@ -39,33 +33,33 @@ function safeEqual(a: string, b: string): boolean {
 export class QuoteTokenService {
   constructor(private readonly env: EnvService) {}
 
-  firmar(payload: Omit<QuotePayload, 'exp'>): string {
+  sign(payload: Omit<QuotePayload, 'exp'>): string {
     const exp = Math.floor(Date.now() / 1000) + this.env.get('QUOTE_TOKEN_TTL_SECONDS');
-    const cuerpo = base64url(JSON.stringify({ ...payload, exp } satisfies QuotePayload));
-    return `${cuerpo}.${this.sign(cuerpo)}`;
+    const body = base64url(JSON.stringify({ ...payload, exp } satisfies QuotePayload));
+    return `${body}.${this.signBody(body)}`;
   }
 
-  verificar(token: string): VerificacionQuote {
-    const partes = token.split('.');
-    if (partes.length !== 2) return { ok: false, razon: 'invalido' };
-    const [cuerpo, firma] = partes as [string, string];
-    if (!safeEqual(firma, this.sign(cuerpo))) return { ok: false, razon: 'invalido' };
+  verify(token: string): QuoteVerification {
+    const parts = token.split('.');
+    if (parts.length !== 2) return { ok: false, reason: 'invalid' };
+    const [body, signature] = parts as [string, string];
+    if (!safeEqual(signature, this.signBody(body))) return { ok: false, reason: 'invalid' };
 
     let payload: QuotePayload;
     try {
-      payload = JSON.parse(fromBase64url(cuerpo)) as QuotePayload;
+      payload = JSON.parse(fromBase64url(body)) as QuotePayload;
     } catch {
-      return { ok: false, razon: 'invalido' };
+      return { ok: false, reason: 'invalid' };
     }
     if (typeof payload.exp !== 'number' || payload.exp * 1000 < Date.now()) {
-      return { ok: false, razon: 'expirado' };
+      return { ok: false, reason: 'expired' };
     }
     return { ok: true, payload };
   }
 
-  private sign(cuerpo: string): string {
+  private signBody(body: string): string {
     return base64url(
-      createHmac('sha256', this.env.get('QUOTE_TOKEN_SECRET')).update(cuerpo).digest(),
+      createHmac('sha256', this.env.get('QUOTE_TOKEN_SECRET')).update(body).digest(),
     );
   }
 }

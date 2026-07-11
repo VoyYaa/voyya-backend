@@ -2,110 +2,101 @@ import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { z } from 'zod';
 import {
-  ConductorSuspendidoEvent,
-  LoginAdminDTO,
-  LoginConductorDTO,
+  AdminLoginDTO,
+  DriverLoginDTO,
+  DriverSuspendedEvent,
   LogoutDTO,
+  type LogoutResponse,
   RefreshDTO,
-  type RespuestaLogout,
-  type RespuestaSesion,
-  type SesionTokens,
-  SolicitarOtpDTO,
-  type SolicitarOtpRespuesta,
-  VerificarOtpDTO,
-} from '@voyya/shared';
+  RequestOtpDTO,
+  type RequestOtpResponse,
+  type SessionResponse,
+  type SessionTokens,
+  VerifyOtpDTO,
+} from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AuthService } from './auth.service';
 import { Public } from './decorators/public.decorator';
 import { Roles } from './decorators/roles.decorator';
 
-// A-04: límites por IP/minuto DEDICADOS y más estrictos que el global (100/min).
 const TTL = 60_000;
-const LIMITE = { otpSolicitar: 3, otpVerificar: 10, login: 5, refresh: 30 } as const;
+const LIMIT = { otpRequest: 3, otpVerify: 10, login: 5, refresh: 30 } as const;
 
-/** Rutas PÚBLICAS de autenticación (no exigen access token — ADR-005). */
 @Controller('auth')
 @Public()
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
-  @Post('otp/solicitar')
+  @Post('otp/request')
   @HttpCode(200)
-  @Throttle({ default: { limit: LIMITE.otpSolicitar, ttl: TTL } })
-  solicitarOtp(
-    @Body(new ZodValidationPipe(SolicitarOtpDTO)) dto: SolicitarOtpDTO,
-  ): Promise<SolicitarOtpRespuesta> {
-    return this.auth.solicitarOtp(dto);
+  @Throttle({ default: { limit: LIMIT.otpRequest, ttl: TTL } })
+  requestOtp(
+    @Body(new ZodValidationPipe(RequestOtpDTO)) dto: RequestOtpDTO,
+  ): Promise<RequestOtpResponse> {
+    return this.auth.requestOtp(dto);
   }
 
-  @Post('otp/verificar')
+  @Post('otp/verify')
   @HttpCode(200)
-  @Throttle({ default: { limit: LIMITE.otpVerificar, ttl: TTL } })
-  verificarOtp(
-    @Body(new ZodValidationPipe(VerificarOtpDTO)) dto: VerificarOtpDTO,
+  @Throttle({ default: { limit: LIMIT.otpVerify, ttl: TTL } })
+  verifyOtp(
+    @Body(new ZodValidationPipe(VerifyOtpDTO)) dto: VerifyOtpDTO,
     @Headers('user-agent') userAgent?: string,
-  ): Promise<RespuestaSesion> {
-    return this.auth.verificarOtp(dto, userAgent);
+  ): Promise<SessionResponse> {
+    return this.auth.verifyOtp(dto, userAgent);
   }
 
-  @Post('conductor/login')
+  @Post('driver/login')
   @HttpCode(200)
-  @Throttle({ default: { limit: LIMITE.login, ttl: TTL } })
-  loginConductor(
-    @Body(new ZodValidationPipe(LoginConductorDTO)) dto: LoginConductorDTO,
+  @Throttle({ default: { limit: LIMIT.login, ttl: TTL } })
+  driverLogin(
+    @Body(new ZodValidationPipe(DriverLoginDTO)) dto: DriverLoginDTO,
     @Headers('user-agent') userAgent?: string,
-  ): Promise<RespuestaSesion> {
-    return this.auth.loginConductor(dto, userAgent);
+  ): Promise<SessionResponse> {
+    return this.auth.driverLogin(dto, userAgent);
   }
 
   @Post('admin/login')
   @HttpCode(200)
-  @Throttle({ default: { limit: LIMITE.login, ttl: TTL } })
-  loginAdmin(
-    @Body(new ZodValidationPipe(LoginAdminDTO)) dto: LoginAdminDTO,
+  @Throttle({ default: { limit: LIMIT.login, ttl: TTL } })
+  adminLogin(
+    @Body(new ZodValidationPipe(AdminLoginDTO)) dto: AdminLoginDTO,
     @Headers('user-agent') userAgent?: string,
-  ): Promise<RespuestaSesion> {
-    return this.auth.loginAdmin(dto, userAgent);
+  ): Promise<SessionResponse> {
+    return this.auth.adminLogin(dto, userAgent);
   }
 
   @Post('refresh')
   @HttpCode(200)
-  @Throttle({ default: { limit: LIMITE.refresh, ttl: TTL } })
+  @Throttle({ default: { limit: LIMIT.refresh, ttl: TTL } })
   refresh(
     @Body(new ZodValidationPipe(RefreshDTO)) dto: RefreshDTO,
     @Headers('user-agent') userAgent?: string,
-  ): Promise<SesionTokens> {
+  ): Promise<SessionTokens> {
     return this.auth.refresh(dto, userAgent);
   }
 
   @Post('logout')
   @HttpCode(200)
-  logout(@Body(new ZodValidationPipe(LogoutDTO)) dto: LogoutDTO): Promise<RespuestaLogout> {
+  logout(@Body(new ZodValidationPipe(LogoutDTO)) dto: LogoutDTO): Promise<LogoutResponse> {
     return this.auth.logout(dto);
   }
 }
 
-// Body del endpoint temporal (el servidor añade ocurrido_en).
-const SuspenderConductorDTO = ConductorSuspendidoEvent.omit({ ocurrido_en: true });
-type SuspenderConductorDTO = z.infer<typeof SuspenderConductorDTO>;
+const SuspendDriverDTO = DriverSuspendedEvent.omit({ occurred_at: true });
+type SuspendDriverDTO = z.infer<typeof SuspendDriverDTO>;
 
-/**
- * Endpoint TEMPORAL (D-A06 · A-11) para probar la revocación por suspensión ANTES de
- * que exista el módulo fleet/admin. PROTEGIDO: exige JWT + rol admin. Emite el evento
- * `fleet.conductor_suspendido` que AuthService escucha para revocar las sesiones.
- * TODO(Ciclo fleet/admin): la emisión real vivirá al suspender/bloquear un conductor.
- */
 @Controller('auth/admin')
 export class AuthAdminController {
   constructor(private readonly auth: AuthService) {}
 
-  @Post('suspender-conductor')
+  @Post('suspend-driver')
   @HttpCode(200)
   @Roles('admin')
-  suspenderConductor(
-    @Body(new ZodValidationPipe(SuspenderConductorDTO)) dto: SuspenderConductorDTO,
+  suspendDriver(
+    @Body(new ZodValidationPipe(SuspendDriverDTO)) dto: SuspendDriverDTO,
   ): { ok: true } {
-    this.auth.emitirSuspensionConductor({ ...dto, ocurrido_en: new Date().toISOString() });
+    this.auth.emitDriverSuspension({ ...dto, occurred_at: new Date().toISOString() });
     return { ok: true };
   }
 }

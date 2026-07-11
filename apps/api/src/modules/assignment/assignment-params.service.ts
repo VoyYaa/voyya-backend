@@ -2,21 +2,15 @@ import { Injectable } from '@nestjs/common';
 import { EnvService } from '../../config/env.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
-/** Parámetros del motor (ADR-001). NO hardcodeados: DB → env fallback. */
-export interface ParametrosAsignacion {
-  radioBusquedaKm: number;
-  radioExpansionKm: number;
-  timeoutAceptacionSeg: number;
-  maxReintentos: number;
-  ventanaDesempateHoras: number;
-  velocidadPromedioKmh: number;
+export interface AssignmentParams {
+  searchRadiusKm: number;
+  expansionRadiusKm: number;
+  acceptanceTimeoutSec: number;
+  maxAutoRetries: number;
+  tiebreakWindowHours: number;
+  avgSpeedKmh: number;
 }
 
-/**
- * Resuelve los parámetros del motor. Fuente AUTORITATIVA: tabla `parametros_sistema`
- * (por municipio, con fallback a global). Si una clave no está en DB, cae al valor
- * de entorno (config). Nunca hay "números mágicos" en el código del motor.
- */
 @Injectable()
 export class AssignmentParamsService {
   constructor(
@@ -24,44 +18,31 @@ export class AssignmentParamsService {
     private readonly env: EnvService,
   ) {}
 
-  async obtener(idMunicipio: number): Promise<ParametrosAsignacion> {
-    const filas = await this.prisma.parametrosSistema.findMany({
-      where: { OR: [{ id_municipio: idMunicipio }, { id_municipio: null }] },
+  async get(municipalityId: number): Promise<AssignmentParams> {
+    const rows = await this.prisma.systemParameter.findMany({
+      where: { OR: [{ municipalityId }, { municipalityId: null }] },
     });
 
-    // Prioriza la clave específica del municipio sobre la global.
-    const mapa = new Map<string, string>();
-    for (const f of filas) {
-      if (f.id_municipio === null && mapa.has(f.clave)) continue;
-      mapa.set(f.clave, f.valor);
+    const map = new Map<string, string>();
+    for (const row of rows) {
+      if (row.municipalityId === null && map.has(row.key)) continue;
+      map.set(row.key, row.value);
     }
 
-    const num = (clave: string, fallback: number): number => {
-      const v = mapa.get(clave);
+    const num = (key: string, fallback: number): number => {
+      const v = map.get(key);
       if (v === undefined) return fallback;
       const n = Number(v);
       return Number.isFinite(n) ? n : fallback;
     };
 
     return {
-      radioBusquedaKm: num('radio_busqueda_km', this.env.get('RADIO_BUSQUEDA_KM')),
-      radioExpansionKm: num('radio_expansion_km', this.env.get('RADIO_EXPANSION_KM')),
-      timeoutAceptacionSeg: num(
-        'timeout_aceptacion_seg',
-        this.env.get('TIMEOUT_ACEPTACION_SEG'),
-      ),
-      maxReintentos: num(
-        'max_reintentos_automaticos',
-        this.env.get('MAX_REINTENTOS_AUTOMATICOS'),
-      ),
-      ventanaDesempateHoras: num(
-        'ventana_desempate_viajes_horas',
-        this.env.get('VENTANA_DESEMPATE_VIAJES_HORAS'),
-      ),
-      velocidadPromedioKmh: num(
-        'velocidad_promedio_kmh',
-        this.env.get('VELOCIDAD_PROMEDIO_KMH'),
-      ),
+      searchRadiusKm: num('search_radius_km', this.env.get('SEARCH_RADIUS_KM')),
+      expansionRadiusKm: num('expansion_radius_km', this.env.get('EXPANSION_RADIUS_KM')),
+      acceptanceTimeoutSec: num('acceptance_timeout_sec', this.env.get('ACCEPTANCE_TIMEOUT_SEC')),
+      maxAutoRetries: num('max_auto_retries', this.env.get('MAX_AUTO_RETRIES')),
+      tiebreakWindowHours: num('tiebreak_window_hours', this.env.get('TIEBREAK_WINDOW_HOURS')),
+      avgSpeedKmh: num('avg_speed_kmh', this.env.get('AVG_SPEED_KMH')),
     };
   }
 }

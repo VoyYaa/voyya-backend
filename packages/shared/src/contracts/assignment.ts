@@ -1,283 +1,186 @@
-// =============================================================================
-// VoyYa — Contrato compartido · Dominio ASSIGNMENT (motor de asignación)
-// -----------------------------------------------------------------------------
-// Fase Diseñar (ASDD) · Agente `arquitectura` · skill `arquitectura-contrato-api`
-// Fuente ÚNICA de verdad para backend (NestJS) y app del conductor (Expo).
-// Validación con Zod. Sin `any`. Enums espejo de prisma/schema.prisma.
-//
-// Cubre: aceptar / rechazar / cancelar (conductor) una asignación, el resultado
-// de la TOMA ÚNICA ATÓMICA (HU-08, ADR-002), la notificación al conductor con
-// countdown (HU-07), y los eventos in-process (NestJS EventEmitter — sin broker).
-//
-// Motor: nearest-first + retry chain (ADR-001). Este contrato es TENANT-scoped:
-// toda operación exige `id_empresa` (del JWT del conductor).
-// =============================================================================
-
 import { z } from 'zod';
-import { EstadoSolicitud } from './trips';
+import { TripStatus } from './trips';
 
-// -----------------------------------------------------------------------------
-// Máquina de estados del CONDUCTOR (espejo de Prisma) — relevante para el motor
-// -----------------------------------------------------------------------------
-
-export const EstadoConductor = z.enum([
-  'disponible',
-  'en_servicio',
-  'fuera_de_turno',
-  'inactivo',
-  'suspendido',
-  'bloqueado_documentos',
+export const DriverStatus = z.enum([
+  'available',
+  'on_trip',
+  'off_shift',
+  'inactive',
+  'suspended',
+  'documents_blocked',
 ]);
-export type EstadoConductor = z.infer<typeof EstadoConductor>;
+export type DriverStatus = z.infer<typeof DriverStatus>;
 
-// -----------------------------------------------------------------------------
-// Máquina de estados de la ASIGNACION (doc 11 §2.3) — fuente de verdad compartida
-// -----------------------------------------------------------------------------
-
-export const EstadoAsignacion = z.enum([
-  'creada',
-  'notificada',
-  'aceptada',
-  'rechazada',
+export const AssignmentStatus = z.enum([
+  'created',
+  'notified',
+  'accepted',
+  'rejected',
   'timeout',
-  'cancelada',
-  'finalizada',
+  'cancelled',
+  'completed',
 ]);
-export type EstadoAsignacion = z.infer<typeof EstadoAsignacion>;
+export type AssignmentStatus = z.infer<typeof AssignmentStatus>;
 
-export const TRANSICIONES_ASIGNACION = {
-  creada: ['notificada', 'timeout'],
-  notificada: ['aceptada', 'rechazada', 'timeout'],
-  aceptada: ['cancelada', 'finalizada'],
-  rechazada: [],
+export const ASSIGNMENT_STATUS_TRANSITIONS = {
+  created: ['notified', 'timeout'],
+  notified: ['accepted', 'rejected', 'timeout'],
+  accepted: ['cancelled', 'completed'],
+  rejected: [],
   timeout: [],
-  cancelada: [],
-  finalizada: [],
-} as const satisfies Record<EstadoAsignacion, readonly EstadoAsignacion[]>;
+  cancelled: [],
+  completed: [],
+} as const satisfies Record<AssignmentStatus, readonly AssignmentStatus[]>;
 
-export function puedeTransicionarAsignacion(
-  desde: EstadoAsignacion,
-  hacia: EstadoAsignacion,
-): boolean {
-  return (TRANSICIONES_ASIGNACION[desde] as readonly EstadoAsignacion[]).includes(hacia);
+export function canTransitionAssignmentStatus(from: AssignmentStatus, to: AssignmentStatus): boolean {
+  return (ASSIGNMENT_STATUS_TRANSITIONS[from] as readonly AssignmentStatus[]).includes(to);
 }
 
-// -----------------------------------------------------------------------------
-// Candidato del motor nearest-first (uso interno assignment; no se expone al front)
-// -----------------------------------------------------------------------------
-
-export const CandidatoConductor = z.object({
-  id_conductor: z.number().int().positive(),
-  id_taxi: z.number().int().positive(),
-  distancia_m: z.number().nonnegative(),          // orden primario (haversine/PostGIS)
-  viajes_ultimas_3h: z.number().int().nonnegative(), // desempate (menos viajes gana)
-  orden_intento: z.number().int().positive(),     // posición en la retry chain
+export const DriverCandidate = z.object({
+  driver_id: z.number().int().positive(),
+  vehicle_id: z.number().int().positive(),
+  distance_m: z.number().nonnegative(),
+  trips_last_3h: z.number().int().nonnegative(),
+  attempt_order: z.number().int().positive(),
 });
-export type CandidatoConductor = z.infer<typeof CandidatoConductor>;
+export type DriverCandidate = z.infer<typeof DriverCandidate>;
 
-// -----------------------------------------------------------------------------
-// Notificación al conductor (payload del push / socket) · HU-07
-// -----------------------------------------------------------------------------
-
-export const NotificacionAsignacion = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  origen: z.object({
-    direccion: z.string(),
+export const AssignmentNotification = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  origin: z.object({
+    address: z.string(),
     lat: z.number(),
     lng: z.number(),
   }),
-  destino_barrio: z.string(), // barrio/zona, no dirección exacta hasta aceptar
-  tarifa_total: z.number().int().nonnegative(), // COP
-  distancia_al_origen_m: z.number().nonnegative(),
-  // Countdown de aceptación (parámetro timeout_aceptacion_seg = 15, configurable).
-  expira_en: z.string().datetime(),
-  segundos_para_responder: z.number().int().positive(),
+  dropoff_neighborhood: z.string(),
+  total_fare: z.number().int().nonnegative(),
+  distance_to_origin_m: z.number().nonnegative(),
+  expires_at: z.string().datetime(),
+  seconds_to_respond: z.number().int().positive(),
 });
-export type NotificacionAsignacion = z.infer<typeof NotificacionAsignacion>;
+export type AssignmentNotification = z.infer<typeof AssignmentNotification>;
 
-// -----------------------------------------------------------------------------
-// GET /assignments/cercanas — ofertas PENDIENTES del conductor (POLLING · HU-07)
-// -----------------------------------------------------------------------------
-// rol: conductor · tenant: id_empresa (del JWT). Devuelve las asignaciones del
-// conductor autenticado en estado `creada`/`notificada` y NO expiradas, como un
-// array del MISMO `NotificacionAsignacion` (DRY, sin redefinir campos). Es el
-// PUENTE de polling hasta que exista el PUSH real (Expo Notifications, EV1).
-// TODO(EV1): reemplazar/complementar este polling por push real.
-export const OfertasCercanasRespuesta = z.array(NotificacionAsignacion);
-export type OfertasCercanasRespuesta = z.infer<typeof OfertasCercanasRespuesta>;
+export const NearbyOffersResponse = z.array(AssignmentNotification);
+export type NearbyOffersResponse = z.infer<typeof NearbyOffersResponse>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 1 — ACEPTAR asignación (TOMA ÚNICA ATÓMICA) · HU-07 / HU-08
-// -----------------------------------------------------------------------------
-// POST /assignments/:id_asignacion/aceptar
-//   rol: conductor   ·   tenant: id_empresa (del JWT) OBLIGATORIO
-//   200 ResultadoAceptacion { resultado:'aceptada' }  — este conductor GANÓ
-//   409 ResultadoAceptacion { resultado:'ya_tomada' } — otro ganó la carrera
-//   410 { resultado:'expirada' } — venció el countdown → ya pasó al siguiente
-//   403 no es el conductor notificado   ·   404 asignación no existe
-// Implementación: UPDATE fleet.conductor SET estado='en_servicio'
-//   WHERE id_conductor=$1 AND estado='disponible' AND id_empresa=$tenant RETURNING *;
-//   0 filas ⇒ 'ya_tomada'. La solicitud pasa a `asignada`.
-
-export const AceptarAsignacionDTO = z.object({
-  // Ubicación del conductor al aceptar (refina ETA); opcional.
-  lat_actual: z.number().optional(),
-  lng_actual: z.number().optional(),
+export const AcceptAssignmentDTO = z.object({
+  current_lat: z.number().optional(),
+  current_lng: z.number().optional(),
 });
-export type AceptarAsignacionDTO = z.infer<typeof AceptarAsignacionDTO>;
+export type AcceptAssignmentDTO = z.infer<typeof AcceptAssignmentDTO>;
 
-export const ResultadoAceptacion = z.discriminatedUnion('resultado', [
+export const AcceptAssignmentResult = z.discriminatedUnion('result', [
   z.object({
-    resultado: z.literal('aceptada'),
-    id_asignacion: z.number().int().positive(),
-    id_solicitud: z.number().int().positive(),
-    estado_solicitud: EstadoSolicitud, // esperado: 'asignada'
-    pasajero: z.object({
-      nombre: z.string(),
-      telefono_contacto: z.string().nullable(),
-      direccion_recogida: z.string(), // dirección completa recién al aceptar
+    result: z.literal('accepted'),
+    assignment_id: z.number().int().positive(),
+    trip_request_id: z.number().int().positive(),
+    trip_request_status: TripStatus,
+    passenger: z.object({
+      name: z.string(),
+      contact_phone: z.string().nullable(),
+      pickup_address: z.string(),
     }),
   }),
   z.object({
-    resultado: z.literal('ya_tomada'),
-    // Mensaje UX del requisito: "La solicitud ya fue tomada".
-    mensaje: z.string(),
+    result: z.literal('already_taken'),
+    message: z.string(),
   }),
   z.object({
-    resultado: z.literal('expirada'),
-    mensaje: z.string(),
+    result: z.literal('expired'),
+    message: z.string(),
   }),
 ]);
-export type ResultadoAceptacion = z.infer<typeof ResultadoAceptacion>;
+export type AcceptAssignmentResult = z.infer<typeof AcceptAssignmentResult>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 2 — RECHAZAR asignación (antes de aceptar) · HU-09
-// -----------------------------------------------------------------------------
-// POST /assignments/:id_asignacion/rechazar
-//   rol: conductor   ·   tenant: id_empresa   ·   200 ok   ·   404 no existe
-//   409 ESTADO_INVALIDO (ya no está `notificada`)
-// Efecto: asignación → `rechazada`, sin penalidad. Emite `asignacion_rechazada`
-// → el motor pasa al siguiente candidato de la cadena (HU-08).
-
-export const RechazarAsignacionDTO = z.object({
-  motivo: z.string().max(280).optional(),
+export const RejectAssignmentDTO = z.object({
+  reason: z.string().max(280).optional(),
 });
-export type RechazarAsignacionDTO = z.infer<typeof RechazarAsignacionDTO>;
+export type RejectAssignmentDTO = z.infer<typeof RejectAssignmentDTO>;
 
-// -----------------------------------------------------------------------------
-// Endpoint 3 — CANCELAR asignación (DESPUÉS de aceptar, antes de recoger) · HU-09
-// -----------------------------------------------------------------------------
-// POST /assignments/:id_asignacion/cancelar
-//   rol: conductor   ·   tenant: id_empresa   ·   motivo OBLIGATORIO
-//   200 ok   ·   404 no existe   ·   409 ESTADO_INVALIDO (no está `aceptada`)
-// Efecto: asignación → `cancelada`; la solicitud VUELVE a buscar conductor
-// (pendiente_de_asignacion) o `sin_conductor` si se agota. Registra el evento
-// (motivo, conductor, timestamp) y notifica al pasajero.
-
-export const CancelarAsignacionConductorDTO = z.object({
-  motivo: z.string().min(3).max(280),
+export const CancelAssignmentByDriverDTO = z.object({
+  reason: z.string().min(3).max(280),
 });
-export type CancelarAsignacionConductorDTO = z.infer<typeof CancelarAsignacionConductorDTO>;
+export type CancelAssignmentByDriverDTO = z.infer<typeof CancelAssignmentByDriverDTO>;
 
-export const ResultadoCancelacionConductor = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  estado_solicitud: EstadoSolicitud, // 'pendiente_de_asignacion' o 'sin_conductor'
-  rebuscando: z.boolean(),
+export const CancelAssignmentByDriverResult = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  trip_request_status: TripStatus,
+  searching_again: z.boolean(),
 });
-export type ResultadoCancelacionConductor = z.infer<typeof ResultadoCancelacionConductor>;
+export type CancelAssignmentByDriverResult = z.infer<typeof CancelAssignmentByDriverResult>;
 
-// -----------------------------------------------------------------------------
-// Errores tipados del dominio
-// -----------------------------------------------------------------------------
-
-export const CodigoErrorAssignment = z.enum([
-  'ASIGNACION_NO_EXISTE',   // 404
-  'NO_ES_EL_CONDUCTOR',     // 403 — no es el conductor notificado
-  'ESTADO_INVALIDO',        // 409 — transición no permitida
-  'ASIGNACION_YA_TOMADA',   // 409 — perdió la toma única
-  'ASIGNACION_EXPIRADA',    // 410 — venció el countdown
-  'FUERA_DE_TENANT',        // 403 — id_empresa no coincide (defensa RLS)
+export const AssignmentErrorCode = z.enum([
+  'ASSIGNMENT_NOT_FOUND',
+  'NOT_THE_DRIVER',
+  'INVALID_STATUS',
+  'ASSIGNMENT_ALREADY_TAKEN',
+  'ASSIGNMENT_EXPIRED',
+  'OUT_OF_TENANT',
 ]);
-export type CodigoErrorAssignment = z.infer<typeof CodigoErrorAssignment>;
+export type AssignmentErrorCode = z.infer<typeof AssignmentErrorCode>;
 
-export const ErrorAssignment = z.object({
-  codigo: CodigoErrorAssignment,
-  mensaje: z.string(),
+export const AssignmentError = z.object({
+  code: AssignmentErrorCode,
+  message: z.string(),
 });
-export type ErrorAssignment = z.infer<typeof ErrorAssignment>;
+export type AssignmentError = z.infer<typeof AssignmentError>;
 
-// -----------------------------------------------------------------------------
-// EVENTOS in-process del dominio assignment (NestJS EventEmitter — doc 11 §3.5)
-// -----------------------------------------------------------------------------
-
-export const EVENTOS_ASSIGNMENT = {
-  /// emisor: assignment  ·  consumidores: notifications (push al conductor)
-  ASIGNACION_CREADA: 'asignacion.creada',
-  /// emisor: notifications→assignment  ·  consumidores: assignment (arma countdown)
-  ASIGNACION_NOTIFICADA: 'asignacion.notificada',
-  /// emisor: assignment  ·  consumidores: trips (solicitud→asignada), notifications (avisa al pasajero)
-  /// Este es el `conductor_asignado` que pide el brief.
-  CONDUCTOR_ASIGNADO: 'asignacion.conductor_asignado',
-  /// emisor: assignment  ·  consumidores: assignment (siguiente candidato)
-  ASIGNACION_RECHAZADA: 'asignacion.rechazada',
-  /// emisor: assignment (scheduler del countdown)  ·  consumidores: assignment (siguiente candidato)
-  ASIGNACION_EXPIRADA: 'asignacion.expirada',
-  /// emisor: assignment  ·  consumidores: trips (re-buscar), notifications (avisa al pasajero)
-  ASIGNACION_CANCELADA_CONDUCTOR: 'asignacion.cancelada_conductor',
+export const ASSIGNMENT_EVENTS = {
+  ASSIGNMENT_CREATED: 'assignment.created',
+  ASSIGNMENT_NOTIFIED: 'assignment.notified',
+  DRIVER_ASSIGNED: 'assignment.driver_assigned',
+  ASSIGNMENT_REJECTED: 'assignment.rejected',
+  ASSIGNMENT_EXPIRED: 'assignment.expired',
+  ASSIGNMENT_CANCELLED_BY_DRIVER: 'assignment.cancelled_by_driver',
 } as const;
-export type NombreEventoAssignment =
-  (typeof EVENTOS_ASSIGNMENT)[keyof typeof EVENTOS_ASSIGNMENT];
+export type AssignmentEventName = (typeof ASSIGNMENT_EVENTS)[keyof typeof ASSIGNMENT_EVENTS];
 
-export const AsignacionCreadaEvent = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  id_conductor: z.number().int().positive(),
-  id_empresa: z.number().int().positive(),
-  orden_intento: z.number().int().positive(),
-  expira_en: z.string().datetime(),
-  ocurrido_en: z.string().datetime(),
+export const AssignmentCreatedEvent = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  attempt_order: z.number().int().positive(),
+  expires_at: z.string().datetime(),
+  occurred_at: z.string().datetime(),
 });
-export type AsignacionCreadaEvent = z.infer<typeof AsignacionCreadaEvent>;
+export type AssignmentCreatedEvent = z.infer<typeof AssignmentCreatedEvent>;
 
-/// `conductor_asignado`: un conductor ganó la toma única y aceptó.
-export const ConductorAsignadoEvent = z.object({
-  id_solicitud: z.number().int().positive(),
-  id_asignacion: z.number().int().positive(),
-  id_conductor: z.number().int().positive(),
-  id_taxi: z.number().int().positive(),
-  id_empresa: z.number().int().positive(),
-  ocurrido_en: z.string().datetime(),
+export const DriverAssignedEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  assignment_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  vehicle_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  occurred_at: z.string().datetime(),
 });
-export type ConductorAsignadoEvent = z.infer<typeof ConductorAsignadoEvent>;
+export type DriverAssignedEvent = z.infer<typeof DriverAssignedEvent>;
 
-export const AsignacionRechazadaEvent = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  id_conductor: z.number().int().positive(),
-  motivo: z.string().nullable(),
-  ocurrido_en: z.string().datetime(),
+export const AssignmentRejectedEvent = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  reason: z.string().nullable(),
+  occurred_at: z.string().datetime(),
 });
-export type AsignacionRechazadaEvent = z.infer<typeof AsignacionRechazadaEvent>;
+export type AssignmentRejectedEvent = z.infer<typeof AssignmentRejectedEvent>;
 
-/// `asignacion_expirada`: venció el countdown sin respuesta → siguiente candidato.
-export const AsignacionExpiradaEvent = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  id_conductor: z.number().int().positive(),
-  orden_intento: z.number().int().positive(),
-  ocurrido_en: z.string().datetime(),
+export const AssignmentExpiredEvent = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  attempt_order: z.number().int().positive(),
+  occurred_at: z.string().datetime(),
 });
-export type AsignacionExpiradaEvent = z.infer<typeof AsignacionExpiradaEvent>;
+export type AssignmentExpiredEvent = z.infer<typeof AssignmentExpiredEvent>;
 
-export const AsignacionCanceladaConductorEvent = z.object({
-  id_asignacion: z.number().int().positive(),
-  id_solicitud: z.number().int().positive(),
-  id_conductor: z.number().int().positive(),
-  motivo: z.string(),
-  ocurrido_en: z.string().datetime(),
+export const AssignmentCancelledByDriverEvent = z.object({
+  assignment_id: z.number().int().positive(),
+  trip_request_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  reason: z.string(),
+  occurred_at: z.string().datetime(),
 });
-export type AsignacionCanceladaConductorEvent = z.infer<
-  typeof AsignacionCanceladaConductorEvent
->;
+export type AssignmentCancelledByDriverEvent = z.infer<typeof AssignmentCancelledByDriverEvent>;

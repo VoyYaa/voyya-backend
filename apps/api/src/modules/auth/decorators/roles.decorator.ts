@@ -1,8 +1,7 @@
 import { SetMetadata } from '@nestjs/common';
-import type { Rol } from '@voyya/shared';
+import type { Role } from '@voyyaa/shared';
 
 export const ROLES_KEY = 'roles';
 
-/** Restringe una ruta a los roles indicados (RolesGuard global — ADR-005 §7). */
-export const Roles = (...roles: Rol[]): MethodDecorator & ClassDecorator =>
+export const Roles = (...roles: Role[]): MethodDecorator & ClassDecorator =>
   SetMetadata(ROLES_KEY, roles);

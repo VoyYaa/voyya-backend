@@ -3,19 +3,13 @@ import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { EnvService } from '../../config/env.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
-export interface RefreshRotado {
-  id_usuario: number;
-  refresh_token: string;
+export interface RotatedRefresh {
+  userId: number;
+  refreshToken: string;
 }
 
-const MS_POR_DIA = 86_400_000;
+const MS_PER_DAY = 86_400_000;
 
-/**
- * Ciclo de vida del refresh token (ADR-005 §1/§4). Token OPACO de 256 bits; en DB se
- * guarda SOLO su hash SHA-256 (aleatorio → indexable O(1), sin fuerza bruta que frenar).
- * Rotación en cada uso + detección de reúso (revoca la familia). Global al usuario
- * (sin tenant/RLS).
- */
 @Injectable()
 export class RefreshTokenService {
   constructor(
@@ -23,77 +17,71 @@ export class RefreshTokenService {
     private readonly env: EnvService,
   ) {}
 
-  private hashear(token: string): string {
+  private hashToken(token: string): string {
     return createHash('sha256').update(token).digest('hex');
   }
 
-  private nuevoToken(): { token: string; hash: string; expira: Date } {
+  private newToken(): { token: string; hash: string; expires: Date } {
     const token = randomBytes(32).toString('base64url');
-    const expira = new Date(Date.now() + this.env.get('JWT_REFRESH_TTL_DAYS') * MS_POR_DIA);
-    return { token, hash: this.hashear(token), expira };
+    const expires = new Date(Date.now() + this.env.get('JWT_REFRESH_TTL_DAYS') * MS_PER_DAY);
+    return { token, hash: this.hashToken(token), expires };
   }
 
-  async emitir(idUsuario: number, userAgent?: string): Promise<string> {
-    const { token, hash, expira } = this.nuevoToken();
+  async issue(userId: number, userAgent?: string): Promise<string> {
+    const { token, hash, expires } = this.newToken();
     await this.prisma.refreshToken.create({
-      data: { id_usuario: idUsuario, token_hash: hash, expira_en: expira, user_agent: userAgent ?? null },
+      data: { userId, tokenHash: hash, expiresAt: expires, userAgent: userAgent ?? null },
     });
     return token;
   }
 
-  /** Rotación + detección de reúso. Devuelve id_usuario + refresh NUEVO. */
-  async rotar(token: string, userAgent?: string): Promise<RefreshRotado> {
-    const fila = await this.prisma.refreshToken.findUnique({
-      where: { token_hash: this.hashear(token) },
+  async rotate(token: string, userAgent?: string): Promise<RotatedRefresh> {
+    const row = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: this.hashToken(token) },
     });
-    if (!fila) {
-      throw new UnauthorizedException({ codigo: 'REFRESH_INVALIDO', mensaje: 'Refresh inválido' });
+    if (!row) {
+      throw new UnauthorizedException({ code: 'REFRESH_INVALID', message: 'Refresh inválido' });
     }
-    if (fila.revocado) {
-      // Reúso de un token ya revocado ⇒ posible robo ⇒ revocar TODA la familia.
-      await this.revocarTodosDeUsuario(fila.id_usuario);
-      throw new UnauthorizedException({ codigo: 'REFRESH_REVOCADO', mensaje: 'Sesión revocada' });
+    if (row.revoked) {
+      await this.revokeAllForUser(row.userId);
+      throw new UnauthorizedException({ code: 'REFRESH_REVOKED', message: 'Sesión revocada' });
     }
-    if (fila.expira_en.getTime() < Date.now()) {
-      throw new UnauthorizedException({ codigo: 'REFRESH_EXPIRADO', mensaje: 'Refresh expirado' });
+    if (row.expiresAt.getTime() < Date.now()) {
+      throw new UnauthorizedException({ code: 'REFRESH_EXPIRED', message: 'Refresh expirado' });
     }
 
-    // A-09: CAS atómico — revoca ESTA fila solo si sigue viva. count!==1 ⇒ otra
-    // request la rotó primero (carrera/reúso) ⇒ revoca la familia y rechaza.
     const cas = await this.prisma.refreshToken.updateMany({
-      where: { id: fila.id, revocado: false },
-      data: { revocado: true },
+      where: { id: row.id, revoked: false },
+      data: { revoked: true },
     });
     if (cas.count !== 1) {
-      await this.revocarTodosDeUsuario(fila.id_usuario);
-      throw new UnauthorizedException({ codigo: 'REFRESH_REVOCADO', mensaje: 'Sesión revocada' });
+      await this.revokeAllForUser(row.userId);
+      throw new UnauthorizedException({ code: 'REFRESH_REVOKED', message: 'Sesión revocada' });
     }
 
-    const nuevo = this.nuevoToken();
+    const next = this.newToken();
     await this.prisma.refreshToken.create({
       data: {
-        id_usuario: fila.id_usuario,
-        token_hash: nuevo.hash,
-        expira_en: nuevo.expira,
-        user_agent: userAgent ?? null,
+        userId: row.userId,
+        tokenHash: next.hash,
+        expiresAt: next.expires,
+        userAgent: userAgent ?? null,
       },
     });
-    return { id_usuario: fila.id_usuario, refresh_token: nuevo.token };
+    return { userId: row.userId, refreshToken: next.token };
   }
 
-  /** Logout: revoca la fila si existe (IDEMPOTENTE — no falla si no existe/ya revocada). */
-  async revocar(token: string): Promise<void> {
+  async revoke(token: string): Promise<void> {
     await this.prisma.refreshToken.updateMany({
-      where: { token_hash: this.hashear(token), revocado: false },
-      data: { revocado: true },
+      where: { tokenHash: this.hashToken(token), revoked: false },
+      data: { revoked: true },
     });
   }
 
-  /** Revoca todas las sesiones vivas del usuario (logout-all / suspensión — HU-AUTH-05). */
-  async revocarTodosDeUsuario(idUsuario: number): Promise<number> {
+  async revokeAllForUser(userId: number): Promise<number> {
     const r = await this.prisma.refreshToken.updateMany({
-      where: { id_usuario: idUsuario, revocado: false },
-      data: { revocado: true },
+      where: { userId, revoked: false },
+      data: { revoked: true },
     });
     return r.count;
   }

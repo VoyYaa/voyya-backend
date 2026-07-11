@@ -1,88 +1,68 @@
-// =============================================================================
-// VoyYa — Máquina de estados del viaje (FUENTE ÚNICA DE VERDAD)
-// -----------------------------------------------------------------------------
-// NO redefine transiciones: REUSA las ya tipadas en los contratos
-// (packages/shared/src/contracts/*.ts) y las agrupa en un único objeto para que
-// backend y frontend consuman la MISMA lógica (DRY · coding-standards §DRY).
-//
-// Añade helpers `assert*` (lanzan en transición inválida) que el backend usa para
-// proteger cada cambio de estado — sin duplicar la tabla de transiciones.
-// =============================================================================
-
 import {
-  type EstadoSolicitud,
-  TRANSICIONES_SOLICITUD,
-  puedeTransicionarSolicitud,
+  type TripStatus,
+  TRIP_STATUS_TRANSITIONS,
+  canTransitionTripStatus,
 } from '../contracts/trips';
 import {
-  type EstadoAsignacion,
-  TRANSICIONES_ASIGNACION,
-  puedeTransicionarAsignacion,
+  type AssignmentStatus,
+  ASSIGNMENT_STATUS_TRANSITIONS,
+  canTransitionAssignmentStatus,
 } from '../contracts/assignment';
 
-/** Error de dominio: transición de estado no permitida por la máquina. */
-export class TransicionInvalidaError extends Error {
+export class InvalidTransitionError extends Error {
   constructor(
-    public readonly maquina: 'solicitud' | 'asignacion',
-    public readonly desde: string,
-    public readonly hacia: string,
+    public readonly machine: 'tripRequest' | 'assignment',
+    public readonly from: string,
+    public readonly to: string,
   ) {
-    super(`Transición inválida en ${maquina}: ${desde} → ${hacia}`);
-    this.name = 'TransicionInvalidaError';
+    super(`Invalid transition in ${machine}: ${from} -> ${to}`);
+    this.name = 'InvalidTransitionError';
   }
 }
 
-/**
- * Máquina de estados del viaje — único punto de verdad para las transiciones de
- * `SolicitudViaje` y `Asignacion`. Reusa los predicados de los contratos.
- */
-export const MaquinaEstadosViaje = {
-  solicitud: {
-    transiciones: TRANSICIONES_SOLICITUD,
-    puede: puedeTransicionarSolicitud,
-    siguientes: (desde: EstadoSolicitud): readonly EstadoSolicitud[] =>
-      TRANSICIONES_SOLICITUD[desde],
-    assert: (desde: EstadoSolicitud, hacia: EstadoSolicitud): void => {
-      if (!puedeTransicionarSolicitud(desde, hacia)) {
-        throw new TransicionInvalidaError('solicitud', desde, hacia);
+export const TripStateMachine = {
+  tripRequest: {
+    transitions: TRIP_STATUS_TRANSITIONS,
+    canTransition: canTransitionTripStatus,
+    next: (from: TripStatus): readonly TripStatus[] => TRIP_STATUS_TRANSITIONS[from],
+    assert: (from: TripStatus, to: TripStatus): void => {
+      if (!canTransitionTripStatus(from, to)) {
+        throw new InvalidTransitionError('tripRequest', from, to);
       }
     },
   },
-  asignacion: {
-    transiciones: TRANSICIONES_ASIGNACION,
-    puede: puedeTransicionarAsignacion,
-    siguientes: (desde: EstadoAsignacion): readonly EstadoAsignacion[] =>
-      TRANSICIONES_ASIGNACION[desde],
-    assert: (desde: EstadoAsignacion, hacia: EstadoAsignacion): void => {
-      if (!puedeTransicionarAsignacion(desde, hacia)) {
-        throw new TransicionInvalidaError('asignacion', desde, hacia);
+  assignment: {
+    transitions: ASSIGNMENT_STATUS_TRANSITIONS,
+    canTransition: canTransitionAssignmentStatus,
+    next: (from: AssignmentStatus): readonly AssignmentStatus[] => ASSIGNMENT_STATUS_TRANSITIONS[from],
+    assert: (from: AssignmentStatus, to: AssignmentStatus): void => {
+      if (!canTransitionAssignmentStatus(from, to)) {
+        throw new InvalidTransitionError('assignment', from, to);
       }
     },
   },
 } as const;
 
-/** Estados terminales de una solicitud (no admiten más transiciones). */
-export const ESTADOS_SOLICITUD_TERMINALES: readonly EstadoSolicitud[] = [
-  'completada',
-  'cancelada_cliente',
-  'cancelada_conductor',
-  'sin_conductor',
+export const TERMINAL_TRIP_STATUSES: readonly TripStatus[] = [
+  'completed',
+  'cancelled_by_passenger',
+  'cancelled_by_driver',
+  'no_driver',
   'no_show',
-  'expirada',
+  'expired',
 ];
 
-/** Estados en los que una solicitud está "viva" (bloquea crear otra — idempotencia HU-04). */
-export const ESTADOS_SOLICITUD_ACTIVOS: readonly EstadoSolicitud[] = [
-  'pendiente_de_asignacion',
-  'asignada',
-  'conductor_en_camino',
-  'en_curso',
+export const ACTIVE_TRIP_STATUSES: readonly TripStatus[] = [
+  'pending_assignment',
+  'assigned',
+  'driver_en_route',
+  'in_progress',
 ];
 
-export function esEstadoSolicitudTerminal(estado: EstadoSolicitud): boolean {
-  return ESTADOS_SOLICITUD_TERMINALES.includes(estado);
+export function isTerminalTripStatus(status: TripStatus): boolean {
+  return TERMINAL_TRIP_STATUSES.includes(status);
 }
 
-export function esEstadoSolicitudActivo(estado: EstadoSolicitud): boolean {
-  return ESTADOS_SOLICITUD_ACTIVOS.includes(estado);
+export function isActiveTripStatus(status: TripStatus): boolean {
+  return ACTIVE_TRIP_STATUSES.includes(status);
 }

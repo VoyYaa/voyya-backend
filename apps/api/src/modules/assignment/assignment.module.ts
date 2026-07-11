@@ -8,12 +8,8 @@ import { CandidateRepository } from './candidate.repository';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
 import { SMS_PROVIDER } from './ports/sms-provider.port';
 import { NoopPushProvider } from './providers/noop-push.provider';
-import { crearSmsProvider } from './providers/sms.factory';
+import { createSmsProvider } from './providers/sms.factory';
 
-/**
- * Motor de asignación (núcleo). Los proveedores externos se inyectan por PUERTO
- * (DIP): hoy con stubs no-op; se cambian a Expo/Twilio sin tocar el motor.
- */
 @Module({
   controllers: [AssignmentController],
   providers: [
@@ -22,7 +18,7 @@ import { crearSmsProvider } from './providers/sms.factory';
     CandidateRepository,
     AssignmentParamsService,
     { provide: PUSH_PROVIDER, useClass: NoopPushProvider },
-    { provide: SMS_PROVIDER, useFactory: crearSmsProvider, inject: [EnvService] },
+    { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
   exports: [AssignmentService],
 })

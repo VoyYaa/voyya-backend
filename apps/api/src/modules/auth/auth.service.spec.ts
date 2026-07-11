@@ -17,12 +17,12 @@ function fakeEnv(): EnvService {
   const v: Record<string, unknown> = {
     OTP_LENGTH: 4,
     OTP_TTL_SECONDS: 300,
-    OTP_MAX_INTENTOS: 3,
+    OTP_MAX_ATTEMPTS: 3,
     OTP_RATE_LIMIT_MAX: 3,
-    OTP_RATE_LIMIT_VENTANA_SECONDS: 3600,
-    OTP_REENVIO_COOLDOWN_SECONDS: 30,
-    LOGIN_MAX_INTENTOS: 3,
-    LOGIN_BLOQUEO_MINUTOS: 15,
+    OTP_RATE_LIMIT_WINDOW_SECONDS: 3600,
+    OTP_RESEND_COOLDOWN_SECONDS: 30,
+    LOGIN_MAX_ATTEMPTS: 3,
+    LOGIN_BLOCK_MINUTES: 15,
     JWT_ACCESS_TTL_SECONDS: 900,
     JWT_REFRESH_TTL_DAYS: 30,
     BCRYPT_ROUNDS: 12,
@@ -33,32 +33,32 @@ function fakeEnv(): EnvService {
 type RepoMock = { [K in keyof AuthRepository]: jest.Mock };
 type RefreshMock = { [K in keyof RefreshTokenService]: jest.Mock };
 
-function crear() {
+function create() {
   const repo = {
-    contarOtpDesde: jest.fn(),
-    ultimoOtpCreadoEn: jest.fn(),
-    crearOtp: jest.fn(),
-    getOtpVigente: jest.fn(),
-    incrementarIntentosOtp: jest.fn(),
-    consumirOtp: jest.fn().mockResolvedValue(true),
-    getUsuarioPorTelefono: jest.fn(),
-    getUsuarioPorCorreo: jest.fn(),
-    getUsuario: jest.fn(),
-    crearPasajeroAutoRegistro: jest.fn(),
-    getConductorPorCedula: jest.fn(),
-    getConductorEmpresa: jest.fn(),
-    registrarFalloConductor: jest.fn(),
-    resetIntentosConductor: jest.fn(),
+    countOtpSince: jest.fn(),
+    lastOtpCreatedAt: jest.fn(),
+    createOtp: jest.fn(),
+    getActiveOtp: jest.fn(),
+    incrementOtpAttempts: jest.fn(),
+    consumeOtp: jest.fn().mockResolvedValue(true),
+    getUserByPhone: jest.fn(),
+    getUserByEmail: jest.fn(),
+    getUser: jest.fn(),
+    createPassengerAutoRegister: jest.fn(),
+    getDriverByNationalId: jest.fn(),
+    getDriverCompany: jest.fn(),
+    registerDriverFailure: jest.fn(),
+    resetDriverAttempts: jest.fn(),
   };
   const refreshTokens = {
-    emitir: jest.fn().mockResolvedValue('refresh-1'),
-    rotar: jest.fn(),
-    revocar: jest.fn().mockResolvedValue(undefined),
-    revocarTodosDeUsuario: jest.fn().mockResolvedValue(0),
+    issue: jest.fn().mockResolvedValue('refresh-1'),
+    rotate: jest.fn(),
+    revoke: jest.fn().mockResolvedValue(undefined),
+    revokeAllForUser: jest.fn().mockResolvedValue(0),
   };
   const jwt = { sign: jest.fn().mockReturnValue('access-jwt') };
   const emitter = { emit: jest.fn() };
-  const sms = { enviar: jest.fn().mockResolvedValue(undefined) };
+  const sms = { send: jest.fn().mockResolvedValue(undefined) };
   const hasher: Hasher = {
     hash: jest.fn(async (x: string) => `hashed:${x}`),
     compare: jest.fn(async (x: string, h: string) => h === `hashed:${x}`),
@@ -75,300 +75,304 @@ function crear() {
   return { service, repo, refreshTokens, jwt, emitter, sms, hasher };
 }
 
-/** Captura una HttpException para inspeccionar status + código de dominio. */
-async function capturar(p: Promise<unknown>): Promise<HttpException> {
+async function capture(p: Promise<unknown>): Promise<HttpException> {
   try {
     await p;
   } catch (e) {
     if (e instanceof HttpException) return e;
     throw e;
   }
-  throw new Error('No lanzó excepción');
+  throw new Error('No exception thrown');
 }
-function codigo(e: HttpException): string {
+function code(e: HttpException): string {
   const r = e.getResponse();
-  return typeof r === 'object' && r !== null && 'codigo' in r ? String((r as { codigo: unknown }).codigo) : '';
+  return typeof r === 'object' && r !== null && 'code' in r ? String((r as { code: unknown }).code) : '';
 }
 
-const enFuturo = (): Date => new Date(Date.now() + 60_000);
-const usuarioPasajeroNuevo = {
-  id_usuario: 10,
-  nombre: '',
-  apellido: '',
-  correo: null,
-  contrasena: null,
-  rol: 'pasajero',
-  estado_cuenta: 'activa',
+const inFuture = (): Date => new Date(Date.now() + 60_000);
+const newPassengerUser = {
+  userId: 10,
+  firstName: '',
+  lastName: '',
+  email: null,
+  passwordHash: null,
+  role: 'passenger',
+  accountStatus: 'active',
 };
 
-describe('AuthService.solicitarOtp', () => {
-  it('happy: crea OTP, lo envía por SMS y responde cooldown/TTL', async () => {
-    const { service, repo, sms } = crear();
-    (repo as RepoMock).contarOtpDesde.mockResolvedValue(0);
-    (repo as RepoMock).ultimoOtpCreadoEn.mockResolvedValue(null);
-    (repo as RepoMock).crearOtp.mockResolvedValue(undefined);
+describe('AuthService.requestOtp', () => {
+  it('happy: creates OTP, sends it by SMS and returns cooldown/TTL', async () => {
+    const { service, repo, sms } = create();
+    (repo as RepoMock).countOtpSince.mockResolvedValue(0);
+    (repo as RepoMock).lastOtpCreatedAt.mockResolvedValue(null);
+    (repo as RepoMock).createOtp.mockResolvedValue(undefined);
 
-    const r = await service.solicitarOtp({ telefono: '3001112233' });
+    const r = await service.requestOtp({ phone: '3001112233' });
 
-    expect(r).toEqual({ enviado: true, reenviar_en_seg: 30, expira_en_seg: 300 });
-    expect((repo as RepoMock).crearOtp).toHaveBeenCalledTimes(1);
-    expect((sms as { enviar: jest.Mock }).enviar).toHaveBeenCalledTimes(1);
+    expect(r).toEqual({ sent: true, resend_in_sec: 30, expires_in_sec: 300 });
+    expect((repo as RepoMock).createOtp).toHaveBeenCalledTimes(1);
+    expect((sms as { send: jest.Mock }).send).toHaveBeenCalledTimes(1);
   });
 
-  it('rate-limit por teléfono → 429 OTP_RATE_LIMIT', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).contarOtpDesde.mockResolvedValue(3); // == OTP_RATE_LIMIT_MAX
-    const e = await capturar(service.solicitarOtp({ telefono: '3001112233' }));
+  it('rate-limit by phone -> 429 OTP_RATE_LIMIT', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).countOtpSince.mockResolvedValue(3);
+    const e = await capture(service.requestOtp({ phone: '3001112233' }));
     expect(e.getStatus()).toBe(429);
-    expect(codigo(e)).toBe('OTP_RATE_LIMIT');
+    expect(code(e)).toBe('OTP_RATE_LIMIT');
   });
 
-  it('reenvío antes del cooldown → 429 OTP_RATE_LIMIT', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).contarOtpDesde.mockResolvedValue(0);
-    (repo as RepoMock).ultimoOtpCreadoEn.mockResolvedValue(new Date(Date.now() - 5_000)); // 5s < 30s
-    const e = await capturar(service.solicitarOtp({ telefono: '3001112233' }));
+  it('resend before cooldown -> 429 OTP_RATE_LIMIT', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).countOtpSince.mockResolvedValue(0);
+    (repo as RepoMock).lastOtpCreatedAt.mockResolvedValue(new Date(Date.now() - 5_000));
+    const e = await capture(service.requestOtp({ phone: '3001112233' }));
     expect(e.getStatus()).toBe(429);
   });
 });
 
-describe('AuthService.verificarOtp', () => {
-  it('auto-registro del pasajero + un solo uso (consumido) + tokens', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getOtpVigente.mockResolvedValue({
+describe('AuthService.verifyOtp', () => {
+  it('passenger auto-register + single use (consumed) + tokens', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue({
       id: 1,
-      code_hash: 'hashed:1234',
-      intentos: 0,
-      expira_en: enFuturo(),
+      codeHash: 'hashed:1234',
+      attempts: 0,
+      expiresAt: inFuture(),
     });
-    (repo as RepoMock).getUsuarioPorTelefono.mockResolvedValue(null);
-    (repo as RepoMock).crearPasajeroAutoRegistro.mockResolvedValue(usuarioPasajeroNuevo);
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(null);
+    (repo as RepoMock).createPassengerAutoRegister.mockResolvedValue(newPassengerUser);
 
-    const r = await service.verificarOtp({ telefono: '3001112233', codigo: '1234' });
+    const r = await service.verifyOtp({ phone: '3001112233', code: '1234' });
 
-    expect((repo as RepoMock).consumirOtp).toHaveBeenCalledWith(1); // un solo uso
-    expect((repo as RepoMock).crearPasajeroAutoRegistro).toHaveBeenCalledTimes(1); // auto-registro
-    expect(r.usuario.rol).toBe('pasajero');
-    expect(r.usuario.perfil_completo).toBe(false); // nombre vacío
+    expect((repo as RepoMock).consumeOtp).toHaveBeenCalledWith(1);
+    expect((repo as RepoMock).createPassengerAutoRegister).toHaveBeenCalledTimes(1);
+    expect(r.user.role).toBe('passenger');
+    expect(r.user.profile_complete).toBe(false);
     expect(r.tokens.access_token).toBe('access-jwt');
     expect(r.tokens.refresh_token).toBe('refresh-1');
   });
 
-  it('sin OTP vigente (o vencido) → 410 OTP_EXPIRADO', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getOtpVigente.mockResolvedValue(null);
-    const e = await capturar(service.verificarOtp({ telefono: '3001112233', codigo: '1234' }));
+  it('no active OTP (or expired) -> 410 OTP_EXPIRED', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(null);
+    const e = await capture(service.verifyOtp({ phone: '3001112233', code: '1234' }));
     expect(e).toBeInstanceOf(GoneException);
-    expect(codigo(e)).toBe('OTP_EXPIRADO');
+    expect(code(e)).toBe('OTP_EXPIRED');
   });
 
-  it('código incorrecto → incrementa intentos y 401 OTP_INVALIDO', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getOtpVigente.mockResolvedValue({
+  it('wrong code -> increments attempts and 401 OTP_INVALID', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue({
       id: 7,
-      code_hash: 'hashed:9999',
-      intentos: 0,
-      expira_en: enFuturo(),
+      codeHash: 'hashed:9999',
+      attempts: 0,
+      expiresAt: inFuture(),
     });
-    const e = await capturar(service.verificarOtp({ telefono: '3001112233', codigo: '1234' }));
-    expect((repo as RepoMock).incrementarIntentosOtp).toHaveBeenCalledWith(7);
+    const e = await capture(service.verifyOtp({ phone: '3001112233', code: '1234' }));
+    expect((repo as RepoMock).incrementOtpAttempts).toHaveBeenCalledWith(7);
     expect(e).toBeInstanceOf(UnauthorizedException);
-    expect(codigo(e)).toBe('OTP_INVALIDO');
+    expect(code(e)).toBe('OTP_INVALID');
   });
 
-  it('A-09: consumo atómico perdido (count!==1) → 401 OTP_INVALIDO (no doble sesión)', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getOtpVigente.mockResolvedValue({
+  it('atomic consume lost (count!==1) -> 401 OTP_INVALID (no double session)', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue({
       id: 1,
-      code_hash: 'hashed:1234',
-      intentos: 0,
-      expira_en: enFuturo(),
+      codeHash: 'hashed:1234',
+      attempts: 0,
+      expiresAt: inFuture(),
     });
-    (repo as RepoMock).consumirOtp.mockResolvedValue(false); // otra request lo consumió
-    const e = await capturar(service.verificarOtp({ telefono: '3001112233', codigo: '1234' }));
-    expect(codigo(e)).toBe('OTP_INVALIDO');
+    (repo as RepoMock).consumeOtp.mockResolvedValue(false);
+    const e = await capture(service.verifyOtp({ phone: '3001112233', code: '1234' }));
+    expect(code(e)).toBe('OTP_INVALID');
   });
 
-  it('tope de verificaciones del código → 429 OTP_MAX_INTENTOS', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getOtpVigente.mockResolvedValue({
+  it('code verification cap -> 429 OTP_MAX_ATTEMPTS', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue({
       id: 7,
-      code_hash: 'hashed:1234',
-      intentos: 3, // == OTP_MAX_INTENTOS
-      expira_en: enFuturo(),
+      codeHash: 'hashed:1234',
+      attempts: 3,
+      expiresAt: inFuture(),
     });
-    const e = await capturar(service.verificarOtp({ telefono: '3001112233', codigo: '1234' }));
+    const e = await capture(service.verifyOtp({ phone: '3001112233', code: '1234' }));
     expect(e.getStatus()).toBe(429);
-    expect(codigo(e)).toBe('OTP_MAX_INTENTOS');
+    expect(code(e)).toBe('OTP_MAX_ATTEMPTS');
   });
 });
 
-const conductorBase = {
-  id_conductor: 5,
-  id_empresa: 2,
+const driverBase = {
+  driverId: 5,
+  companyId: 2,
   pin: 'hashed:1234',
-  estado: 'disponible',
-  intentos_fallidos: 0,
-  bloqueado_hasta: null,
-  nombre: 'Juan',
-  apellido: 'Pérez',
-  estado_cuenta: 'activa',
+  status: 'available',
+  failedAttempts: 0,
+  blockedUntil: null,
+  firstName: 'Juan',
+  lastName: 'Pérez',
+  accountStatus: 'active',
 };
 
-describe('AuthService.loginConductor', () => {
-  it('happy: tokens con rol conductor e id_empresa; resetea intentos', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue({ ...conductorBase });
-    const r = await service.loginConductor({ cedula: '71000001', pin: '1234' });
-    expect((repo as RepoMock).resetIntentosConductor).toHaveBeenCalledWith(5);
-    expect(r.usuario.rol).toBe('conductor');
-    expect(r.usuario.id_empresa).toBe(2);
-    expect(r.usuario.perfil_completo).toBe(true);
+describe('AuthService.driverLogin', () => {
+  it('happy: tokens with driver role and companyId; resets attempts', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase });
+    const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
+    expect((repo as RepoMock).resetDriverAttempts).toHaveBeenCalledWith(5);
+    expect(r.user.role).toBe('driver');
+    expect(r.user.company_id).toBe(2);
+    expect(r.user.profile_complete).toBe(true);
   });
 
-  it('PIN incorrecto (bajo el tope) → 401 CREDENCIALES_INVALIDAS y registra fallo', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue({ ...conductorBase, intentos_fallidos: 0 });
-    const e = await capturar(service.loginConductor({ cedula: '71000001', pin: '0000' }));
-    expect((repo as RepoMock).registrarFalloConductor).toHaveBeenCalledWith(5, null);
+  it('wrong PIN (below cap) -> 401 INVALID_CREDENTIALS and records failure', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 0 });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
+    expect((repo as RepoMock).registerDriverFailure).toHaveBeenCalledWith(5, null);
     expect(e).toBeInstanceOf(UnauthorizedException);
-    expect(codigo(e)).toBe('CREDENCIALES_INVALIDAS');
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
 
-  it('PIN incorrecto que alcanza el tope → 429 CUENTA_BLOQUEADA_TEMPORAL', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue({ ...conductorBase, intentos_fallidos: 2 }); // +1 = 3
-    const e = await capturar(service.loginConductor({ cedula: '71000001', pin: '0000' }));
-    const call = (repo as RepoMock).registrarFalloConductor.mock.calls[0];
-    expect(call?.[1]).toBeInstanceOf(Date); // fijó bloqueado_hasta
+  it('wrong PIN reaching the cap -> 429 ACCOUNT_TEMPORARILY_BLOCKED', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 2 });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
+    const call = (repo as RepoMock).registerDriverFailure.mock.calls[0];
+    expect(call?.[1]).toBeInstanceOf(Date);
     expect(e.getStatus()).toBe(429);
-    expect(codigo(e)).toBe('CUENTA_BLOQUEADA_TEMPORAL');
+    expect(code(e)).toBe('ACCOUNT_TEMPORARILY_BLOCKED');
   });
 
-  it('ya bloqueado → 429 sin comparar PIN', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue({
-      ...conductorBase,
-      bloqueado_hasta: enFuturo(),
+  it('already blocked -> 429 without comparing PIN', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      blockedUntil: inFuture(),
     });
-    const e = await capturar(service.loginConductor({ cedula: '71000001', pin: '1234' }));
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
     expect(e.getStatus()).toBe(429);
   });
 
-  it('conductor suspendido → 403 CUENTA_SUSPENDIDA', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue({ ...conductorBase, estado: 'suspendido' });
-    const e = await capturar(service.loginConductor({ cedula: '71000001', pin: '1234' }));
+  it('suspended driver -> 403 ACCOUNT_SUSPENDED', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, status: 'suspended' });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
     expect(e).toBeInstanceOf(ForbiddenException);
-    expect(codigo(e)).toBe('CUENTA_SUSPENDIDA');
+    expect(code(e)).toBe('ACCOUNT_SUSPENDED');
   });
 
-  it('cédula inexistente → 401 (genérico, anti-enumeración)', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getConductorPorCedula.mockResolvedValue(null);
-    const e = await capturar(service.loginConductor({ cedula: '99999999', pin: '1234' }));
-    expect(codigo(e)).toBe('CREDENCIALES_INVALIDAS');
+  it('non-existent national id -> 401 (generic, anti-enumeration)', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue(null);
+    const e = await capture(service.driverLogin({ national_id: '99999999', pin: '1234' }));
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
 });
 
-describe('AuthService.loginAdmin', () => {
+describe('AuthService.adminLogin', () => {
   const admin = {
-    id_usuario: 1,
-    nombre: 'Admin',
-    apellido: 'VoyYa',
-    correo: 'admin@voyya.co',
-    contrasena: 'hashed:Secret12',
-    rol: 'admin',
-    estado_cuenta: 'activa',
+    userId: 1,
+    firstName: 'Admin',
+    lastName: 'VoyYa',
+    email: 'admin@voyya.co',
+    passwordHash: 'hashed:Secret12',
+    role: 'admin',
+    accountStatus: 'active',
   };
 
-  it('happy: tokens con rol admin', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getUsuarioPorCorreo.mockResolvedValue({ ...admin });
-    const r = await service.loginAdmin({ correo: 'admin@voyya.co', password: 'Secret12' });
-    expect(r.usuario.rol).toBe('admin');
-    expect(r.usuario.id_empresa).toBeNull();
+  it('happy: tokens with admin role', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
+    const r = await service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' });
+    expect(r.user.role).toBe('admin');
+    expect(r.user.company_id).toBeNull();
   });
 
-  it('contraseña incorrecta → 401', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getUsuarioPorCorreo.mockResolvedValue({ ...admin });
-    const e = await capturar(service.loginAdmin({ correo: 'admin@voyya.co', password: 'mala1234' }));
-    expect(codigo(e)).toBe('CREDENCIALES_INVALIDAS');
+  it('wrong password -> 401', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'wrong1234' }));
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
 
-  it('usuario sin rol admin/operador → 401', async () => {
-    const { service, repo } = crear();
-    (repo as RepoMock).getUsuarioPorCorreo.mockResolvedValue({ ...admin, rol: 'pasajero' });
-    const e = await capturar(service.loginAdmin({ correo: 'admin@voyya.co', password: 'Secret12' }));
-    expect(codigo(e)).toBe('CREDENCIALES_INVALIDAS');
+  it('user without admin/operator role -> 401', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin, role: 'passenger' });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' }));
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
 });
 
-describe('AuthService.refresh / logout / revocación', () => {
-  it('refresh: usa el token rotado y emite access nuevo', async () => {
-    const { service, repo, refreshTokens } = crear();
-    (refreshTokens as RefreshMock).rotar.mockResolvedValue({ id_usuario: 5, refresh_token: 'nuevo-refresh' });
-    (repo as RepoMock).getUsuario.mockResolvedValue({ ...conductorBase, id_usuario: 5, rol: 'conductor', estado_cuenta: 'activa' });
-    (repo as RepoMock).getConductorEmpresa.mockResolvedValue({ id_empresa: 2, estado: 'disponible' });
+describe('AuthService.refresh / logout / revocation', () => {
+  it('refresh: uses the rotated token and issues a new access', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 5, refreshToken: 'new-refresh' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      ...driverBase,
+      userId: 5,
+      role: 'driver',
+      accountStatus: 'active',
+    });
+    (repo as RepoMock).getDriverCompany.mockResolvedValue({ companyId: 2, status: 'available' });
 
-    const r = await service.refresh({ refresh_token: 'viejo' });
-    expect(r.refresh_token).toBe('nuevo-refresh');
+    const r = await service.refresh({ refresh_token: 'old' });
+    expect(r.refresh_token).toBe('new-refresh');
     expect(r.access_token).toBe('access-jwt');
     expect(r.expires_in).toBe(900);
   });
 
-  it('A-01: refresh de pasajero/admin SUSPENDIDO → 401 REFRESH_REVOCADO + revoca familia', async () => {
-    const { service, repo, refreshTokens } = crear();
-    (refreshTokens as RefreshMock).rotar.mockResolvedValue({ id_usuario: 10, refresh_token: 'nuevo' });
-    (repo as RepoMock).getUsuario.mockResolvedValue({
-      id_usuario: 10,
-      nombre: 'Ana',
-      apellido: 'P',
-      correo: null,
-      contrasena: null,
-      rol: 'pasajero',
-      estado_cuenta: 'suspendida',
+  it('refresh of SUSPENDED passenger/admin -> 401 REFRESH_REVOKED + revokes family', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 10, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      userId: 10,
+      firstName: 'Ana',
+      lastName: 'P',
+      email: null,
+      passwordHash: null,
+      role: 'passenger',
+      accountStatus: 'suspended',
     });
-    const e = await capturar(service.refresh({ refresh_token: 'x' }));
-    expect(codigo(e)).toBe('REFRESH_REVOCADO');
-    expect((refreshTokens as RefreshMock).revocarTodosDeUsuario).toHaveBeenCalledWith(10);
+    const e = await capture(service.refresh({ refresh_token: 'x' }));
+    expect(code(e)).toBe('REFRESH_REVOKED');
+    expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(10);
   });
 
-  it('A-01: refresh de conductor SUSPENDIDO → 401 REFRESH_REVOCADO + revoca familia', async () => {
-    const { service, repo, refreshTokens } = crear();
-    (refreshTokens as RefreshMock).rotar.mockResolvedValue({ id_usuario: 5, refresh_token: 'nuevo' });
-    (repo as RepoMock).getUsuario.mockResolvedValue({
-      id_usuario: 5,
-      nombre: 'J',
-      apellido: 'P',
-      correo: null,
-      contrasena: null,
-      rol: 'conductor',
-      estado_cuenta: 'activa',
+  it('refresh of SUSPENDED driver -> 401 REFRESH_REVOKED + revokes family', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 5, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      userId: 5,
+      firstName: 'J',
+      lastName: 'P',
+      email: null,
+      passwordHash: null,
+      role: 'driver',
+      accountStatus: 'active',
     });
-    (repo as RepoMock).getConductorEmpresa.mockResolvedValue({ id_empresa: 2, estado: 'suspendido' });
-    const e = await capturar(service.refresh({ refresh_token: 'x' }));
-    expect(codigo(e)).toBe('REFRESH_REVOCADO');
-    expect((refreshTokens as RefreshMock).revocarTodosDeUsuario).toHaveBeenCalledWith(5);
+    (repo as RepoMock).getDriverCompany.mockResolvedValue({ companyId: 2, status: 'suspended' });
+    const e = await capture(service.refresh({ refresh_token: 'x' }));
+    expect(code(e)).toBe('REFRESH_REVOKED');
+    expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(5);
   });
 
-  it('logout idempotente → { ok: true } y revoca', async () => {
-    const { service, refreshTokens } = crear();
-    const r = await service.logout({ refresh_token: 'cualquiera' });
+  it('logout is idempotent -> { ok: true } and revokes', async () => {
+    const { service, refreshTokens } = create();
+    const r = await service.logout({ refresh_token: 'anything' });
     expect(r).toEqual({ ok: true });
-    expect((refreshTokens as RefreshMock).revocar).toHaveBeenCalledWith('cualquiera');
+    expect((refreshTokens as RefreshMock).revoke).toHaveBeenCalledWith('anything');
   });
 
-  it('suspensión del conductor → revoca todas sus sesiones (HU-AUTH-05)', async () => {
-    const { service, refreshTokens } = crear();
-    (refreshTokens as RefreshMock).revocarTodosDeUsuario.mockResolvedValue(2);
-    await service.onConductorSuspendido({
-      id_conductor: 5,
-      id_empresa: 2,
-      motivo: 'suspendido',
-      ocurrido_en: new Date().toISOString(),
+  it('driver suspension -> revokes all their sessions', async () => {
+    const { service, refreshTokens } = create();
+    (refreshTokens as RefreshMock).revokeAllForUser.mockResolvedValue(2);
+    await service.onDriverSuspended({
+      driver_id: 5,
+      company_id: 2,
+      reason: 'suspended',
+      occurred_at: new Date().toISOString(),
     });
-    expect((refreshTokens as RefreshMock).revocarTodosDeUsuario).toHaveBeenCalledWith(5);
+    expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(5);
   });
 });

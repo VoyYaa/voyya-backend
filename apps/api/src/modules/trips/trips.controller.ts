@@ -8,63 +8,55 @@ import {
   Post,
 } from '@nestjs/common';
 import {
-  CancelarSolicitudDTO,
-  type CotizacionRespuesta,
-  CotizarTarifaDTO,
-  CrearSolicitudDTO,
-  type EstadoSolicitudViaje,
-  type SolicitudCancelada,
-  type SolicitudCreada,
-} from '@voyya/shared';
+  CancelTripRequestDTO,
+  type QuoteResponse,
+  QuoteFareDTO,
+  CreateTripRequestDTO,
+  type TripRequestStatus,
+  type TripRequestCancelled,
+  type TripRequestCreated,
+} from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentPasajero } from '../tenancy/identity.decorators';
+import { CurrentPassenger } from '../tenancy/identity.decorators';
 import { TripsService } from './trips.service';
 
-/**
- * Endpoints del pasajero (entidad GLOBAL, sin tenant). Exigen JWT + rol `pasajero`
- * (AuthGuard + RolesGuard globales). Validación con esquemas Zod de `@voyya/shared`.
- */
 @Controller('trips')
-@Roles('pasajero')
+@Roles('passenger')
 export class TripsController {
   constructor(private readonly trips: TripsService) {}
 
-  /** POST /trips/cotizar — tarifa fija ANTES de confirmar (HU-04). */
-  @Post('cotizar')
+  @Post('quote')
   @HttpCode(200)
-  cotizar(
-    @Body(new ZodValidationPipe(CotizarTarifaDTO)) dto: CotizarTarifaDTO,
-  ): Promise<CotizacionRespuesta> {
-    return this.trips.cotizar(dto);
+  quote(
+    @Body(new ZodValidationPipe(QuoteFareDTO)) dto: QuoteFareDTO,
+  ): Promise<QuoteResponse> {
+    return this.trips.quote(dto);
   }
 
-  /** POST /trips — crear solicitud (cierra la tarifa) (HU-04). */
   @Post()
-  crear(
-    @Body(new ZodValidationPipe(CrearSolicitudDTO)) dto: CrearSolicitudDTO,
-    @CurrentPasajero() idCliente: number,
-  ): Promise<SolicitudCreada> {
-    return this.trips.crear(dto, idCliente);
+  create(
+    @Body(new ZodValidationPipe(CreateTripRequestDTO)) dto: CreateTripRequestDTO,
+    @CurrentPassenger() passengerId: number,
+  ): Promise<TripRequestCreated> {
+    return this.trips.create(dto, passengerId);
   }
 
-  /** GET /trips/:id — estado del viaje para el pasajero dueño (P1.1). */
   @Get(':id')
-  obtenerEstado(
-    @Param('id', ParseIntPipe) idSolicitud: number,
-    @CurrentPasajero() idCliente: number,
-  ): Promise<EstadoSolicitudViaje> {
-    return this.trips.obtenerEstado(idSolicitud, idCliente);
+  getStatus(
+    @Param('id', ParseIntPipe) tripRequestId: number,
+    @CurrentPassenger() passengerId: number,
+  ): Promise<TripRequestStatus> {
+    return this.trips.getStatus(tripRequestId, passengerId);
   }
 
-  /** POST /trips/:id/cancelar — cancelación del pasajero (HU-05). */
-  @Post(':id/cancelar')
+  @Post(':id/cancel')
   @HttpCode(200)
-  cancelar(
-    @Param('id', ParseIntPipe) idSolicitud: number,
-    @Body(new ZodValidationPipe(CancelarSolicitudDTO)) dto: CancelarSolicitudDTO,
-    @CurrentPasajero() idCliente: number,
-  ): Promise<SolicitudCancelada> {
-    return this.trips.cancelar(idSolicitud, idCliente, dto);
+  cancel(
+    @Param('id', ParseIntPipe) tripRequestId: number,
+    @Body(new ZodValidationPipe(CancelTripRequestDTO)) dto: CancelTripRequestDTO,
+    @CurrentPassenger() passengerId: number,
+  ): Promise<TripRequestCancelled> {
+    return this.trips.cancel(tripRequestId, passengerId, dto);
   }
 }

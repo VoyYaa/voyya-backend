@@ -2,7 +2,7 @@
   "name": "@voyya/api",
   "version": "0.0.1",
   "private": true,
-  "description": "VoyYa API — NestJS (monolito modular). Solicitud + asignación (toma única atómica).",
+  "description": "VoyYa API — NestJS (modular monolith). Trip request + assignment (atomic single-take).",
   "scripts": {
     "prebuild": "prisma generate",
     "build": "nest build",
@@ -17,7 +17,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
-    "prisma:sql": "echo \"Aplica prisma/sql/00_postgis_rls.sql tras 'prisma migrate' (PostGIS + RLS + índice único parcial)\"",
+    "prisma:sql": "echo \"Apply prisma/sql/00_postgis_rls.sql after 'prisma migrate' (PostGIS + RLS + partial unique index)\"",
     "db:seed": "ts-node prisma/seed.ts"
   },
   "prisma": {
@@ -33,7 +33,7 @@
     "@nestjs/schedule": "^4.1.2",
     "@nestjs/throttler": "^6.4.0",
     "@prisma/client": "^5.20.0",
-    "@voyya/shared": "workspace:*",
+    "@voyyaa/shared": "workspace:*",
     "bcryptjs": "^2.4.3",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

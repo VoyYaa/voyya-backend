@@ -4,7 +4,7 @@ import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import twilio from 'twilio';
 import type { EnvService } from '../../../config/env.service';
 import { NoopSmsProvider } from './noop-sms.provider';
-import { crearSmsProvider } from './sms.factory';
+import { createSmsProvider } from './sms.factory';
 import { TwilioSmsProvider } from './twilio-sms.provider';
 
 const twilioMock = twilio as unknown as jest.Mock;
@@ -18,9 +18,9 @@ describe('TwilioSmsProvider', () => {
     twilioMock.mockReturnValue({ messages: { create: createMock } });
   });
 
-  it('formatea a E.164 (+57 para 10 dígitos) y usa el `from` configurado', async () => {
+  it('formats to E.164 (+57 for 10 digits) and uses the configured `from`', async () => {
     const p = new TwilioSmsProvider(CONFIG);
-    await p.enviar('3001112233', 'Tu código VoyYa es 1234');
+    await p.send('3001112233', 'Tu código VoyYa es 1234');
     expect(createMock).toHaveBeenCalledWith({
       to: '+573001112233',
       from: '+15550001111',
@@ -28,35 +28,35 @@ describe('TwilioSmsProvider', () => {
     });
   });
 
-  it('respeta un teléfono que ya viene en E.164', async () => {
+  it('respects a phone already in E.164', async () => {
     const p = new TwilioSmsProvider(CONFIG);
-    await p.enviar('+13105551234', 'x');
+    await p.send('+13105551234', 'x');
     expect(createMock).toHaveBeenCalledWith(expect.objectContaining({ to: '+13105551234' }));
   });
 
-  it('NO loguea el mensaje (OTP), el token ni el teléfono completo', async () => {
+  it('does NOT log the message (OTP), the token nor the full phone', async () => {
     const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
     const p = new TwilioSmsProvider(CONFIG);
-    await p.enviar('3001112233', 'Tu código VoyYa es 9876');
+    await p.send('3001112233', 'Tu código VoyYa es 9876');
     const logged = logSpy.mock.calls.flat().join(' ');
-    expect(logged).not.toContain('9876'); // OTP
-    expect(logged).not.toContain('SECRET-TOKEN'); // authToken
-    expect(logged).not.toContain('3001112233'); // teléfono completo
+    expect(logged).not.toContain('9876');
+    expect(logged).not.toContain('SECRET-TOKEN');
+    expect(logged).not.toContain('3001112233');
     logSpy.mockRestore();
   });
 
-  it('ante error del SDK lanza ServiceUnavailableException sin filtrar el token', async () => {
+  it('on SDK error throws ServiceUnavailableException without leaking the token', async () => {
     const errSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-    createMock.mockRejectedValue(new Error('twilio falló'));
+    createMock.mockRejectedValue(new Error('twilio failed'));
     const p = new TwilioSmsProvider(CONFIG);
-    await expect(p.enviar('3001112233', 'msg')).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(p.send('3001112233', 'msg')).rejects.toBeInstanceOf(ServiceUnavailableException);
     const logged = errSpy.mock.calls.flat().join(' ');
     expect(logged).not.toContain('SECRET-TOKEN');
     errSpy.mockRestore();
   });
 });
 
-describe('crearSmsProvider (selección por entorno)', () => {
+describe('createSmsProvider (selection by environment)', () => {
   function env(vals: Record<string, unknown>): EnvService {
     return { get: (k: string) => vals[k] } as unknown as EnvService;
   }
@@ -64,8 +64,8 @@ describe('crearSmsProvider (selección por entorno)', () => {
     twilioMock.mockReturnValue({ messages: { create: jest.fn() } });
   });
 
-  it('con credenciales de Twilio → TwilioSmsProvider (incluso en producción)', () => {
-    const p = crearSmsProvider(
+  it('with Twilio credentials -> TwilioSmsProvider (even in production)', () => {
+    const p = createSmsProvider(
       env({
         TWILIO_ACCOUNT_SID: 'ACx',
         TWILIO_AUTH_TOKEN: 'tok',
@@ -76,11 +76,11 @@ describe('crearSmsProvider (selección por entorno)', () => {
     expect(p).toBeInstanceOf(TwilioSmsProvider);
   });
 
-  it('sin credenciales en dev → NoopSmsProvider', () => {
-    expect(crearSmsProvider(env({ NODE_ENV: 'development' }))).toBeInstanceOf(NoopSmsProvider);
+  it('without credentials in dev -> NoopSmsProvider', () => {
+    expect(createSmsProvider(env({ NODE_ENV: 'development' }))).toBeInstanceOf(NoopSmsProvider);
   });
 
-  it('sin credenciales en producción → fail-fast (throw)', () => {
-    expect(() => crearSmsProvider(env({ NODE_ENV: 'production' }))).toThrow();
+  it('without credentials in production -> fail-fast (throw)', () => {
+    expect(() => createSmsProvider(env({ NODE_ENV: 'production' }))).toThrow();
   });
 });
