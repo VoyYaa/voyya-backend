@@ -10,6 +10,7 @@ import { EnvService } from './env.service';
       isGlobal: true,
       cache: true,
       validate: validateEnv,
+      envFilePath: ['.env', '../../.env'],
     }),
   ],
   providers: [EnvService],
