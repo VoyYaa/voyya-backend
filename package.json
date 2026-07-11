@@ -1,0 +1,37 @@
+{
+  "name": "backend-yavoy",
+  "version": "0.0.1",
+  "private": true,
+  "description": "VoyYa Backend (standalone) — NestJS API + contratos compartidos (@voyya/shared). Deploy a Railway.",
+  "packageManager": "pnpm@10.24.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "start": "pnpm --filter @voyya/api start",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,js,cjs,json,md,yaml,yml}\"",
+    "db:deploy": "pnpm --filter @voyya/api exec prisma migrate deploy",
+    "db:seed": "pnpm --filter @voyya/api db:seed"
+  },
+  "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "turbo": "^2.1.3",
+    "typescript": "^5.5.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "multer": "^2.2.0",
+      "lodash": "^4.17.21",
+      "qs": "^6.13.0"
+    }
+  }
+}

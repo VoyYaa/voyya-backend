@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "baseUrl": ".",
+    "isolatedModules": true,
+    "types": ["node", "jest"]
+    // `@voyya/shared` se resuelve por el symlink del workspace (pnpm) hacia su
+    // `dist` (types). Construir shared antes (turbo ^build lo garantiza).
+    // Los tests usan moduleNameMapper (jest.config.js) hacia el código fuente.
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist", "test"]
+}

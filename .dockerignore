@@ -1,0 +1,16 @@
+# No enviar al contexto de build (tamaño + evita filtrar secretos/artefactos)
+node_modules
+**/node_modules
+dist
+**/dist
+.turbo
+**/.turbo
+coverage
+**/coverage
+.git
+*.log
+
+# Secretos: NUNCA copiar .env al contexto de imagen
+.env
+.env.*
+!.env.example
