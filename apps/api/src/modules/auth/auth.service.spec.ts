@@ -219,7 +219,7 @@ describe('AuthService.driverLogin', () => {
     const { service, repo } = create();
     (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase });
     const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
-    expect((repo as RepoMock).resetDriverAttempts).toHaveBeenCalledWith(5);
+    expect((repo as RepoMock).resetDriverAttempts).toHaveBeenCalledWith(5, 2);
     expect(r.user.role).toBe('driver');
     expect(r.user.company_id).toBe(2);
     expect(r.user.profile_complete).toBe(true);
@@ -229,7 +229,7 @@ describe('AuthService.driverLogin', () => {
     const { service, repo } = create();
     (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 0 });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
-    expect((repo as RepoMock).registerDriverFailure).toHaveBeenCalledWith(5, null);
+    expect((repo as RepoMock).registerDriverFailure).toHaveBeenCalledWith(5, 2, null);
     expect(e).toBeInstanceOf(UnauthorizedException);
     expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
@@ -239,7 +239,8 @@ describe('AuthService.driverLogin', () => {
     (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 2 });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
     const call = (repo as RepoMock).registerDriverFailure.mock.calls[0];
-    expect(call?.[1]).toBeInstanceOf(Date);
+    expect(call?.[1]).toBe(2);
+    expect(call?.[2]).toBeInstanceOf(Date);
     expect(e.getStatus()).toBe(429);
     expect(code(e)).toBe('ACCOUNT_TEMPORARILY_BLOCKED');
   });

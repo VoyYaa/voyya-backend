@@ -20,7 +20,7 @@ import {
 } from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentDriver, CurrentTenant } from '../tenancy/identity.decorators';
+import { CurrentTenant, CurrentUserId } from '../tenancy/identity.decorators';
 import { TenantGuard } from '../tenancy/tenant.guard';
 import { AssignmentService } from './assignment.service';
 
@@ -33,7 +33,7 @@ export class AssignmentController {
   @Get('nearby')
   listNearby(
     @CurrentTenant() companyId: number,
-    @CurrentDriver() driverId: number,
+    @CurrentUserId() driverId: number,
   ): Promise<NearbyOffersResponse> {
     return this.assignment.listNearby(driverId, companyId);
   }
@@ -43,7 +43,7 @@ export class AssignmentController {
     @Param('id', ParseIntPipe) assignmentId: number,
     @Body(new ZodValidationPipe(AcceptAssignmentDTO)) dto: AcceptAssignmentDTO,
     @CurrentTenant() companyId: number,
-    @CurrentDriver() driverId: number,
+    @CurrentUserId() driverId: number,
     @Res({ passthrough: true }) res: Response,
   ): Promise<AcceptAssignmentResult> {
     const r = await this.assignment.accept(assignmentId, driverId, companyId, dto);
@@ -57,7 +57,7 @@ export class AssignmentController {
     @Param('id', ParseIntPipe) assignmentId: number,
     @Body(new ZodValidationPipe(RejectAssignmentDTO)) dto: RejectAssignmentDTO,
     @CurrentTenant() companyId: number,
-    @CurrentDriver() driverId: number,
+    @CurrentUserId() driverId: number,
   ): Promise<{ ok: true }> {
     return this.assignment.reject(assignmentId, driverId, companyId, dto);
   }
@@ -69,7 +69,7 @@ export class AssignmentController {
     @Body(new ZodValidationPipe(CancelAssignmentByDriverDTO))
     dto: CancelAssignmentByDriverDTO,
     @CurrentTenant() companyId: number,
-    @CurrentDriver() driverId: number,
+    @CurrentUserId() driverId: number,
   ): Promise<CancelAssignmentByDriverResult> {
     return this.assignment.cancelByDriver(assignmentId, driverId, companyId, dto);
   }

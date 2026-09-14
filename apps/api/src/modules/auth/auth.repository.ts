@@ -51,51 +51,79 @@ export class AuthRepository {
   }
 
   async getDriverByNationalId(nationalId: string): Promise<AuthDriver | null> {
-    const d = await this.prisma.driver.findUnique({
-      where: { nationalId },
-      select: {
-        driverId: true,
-        companyId: true,
-        pin: true,
-        status: true,
-        failedAttempts: true,
-        blockedUntil: true,
-        user: { select: { firstName: true, lastName: true, accountStatus: true } },
-      },
-    });
-    if (!d) return null;
-    return {
-      driverId: d.driverId,
-      companyId: d.companyId,
-      pin: d.pin,
-      status: d.status,
-      failedAttempts: d.failedAttempts,
-      blockedUntil: d.blockedUntil,
-      firstName: d.user.firstName,
-      lastName: d.user.lastName,
-      accountStatus: d.user.accountStatus,
-    };
+    for (const companyId of await this.activeCompanyIds()) {
+      const d = await this.prisma.runInTenant(companyId, (tx) =>
+        tx.driver.findFirst({
+          where: { nationalId, companyId },
+          select: {
+            driverId: true,
+            companyId: true,
+            pin: true,
+            status: true,
+            failedAttempts: true,
+            blockedUntil: true,
+            user: { select: { firstName: true, lastName: true, accountStatus: true } },
+          },
+        }),
+      );
+      if (d) {
+        return {
+          driverId: d.driverId,
+          companyId: d.companyId,
+          pin: d.pin,
+          status: d.status,
+          failedAttempts: d.failedAttempts,
+          blockedUntil: d.blockedUntil,
+          firstName: d.user.firstName,
+          lastName: d.user.lastName,
+          accountStatus: d.user.accountStatus,
+        };
+      }
+    }
+    return null;
   }
 
   async getDriverCompany(driverId: number): Promise<{ companyId: number; status: string } | null> {
-    return this.prisma.driver.findUnique({
-      where: { driverId },
-      select: { companyId: true, status: true },
-    });
+    for (const companyId of await this.activeCompanyIds()) {
+      const d = await this.prisma.runInTenant(companyId, (tx) =>
+        tx.driver.findFirst({
+          where: { driverId, companyId },
+          select: { companyId: true, status: true },
+        }),
+      );
+      if (d) return d;
+    }
+    return null;
   }
 
-  async registerDriverFailure(driverId: number, blockedUntil: Date | null): Promise<void> {
-    await this.prisma.driver.update({
-      where: { driverId },
-      data: { failedAttempts: { increment: 1 }, blockedUntil },
-    });
+  async registerDriverFailure(
+    driverId: number,
+    companyId: number,
+    blockedUntil: Date | null,
+  ): Promise<void> {
+    await this.prisma.runInTenant(companyId, (tx) =>
+      tx.driver.update({
+        where: { driverId },
+        data: { failedAttempts: { increment: 1 }, blockedUntil },
+      }),
+    );
   }
 
-  async resetDriverAttempts(driverId: number): Promise<void> {
-    await this.prisma.driver.update({
-      where: { driverId },
-      data: { failedAttempts: 0, blockedUntil: null },
+  async resetDriverAttempts(driverId: number, companyId: number): Promise<void> {
+    await this.prisma.runInTenant(companyId, (tx) =>
+      tx.driver.update({
+        where: { driverId },
+        data: { failedAttempts: 0, blockedUntil: null },
+      }),
+    );
+  }
+
+  private async activeCompanyIds(): Promise<number[]> {
+    const companies = await this.prisma.company.findMany({
+      where: { status: 'active' },
+      select: { companyId: true },
     });
+    return companies.map((c) => c.companyId);
   }
 
   async countOtpSince(phone: string, since: Date): Promise<number> {

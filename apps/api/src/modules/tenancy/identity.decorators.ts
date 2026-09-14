@@ -17,19 +17,13 @@ export const CurrentTenant = createParamDecorator(
   },
 );
 
-function authenticatedUserId(ctx: ExecutionContext): number {
-  const req = ctx.switchToHttp().getRequest<RequestWithTenant>();
-  const id = req.user?.userId;
-  if (id === undefined) {
-    throw new UnauthorizedException({ code: 'SESSION_REQUIRED', message: 'Sesión requerida' });
-  }
-  return id;
-}
-
-export const CurrentPassenger = createParamDecorator((_d: unknown, ctx: ExecutionContext): number =>
-  authenticatedUserId(ctx),
-);
-
-export const CurrentDriver = createParamDecorator((_d: unknown, ctx: ExecutionContext): number =>
-  authenticatedUserId(ctx),
+export const CurrentUserId = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): number => {
+    const req = ctx.switchToHttp().getRequest<RequestWithTenant>();
+    const id = req.user?.userId;
+    if (id === undefined) {
+      throw new UnauthorizedException({ code: 'SESSION_REQUIRED', message: 'Sesión requerida' });
+    }
+    return id;
+  },
 );

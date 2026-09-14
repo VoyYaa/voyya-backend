@@ -8,7 +8,8 @@ export const EnvSchema = z.object({
     .default('info'),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL es obligatoria'),
-  DIRECT_URL: z.string().min(1).optional(),
+  DB_CONNECT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),
+  DB_CONNECT_RETRY_BASE_MS: z.coerce.number().int().positive().default(500),
 
   JWT_SECRET: z.string().min(32, 'JWT_SECRET debe tener ≥32 caracteres aleatorios (HS256)'),
   QUOTE_TOKEN_SECRET: z

@@ -1,7 +1,8 @@
 -- =============================================================================
 -- VoyYa - SQL complement to `prisma migrate` (what Prisma does not manage).
--- Run ONCE after `prisma migrate deploy` (or `prisma db push`) with the DIRECT
--- connection (DIRECT_URL) as the table OWNER role.
+-- Applied on every release by `pnpm --filter @voyya/api run db:release`
+-- (= `prisma migrate deploy` && this file), with the connection of the table
+-- OWNER role (never the app runtime role). See ADR-006.
 --
 -- Covers:
 --   (a) PostGIS + generated geography/geometry columns + GiST indexes

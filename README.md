@@ -1,12 +1,16 @@
 # backend-yavoy
 
 Backend **standalone** de VoyYa (plataforma de taxis para municipios de Colombia). Monolito modular
-**NestJS 10 + PostgreSQL/Prisma (+ PostGIS)**, en un workspace pnpm con los contratos compartidos
-`@voyya/shared`. Diseñado para desplegar en **Railway** (Docker) con base de datos **Neon**.
+**NestJS 10 + PostgreSQL 16/Prisma (+ PostGIS)**, en un workspace pnpm con los contratos compartidos
+`@voyya/shared`. Diseñado para desplegar en **Railway** (Docker) con base de datos **PostgreSQL 16 +
+PostGIS también en Railway** (no Neon).
 
 - API: `apps/api` (NestJS). Contratos Zod: `packages/shared`.
 - Auth: JWT (access) + refresh opaco revocable; RBAC + multi-tenant (RLS). OTP por SMS (Twilio en prod).
 - Núcleo: solicitud de taxi + asignación con **toma única atómica**.
+- **La aplicación solo se conecta a la base de datos; nunca migra** (ADR-006). Las migraciones y el SQL
+  complementario de PostGIS/RLS son un paso de release aparte (`db:release`), ejecutado por el
+  operador/CI con credenciales de dueño — nunca por el contenedor en runtime.
 
 ## Estructura
 
@@ -14,14 +18,17 @@ Backend **standalone** de VoyYa (plataforma de taxis para municipios de Colombia
 backend-yavoy/
 ├── apps/api/                 # NestJS (API)
 │   ├── prisma/
-│   │   ├── schema.prisma     # datasource: url=DATABASE_URL, directUrl=DIRECT_URL
-│   │   ├── migrations/       # migración base (prisma migrate deploy)
-│   │   ├── sql/00_postgis_rls.sql   # PostGIS + RLS + índice único parcial (correr UNA vez)
+│   │   ├── schema.prisma     # datasource: url=DATABASE_URL (una sola conexión de runtime)
+│   │   ├── migrations/       # migraciones versionadas (aplicadas por `db:release`, nunca en el arranque)
+│   │   ├── sql/00_postgis_rls.sql   # PostGIS + RLS + índice único parcial (aplicado en cada release)
 │   │   └── seed.ts
 │   └── src/
+│       └── infrastructure/prisma/
+│           ├── prisma.service.ts              # conexión con backoff, nunca migra
+│           └── database-preflight.service.ts  # verifica rol/RLS/PostGIS al arrancar
 ├── packages/shared/          # @voyya/shared (Zod, DTOs, máquina de estados)
-├── Dockerfile                # multi-stage Node 20; build + migrate deploy + start
-├── railway.json              # builder DOCKERFILE + healthcheck /health
+├── Dockerfile                # multi-stage Node 20; build + start (sin migrar)
+├── railway.json              # builder DOCKERFILE + healthcheck /health (sin migrar en el arranque)
 ├── pnpm-workspace.yaml · turbo.json · tsconfig.base.json
 └── .env.example              # plantilla (SIN credenciales)
 ```
@@ -36,14 +43,20 @@ pnpm --filter @voyya/api dev  # API en http://localhost:3000  (GET /health)
 pnpm test                     # tests (no requieren DB; los e2e reales son gated por PG_TEST_URL)
 ```
 
+> **Importante:** `DATABASE_URL` en local (y en `.env`) debe apuntar al rol de aplicación
+> `app_voyya` (NOSUPERUSER/NOBYPASSRLS), **no** al rol dueño. Es la única forma de detectar en tu
+> máquina, antes de desplegar, una consulta que se olvidó de pasar por `runInTenant` (ver
+> "Riesgo de regresión" más abajo).
+
 ## Variables de entorno
 
 Definir en Railway (Service → Variables) y, para local, en `.env`. **Nunca** commitear valores reales.
 
 | Variable | Requerida | Descripción |
 |---|---|---|
-| `DATABASE_URL` | sí | Neon **pooled** (`...-pooler...?sslmode=require&pgbouncer=true`). La usa la app. |
-| `DIRECT_URL` | sí | Neon **unpooled** (`...?sslmode=require`). La usan las migraciones. |
+| `DATABASE_URL` | sí | **Única** conexión de la aplicación (runtime). Rol **`app_voyya`** (`NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`). En local: `postgresql://app_voyya:app_voyya_dev_pw@localhost:5459/voyya`. En Railway: la cadena de `app_voyya` sobre `postgis.railway.internal`. |
+| `DB_CONNECT_MAX_ATTEMPTS` | no | Intentos de `$connect()` con backoff exponencial antes de abortar el arranque. Default `6`. |
+| `DB_CONNECT_RETRY_BASE_MS` | no | Base (ms) del backoff exponencial entre reintentos de conexión. Default `500`. |
 | `JWT_SECRET` | sí | ≥32 caracteres aleatorios (`openssl rand -base64 48`). |
 | `QUOTE_TOKEN_SECRET` | sí | ≥32 caracteres aleatorios. |
 | `AUTH_DEV_HEADERS` | sí | `false` en producción (el gate se ignora igual en prod). |
@@ -54,50 +67,91 @@ Definir en Railway (Service → Variables) y, para local, en `.env`. **Nunca** c
 
 > `PORT` lo inyecta Railway automáticamente (la API lo respeta; fallback `API_PORT=3000`).
 > Parámetros del motor/OTP/throttle tienen defaults en `apps/api/src/config/env.schema.ts` (no obligatorios).
-> Nota Neon: usar `sslmode=require`. Si Prisma se queja de `channel_binding`, quítalo del query string.
+> **`DIRECT_URL` ya no existe** (ADR-006): con una sola conexión de runtime no hace falta distinguir
+> "pooled/unpooled"; hoy no hay pooler.
 
-## Base de datos (Neon) — preparación por ÚNICA vez
+### Credencial de dueño (solo para `db:release`, nunca variable del servicio)
 
-Prisma crea las tablas base (`migrate deploy`), pero **PostGIS, las columnas geográficas generadas, la RLS
-y el índice único parcial NO los gestiona Prisma**: se aplican una vez con el SQL complementario, usando la
-conexión **DIRECT_URL** (sin pooler) y el rol dueño.
+`VOYYA_DB_OWNER_URL` **no** es una variable de la aplicación: vive solo en el entorno del operador (y,
+cuando exista el pipeline, como secreto de GitHub Actions). Se usa **exclusivamente** para ejecutar
+`db:release` (migraciones + SQL de PostGIS/RLS). **Nunca** se define en Railway → Service → Variables.
 
-1. Crea el proyecto/branch en Neon y copia las dos cadenas (pooled → `DATABASE_URL`, unpooled → `DIRECT_URL`).
-2. Aplica las migraciones base (o deja que lo haga el contenedor al arrancar — ver Despliegue):
+- Local: `VOYYA_DB_OWNER_URL=postgresql://voyya_owner:voyya_dev_pw@localhost:5459/voyya`
+- Railway: la cadena del rol dueño sobre `postgis.railway.internal`, guardada en el gestor de secretos
+  del operador — no en las variables del servicio de la API.
+
+## Base de datos (PostgreSQL 16 + PostGIS en Railway) — aprovisionamiento por ÚNICA vez
+
+Prisma crea las tablas base (`migrate deploy`), pero **PostGIS, las columnas geográficas generadas, la
+RLS y el índice único parcial NO los gestiona Prisma**: se aplican con el SQL complementario
+(`00_postgis_rls.sql`), encadenado con las migraciones en el script `db:release`, usando la conexión
+del **rol dueño**.
+
+1. Crea la base PostgreSQL 16 + PostGIS (en Railway o en tu contenedor local) y anota la cadena del rol
+   dueño (superusuario de aprovisionamiento, p. ej. `voyya_owner`).
+2. Crea el **rol de aplicación no-dueño** `app_voyya` (`NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE`)
+   con los grants sobre los 7 schemas — sección comentada (d) de
+   `apps/api/prisma/sql/00_postgis_rls.sql`. Es aprovisionamiento **por única vez** (lleva contraseña
+   propia del entorno) y se ejecuta con la credencial de dueño.
+3. Ejecuta el release (migraciones + PostGIS + RLS + índice único parcial), siempre con la credencial
+   del rol dueño:
    ```bash
-   DIRECT_URL="postgresql://…?sslmode=require" pnpm db:deploy
+   DATABASE_URL="$VOYYA_DB_OWNER_URL" pnpm --filter @voyya/api run db:release
+   # = prisma migrate deploy && prisma db execute --file prisma/sql/00_postgis_rls.sql
    ```
-3. Aplica el complemento PostGIS + RLS + índice único parcial (una sola vez, con DIRECT_URL):
-   ```bash
-   psql "postgresql://…?sslmode=require" -f apps/api/prisma/sql/00_postgis_rls.sql
-   ```
-4. (Recomendado) Crea el **rol de app no-dueño** (sin `SUPERUSER`/`BYPASSRLS`) para que la RLS aplique de
-   verdad, y apunta `DATABASE_URL` a ese rol (dejando `DIRECT_URL` con el rol dueño para migraciones). El
-   script comentado y la verificación (`rolsuper=f`, `rolbypassrls=f`) están al final de
-   `apps/api/prisma/sql/00_postgis_rls.sql` (secciones (d) y (e)). Ejecutarlo con DIRECT_URL/rol dueño.
-5. (Opcional, datos de prueba) `pnpm db:seed` — crea municipio Yarumal, empresa Cootrayal, admin y conductores.
+   Es idempotente: se puede correr en cada release sin efectos secundarios.
+4. (Opcional, datos de prueba) `DATABASE_URL="$VOYYA_DB_OWNER_URL" pnpm --filter @voyya/api run db:seed`
+   — crea municipio Yarumal, empresa Cootrayal, admin y conductores. El seed inserta a través de varios
+   tenants, así que corre siempre con la credencial de dueño, fuera del runtime de la aplicación.
+5. Apunta `DATABASE_URL` (variable de la aplicación, en Railway o en `.env`) al rol **`app_voyya`**.
 
 ## Despliegue en Railway
 
 1. **Conecta el repo**: Railway → *New Project* → *Deploy from GitHub repo* → selecciona este repositorio
    (`backend-yavoy`). Railway detecta `railway.json` y construye con el **Dockerfile** (no usa Nixpacks).
-2. **Base de datos**: crea la DB en **Neon** (fuera de Railway) y copia las dos URLs.
-3. **Variables**: en el Service → *Variables*, define todas las de la tabla de arriba (`DATABASE_URL`,
-   `DIRECT_URL`, `JWT_SECRET`, `QUOTE_TOKEN_SECRET`, `AUTH_DEV_HEADERS=false`, `CORS_ORIGINS`, y las
-   `TWILIO_*`). `PORT` lo pone Railway solo.
-4. **Deploy**: al desplegar, el contenedor ejecuta `prisma migrate deploy` (aplica las migraciones usando
-   `DIRECT_URL`) y luego `node apps/api/dist/main.js`. `migrate deploy` es idempotente.
-5. **Preparación única de Neon**: corre **una vez** los pasos 3–4 de la sección anterior
-   (`00_postgis_rls.sql` + rol de app). Sin PostGIS/RLS, la asignación por cercanía y el aislamiento
-   multi-tenant no funcionan.
-6. **Healthcheck**: Railway usa `GET /health` (definido en `railway.json`). Debe responder `200 { status: 'ok' }`.
-7. **Dominio**: expón el servicio (Railway → *Settings* → *Networking* → *Generate Domain*) y usa esa URL
+2. **Base de datos**: PostgreSQL 16 + PostGIS en Railway (mismo proyecto o servicio aparte). Anota la
+   cadena del rol dueño (para `db:release`, fuera del servicio de la API) y la del rol `app_voyya` (para
+   `DATABASE_URL` de la API).
+3. **Variables del servicio de la API**: `DATABASE_URL` (rol `app_voyya`), `JWT_SECRET`,
+   `QUOTE_TOKEN_SECRET`, `AUTH_DEV_HEADERS=false`, `CORS_ORIGINS`, las `TWILIO_*`, y opcionalmente
+   `DB_CONNECT_MAX_ATTEMPTS`/`DB_CONNECT_RETRY_BASE_MS`. **No** definas `DIRECT_URL` ni
+   `VOYYA_DB_OWNER_URL` aquí — el servicio de la API nunca debe tener credenciales de dueño. `PORT` lo
+   pone Railway solo.
+4. **Orden obligatorio del release**: `db:release` (con `VOYYA_DB_OWNER_URL`, desde tu máquina o desde
+   CI) **antes** de promover el deploy de la nueva imagen:
+   ```bash
+   DATABASE_URL="$VOYYA_DB_OWNER_URL" pnpm --filter @voyya/api run db:release
+   ```
+   Recién entonces despliega/promueve la imagen. El contenedor **ya no ejecuta `prisma migrate deploy`**
+   al arrancar: solo `node apps/api/dist/main.js`, que se conecta (con reintentos y backoff) y valida
+   las invariantes de RLS/PostGIS (`DatabasePreflightService`) antes de servir tráfico en producción.
+5. **Healthcheck**: Railway usa `GET /health` (liveness, sin tocar la base — definido en `railway.json`).
+   Debe responder `200 { status: 'ok' }`. `GET /health/db` es *readiness* (`SELECT 1` + preflight):
+   `200` si todo bien, `503` si no.
+6. **Dominio**: expón el servicio (Railway → *Settings* → *Networking* → *Generate Domain*) y usa esa URL
    (con TLS) como base para las apps móviles/consola. Añade el/los orígenes web a `CORS_ORIGINS`.
+
+## Migraciones compatibles hacia atrás
+
+Como el release tiene dos pasos ordenados (`db:release` → deploy de la imagen), durante la ventana entre
+ambos conviven el esquema nuevo y el código viejo. Toda migración debe seguir el patrón
+**expand → migrate → contract**: agrega columnas/tablas nuevas como nullable u opcionales primero,
+despliega el código que las usa, y solo en un cambio posterior elimina lo viejo. A este volumen (una
+empresa, un municipio) la ventana es de minutos.
+
+## Riesgo de regresión: RLS fail-closed sin `runInTenant`
+
+`fleet.driver`, `fleet.vehicle` y `assignment.assignment` tienen `FORCE ROW LEVEL SECURITY`. Cualquier
+consulta sobre esas tablas que **no** pase por `PrismaService.runInTenant(companyId, …)` (que setea
+`app.current_company` en la transacción) devuelve **0 filas** con el rol `app_voyya` — nunca un error, ni
+una fuga entre tenants. Antes de tocar esas tablas, corre la suite completa apuntando `DATABASE_URL`
+local a `app_voyya` (no al rol dueño): es la forma de descubrir el bug en tu máquina, no en Yarumal.
 
 ## Notas
 
-- **Migraciones**: la carpeta `apps/api/prisma/migrations/` contiene la migración base generada desde el
-  schema. Nuevos cambios de modelo → `pnpm --filter @voyya/api exec prisma migrate dev --name <cambio>` en
-  local (contra una DB de desarrollo) y commitear la migración; Railway la aplica con `migrate deploy`.
+- **Migraciones**: la carpeta `apps/api/prisma/migrations/` contiene las migraciones versionadas. Nuevos
+  cambios de modelo → `pnpm --filter @voyya/api exec prisma migrate dev --name <cambio>` en local (contra
+  una DB de desarrollo) y commitear la migración; se aplican en producción con `db:release`, nunca con
+  el contenedor.
 - **Secretos**: `.env` está en `.gitignore`; solo se versiona `.env.example` (placeholders).
 - **Imagen**: Node 20 slim + OpenSSL (requerido por los motores de Prisma).

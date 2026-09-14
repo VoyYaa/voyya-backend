@@ -50,16 +50,11 @@ suite('Cross-tenant isolation (RLS FORCE) against real Postgres', () => {
     });
   }
 
-  function skipIfSuper(): boolean {
-    if (isSuperuser) {
-      // eslint-disable-next-line no-console
-      console.warn('PG_TEST_URL is superuser: RLS is bypassed. Use a non-owner role.');
-    }
-    return isSuperuser;
-  }
+  it('the PG_TEST_URL role is not a superuser (RLS must actually apply)', () => {
+    expect(isSuperuser).toBe(false);
+  });
 
   it('company A only sees ITS rows (not B)', async () => {
-    if (skipIfSuper()) return;
     const rows = await asCompany(1, (tx) =>
       tx.$queryRawUnsafe<Array<{ company_id: number }>>('SELECT company_id FROM _rls_iso_test'),
     );
@@ -68,7 +63,6 @@ suite('Cross-tenant isolation (RLS FORCE) against real Postgres', () => {
   });
 
   it('company A CANNOT modify B rows (0 rows affected)', async () => {
-    if (skipIfSuper()) return;
     const affected = await asCompany(1, (tx) =>
       tx.$executeRawUnsafe(`UPDATE _rls_iso_test SET data = 'x' WHERE company_id = 2`),
     );
@@ -76,7 +70,6 @@ suite('Cross-tenant isolation (RLS FORCE) against real Postgres', () => {
   });
 
   it('symmetric: company B only sees ITS rows', async () => {
-    if (skipIfSuper()) return;
     const rows = await asCompany(2, (tx) =>
       tx.$queryRawUnsafe<Array<{ company_id: number }>>('SELECT company_id FROM _rls_iso_test'),
     );

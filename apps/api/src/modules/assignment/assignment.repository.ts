@@ -293,16 +293,18 @@ export class AssignmentRepository {
     tx: Prisma.TransactionClient,
     assignmentId: number,
     companyId: number,
-  ): Promise<boolean> {
-    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+  ): Promise<{ assignmentId: number; driverId: number } | null> {
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number; driver_id: number }>>`
       UPDATE assignment.assignment
          SET status = 'timeout', responded_at = now()
        WHERE assignment_id = ${assignmentId}
          AND company_id = ${companyId}
          AND status = 'notified'
-      RETURNING assignment_id
+      RETURNING assignment_id, driver_id
     `;
-    return rows.length === 1;
+    const row = rows[0];
+    if (!row) return null;
+    return { assignmentId: row.assignment_id, driverId: row.driver_id };
   }
 
   async markRejected(

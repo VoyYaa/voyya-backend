@@ -138,7 +138,7 @@ export class AuthService {
         attempts >= this.env.get('LOGIN_MAX_ATTEMPTS')
           ? new Date(Date.now() + this.env.get('LOGIN_BLOCK_MINUTES') * 60_000)
           : null;
-      await this.repo.registerDriverFailure(d.driverId, blocked);
+      await this.repo.registerDriverFailure(d.driverId, d.companyId, blocked);
       if (blocked) throw this.accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
       throw this.invalidCredentials();
     }
@@ -151,7 +151,7 @@ export class AuthService {
       throw new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta no habilitada' });
     }
 
-    await this.repo.resetDriverAttempts(d.driverId);
+    await this.repo.resetDriverAttempts(d.driverId, d.companyId);
     return this.issueSession(
       { userId: d.driverId, firstName: d.firstName, lastName: d.lastName, role: 'driver' },
       d.companyId,

@@ -18,7 +18,7 @@ import {
 } from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentPassenger } from '../tenancy/identity.decorators';
+import { CurrentUserId } from '../tenancy/identity.decorators';
 import { TripsService } from './trips.service';
 
 @Controller('trips')
@@ -37,7 +37,7 @@ export class TripsController {
   @Post()
   create(
     @Body(new ZodValidationPipe(CreateTripRequestDTO)) dto: CreateTripRequestDTO,
-    @CurrentPassenger() passengerId: number,
+    @CurrentUserId() passengerId: number,
   ): Promise<TripRequestCreated> {
     return this.trips.create(dto, passengerId);
   }
@@ -45,7 +45,7 @@ export class TripsController {
   @Get(':id')
   getStatus(
     @Param('id', ParseIntPipe) tripRequestId: number,
-    @CurrentPassenger() passengerId: number,
+    @CurrentUserId() passengerId: number,
   ): Promise<TripRequestStatus> {
     return this.trips.getStatus(tripRequestId, passengerId);
   }
@@ -55,7 +55,7 @@ export class TripsController {
   cancel(
     @Param('id', ParseIntPipe) tripRequestId: number,
     @Body(new ZodValidationPipe(CancelTripRequestDTO)) dto: CancelTripRequestDTO,
-    @CurrentPassenger() passengerId: number,
+    @CurrentUserId() passengerId: number,
   ): Promise<TripRequestCancelled> {
     return this.trips.cancel(tripRequestId, passengerId, dto);
   }

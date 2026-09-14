@@ -230,7 +230,7 @@ export class AssignmentService {
       const ev: AssignmentExpiredEvent = {
         assignment_id: assignmentId,
         trip_request_id: tripRequestId,
-        driver_id: 0,
+        driver_id: expired.driverId,
         attempt_order: ctx.order,
         occurred_at: new Date().toISOString(),
       };
@@ -252,7 +252,7 @@ export class AssignmentService {
       | { kind: 'not_driver' }
       | { kind: 'expired' }
       | { kind: 'already_taken' }
-      | { kind: 'accepted'; tripRequestId: number };
+      | { kind: 'accepted'; tripRequestId: number; vehicleId: number };
 
     let result: R;
     try {
@@ -275,7 +275,7 @@ export class AssignmentService {
         const assigned = await this.repo.markTripRequestAssigned(tx, a.tripRequestId);
         if (!assigned) throw new TripRequestAlreadyTakenError();
 
-        return { kind: 'accepted', tripRequestId: a.tripRequestId };
+        return { kind: 'accepted', tripRequestId: a.tripRequestId, vehicleId: a.vehicleId };
       });
     } catch (e) {
       if (e instanceof TripRequestAlreadyTakenError) return this.alreadyTaken();
@@ -298,7 +298,13 @@ export class AssignmentService {
       case 'already_taken':
         return this.alreadyTaken();
       case 'accepted':
-        return this.finishAcceptance(assignmentId, driverId, companyId, result.tripRequestId);
+        return this.finishAcceptance(
+          assignmentId,
+          driverId,
+          companyId,
+          result.tripRequestId,
+          result.vehicleId,
+        );
     }
   }
 
@@ -307,6 +313,7 @@ export class AssignmentService {
     driverId: number,
     companyId: number,
     tripRequestId: number,
+    vehicleId: number,
   ): Promise<AcceptAssignmentResult> {
     this.clearTimer(assignmentId);
     this.chains.delete(tripRequestId);
@@ -317,7 +324,7 @@ export class AssignmentService {
       trip_request_id: tripRequestId,
       assignment_id: assignmentId,
       driver_id: driverId,
-      vehicle_id: 0,
+      vehicle_id: vehicleId,
       company_id: companyId,
       occurred_at: new Date().toISOString(),
     };

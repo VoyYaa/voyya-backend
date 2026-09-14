@@ -12,11 +12,10 @@ RUN apt-get update \
 RUN corepack enable
 WORKDIR /app
 
-# `prisma generate` (prebuild de la API) exige que exista DATABASE_URL/DIRECT_URL,
-# aunque NO se conecta en build. Placeholders SOLO de build (no son secretos; el
-# runtime recibe los reales desde Railway). No se heredan al stage runner.
-ENV DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public" \
-    DIRECT_URL="postgresql://build:build@localhost:5432/build?schema=public"
+# `prisma generate` (prebuild de la API) exige que exista DATABASE_URL, aunque NO se
+# conecta en build. Placeholder SOLO de build (no es secreto; el runtime recibe el
+# real desde Railway). No se hereda al stage runner.
+ENV DATABASE_URL="postgresql://build:build@localhost:5432/build?schema=public"
 
 # 1) Manifiestos primero (capa cacheable de dependencias).
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc turbo.json tsconfig.base.json ./
@@ -28,6 +27,10 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
+# 3) Poda devDependencies (jest, ts-node, @nestjs/cli, typescript, …). `prisma` (CLI)
+# vive en "dependencies" de apps/api precisamente para sobrevivir a esta poda.
+RUN pnpm prune --prod
+
 # ---- Runner -----------------------------------------------------------------
 FROM node:20-slim AS runner
 ENV NODE_ENV="production" PNPM_HOME="/pnpm" PATH="/pnpm:$PATH"
@@ -37,12 +40,29 @@ RUN apt-get update \
 RUN corepack enable
 WORKDIR /app
 
-# Copia el workspace ya construido: node_modules (incluye la CLI de Prisma para
-# `migrate deploy` y el cliente generado), dist de shared y api, schema y migraciones.
-COPY --from=builder /app ./
+# Manifiestos del workspace: `pnpm --filter` los necesita para resolver el proyecto.
+COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml ./
+COPY --from=builder /app/apps/api/package.json ./apps/api/package.json
+COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
+
+# node_modules ya podado a solo dependencias de producción (incluye el cliente Prisma
+# generado en node_modules/.pnpm/@prisma+client*; la CLI de Prisma no se usa en
+# runtime, solo en build para `prisma generate` y aparte en `db:release`).
+# Se copian los 3 niveles (raíz + cada workspace) para preservar los symlinks de pnpm.
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/apps/api/node_modules ./apps/api/node_modules
+COPY --from=builder /app/packages/shared/node_modules ./packages/shared/node_modules
+
+# Artefactos compilados (shared se construye antes que api vía turbo).
+COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder /app/apps/api/dist ./apps/api/dist
+
+# Prisma: solo el schema (lo exige el cliente generado en runtime). Las migraciones y
+# el SQL de PostGIS/RLS ya NO corren en el contenedor: son el paso de release
+# `db:release`, ejecutado aparte por el operador/CI con la credencial del rol dueño
+# (ver ADR-006). El contenedor solo conecta, nunca migra.
+COPY --from=builder /app/apps/api/prisma/schema.prisma ./apps/api/prisma/schema.prisma
 
 EXPOSE 3000
 
-# Aplica migraciones pendientes (Prisma usa DIRECT_URL del datasource) y arranca la API.
-# migrate deploy es idempotente; si no hay pendientes, no hace nada.
-CMD ["sh", "-c", "pnpm --filter @voyya/api exec prisma migrate deploy && node apps/api/dist/main.js"]
+CMD ["node", "apps/api/dist/main.js"]

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { Express } from 'express';
@@ -22,8 +22,6 @@ async function bootstrap(): Promise<void> {
     .map((o) => o.trim())
     .filter((o) => o.length > 0);
   app.enableCors({ origin: origins.length > 0 ? origins : false, credentials: true });
-
-  app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 
   app.useGlobalFilters(new AllExceptionsFilter());
 
