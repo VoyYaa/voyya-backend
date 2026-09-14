@@ -1,0 +1,236 @@
+name: CI
+
+# Dispara en push a la rama por defecto (main) y en cada pull request.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancela ejecuciones anteriores del mismo ref (rama/PR) cuando llega un push nuevo.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '10.24.0'
+
+jobs:
+  # ===========================================================================
+  # Pipeline principal: install -> typecheck -> lint -> build -> test.
+  #
+  # Las dos suites e2e reales (assignment.concurrency.e2e-spec.ts,
+  # tenant-isolation.e2e-spec.ts) están gateadas por PG_TEST_URL y se saltan si
+  # falta. Tras el ADR-006, tenant-isolation.e2e-spec.ts YA NO se salta ante un
+  # superusuario: afirma `isSuperuser === false` y FALLA si el rol conectado es
+  # superusuario. Por eso este job levanta Postgres+PostGIS, migra/aplica RLS
+  # como el rol dueño (`voyya_owner`, superusuario de contenedor) y luego crea
+  # un rol de aplicación no-superusuario (`app_voyya`) para correr los tests.
+  #
+  # Baseline esperado:
+  #   - Sin PG_TEST_URL:                     102 verdes, 5 saltados.
+  #   - Con PG_TEST_URL (rol no-superuser):  107/107, 15 suites, 0 saltadas.
+  # ===========================================================================
+  build-and-test:
+    name: Build, lint y tests (incluye e2e reales contra Postgres)
+    runs-on: ubuntu-latest
+
+    # NOTA DE SEGURIDAD: las contraseñas `voyya_owner_ci_pw` / `app_voyya_ci_pw`
+    # de este job NO son secretos reales — son credenciales efímeras de un
+    # contenedor Postgres que se crea y se destruye dentro de este mismo job
+    # de CI, sin persistencia ni exposición fuera de él (no son las
+    # credenciales de ningún entorno de Railway/producción). Se hardcodean a
+    # propósito para mantener el workflow legible y auto-contenido.
+    services:
+      postgres:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_USER: voyya_owner
+          POSTGRES_PASSWORD: voyya_owner_ci_pw
+          POSTGRES_DB: voyya
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U voyya_owner -d voyya"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=30
+
+    env:
+      # Placeholder de build: `prisma generate` (prebuild de @voyya/api, y el
+      # postinstall del propio paquete @prisma/client) EXIGE que exista
+      # DATABASE_URL aunque no se conecte durante install/typecheck/lint/build.
+      # Mismo patrón que usa el Dockerfile de este repo (build stage).
+      DATABASE_URL: postgresql://build:build@localhost:5432/build?schema=public
+      # `.npmrc` referencia ${NPM_TOKEN} para el registry de @voyyaa (GitHub
+      # Packages). Si el secreto no está configurado, esta variable queda
+      # vacía: pnpm emite un WARN pero NO falla (comprobado localmente).
+      # Crear el secreto NPM_TOKEN solo si @voyyaa/shared llega a publicarse
+      # como paquete privado real en GitHub Packages.
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Instalar dependencias (con caché de pnpm)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build (turbo build; corre `prisma generate` en el prebuild de la API)
+        run: pnpm build
+
+      - name: Asegurar cliente psql en el runner
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-client
+          fi
+
+      - name: Esperar a que Postgres esté listo
+        env:
+          PGPASSWORD: voyya_owner_ci_pw
+        run: |
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 -U voyya_owner -d voyya; then
+              echo "Postgres listo."
+              exit 0
+            fi
+            echo "Postgres aún no está listo ($i/30)…"
+            sleep 2
+          done
+          echo "Postgres no respondió a tiempo." >&2
+          exit 1
+
+      - name: Provisionar base (migraciones + PostGIS/RLS) — como rol dueño
+        # `db:release` = `prisma migrate deploy` + prisma/sql/00_postgis_rls.sql
+        # (PostGIS, índice único parcial de la toma única e índices GiST).
+        # Se ejecuta SIEMPRE con la credencial del rol dueño (ADR-006), nunca
+        # con la de la app.
+        env:
+          DATABASE_URL: postgresql://voyya_owner:voyya_owner_ci_pw@localhost:5432/voyya
+        run: pnpm --filter @voyya/api run db:release
+
+      - name: Provisionar rol de aplicación no-superusuario (app_voyya)
+        # Mismo bloque que infra/scripts/bootstrap-db.sh (sección (d) comentada
+        # de prisma/sql/00_postgis_rls.sql), con credenciales efímeras propias
+        # de este job. Sin este rol, tenant-isolation.e2e-spec.ts FALLA a
+        # propósito (afirma isSuperuser === false). Los grants sobre los 7
+        # schemas de dominio + CREATE en `public` son los que usan
+        # assignment.concurrency.e2e-spec.ts (tabla sintética
+        # _single_take_test) y tenant-isolation.e2e-spec.ts (tabla sintética
+        # _rls_iso_test, con su propia policy RLS) para crear y manipular sus
+        # tablas ad-hoc — el CREATE TABLE sin schema-qualificar cae en
+        # `public` por el search_path por defecto, y quien la crea queda como
+        # dueño de esa tabla (puede ENABLE RLS / CREATE POLICY sobre ella sin
+        # más grants).
+        env:
+          PGPASSWORD: voyya_owner_ci_pw
+        run: |
+          psql -h localhost -p 5432 -U voyya_owner -d voyya -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+              CREATE ROLE app_voyya LOGIN PASSWORD 'app_voyya_ci_pw'
+                NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+            END IF;
+          END $$;
+          GRANT USAGE ON SCHEMA auth, tenancy, users, fleet, trips, assignment, admin TO app_voyya;
+          GRANT SELECT, INSERT, UPDATE, DELETE
+            ON ALL TABLES IN SCHEMA auth, tenancy, users, fleet, trips, assignment, admin
+            TO app_voyya;
+          GRANT USAGE, SELECT ON ALL SEQUENCES
+            IN SCHEMA auth, tenancy, users, fleet, trips, assignment, admin TO app_voyya;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA auth, tenancy, users, fleet, trips, assignment, admin
+            GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_voyya;
+          ALTER DEFAULT PRIVILEGES IN SCHEMA auth, tenancy, users, fleet, trips, assignment, admin
+            GRANT USAGE, SELECT ON SEQUENCES TO app_voyya;
+          GRANT CREATE, USAGE ON SCHEMA public TO app_voyya;
+          SQL
+
+      - name: Tests (unit + e2e reales; PG_TEST_URL activa las 2 suites RLS/concurrencia)
+        # OJO — hallazgo de esta reproducción local: el `pnpm test` de la raíz
+        # (`turbo run test`) usa el envMode "strict" por defecto de turbo (no
+        # declarado en turbo.json), que NO reenvía PG_TEST_URL al proceso de
+        # jest: las 2 suites gateadas quedan SIEMPRE saltadas (102/107) aunque
+        # la variable esté puesta, y encima turbo puede servir un resultado
+        # cacheado obsoleto porque PG_TEST_URL no forma parte del hash de la
+        # tarea. `packages/shared` no tiene tests reales (su script "test" es
+        # un echo stub), así que se invoca aquí directamente el "test" del
+        # paquete @voyya/api con `pnpm --filter`, igual que documenta
+        # infra/README.md / infra/scripts/bootstrap-db.sh para los e2e reales.
+        env:
+          PG_TEST_URL: postgresql://app_voyya:app_voyya_ci_pw@localhost:5432/voyya
+        run: pnpm --filter @voyya/api test
+
+  # ===========================================================================
+  # Deriva de contrato @voyyaa/shared — deuda conocida: el contrato vive
+  # duplicado en 4 sitios (este repo, voyya-mobile, voyya-admin y el repo
+  # voyya-shared) y hoy solo lo mantiene sincronizado la disciplina manual.
+  # Este job compara packages/shared/src (aquí) contra src/ del repo privado
+  # VoyYaa/voyya-shared y FALLA si difieren.
+  #
+  # SECRETO REQUERIDO (Settings -> Secrets and variables -> Actions -> New
+  # repository secret):
+  #   VOYYA_SHARED_REPO_TOKEN — token (PAT fine-grained recomendado) con
+  #   permiso de solo lectura ("Contents: Read-only") sobre el repo privado
+  #   VoyYaa/voyya-shared.
+  #
+  # Si el secreto no está configurado, este job se SALTA limpiamente (no rompe
+  # el resto del pipeline ni el CI en general).
+  # ===========================================================================
+  contract-drift:
+    name: Deriva de contrato @voyyaa/shared vs voyya-shared
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar si el secreto del repo de contrato está configurado
+        id: check-secret
+        env:
+          SHARED_REPO_TOKEN: ${{ secrets.VOYYA_SHARED_REPO_TOKEN }}
+        run: |
+          if [ -z "$SHARED_REPO_TOKEN" ]; then
+            echo "VOYYA_SHARED_REPO_TOKEN no está configurado: se salta el chequeo de deriva de contrato."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout voyya-backend
+        if: steps.check-secret.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          path: voyya-backend
+
+      - name: Checkout VoyYaa/voyya-shared
+        if: steps.check-secret.outputs.skip == 'false'
+        uses: actions/checkout@v4
+        with:
+          repository: VoyYaa/voyya-shared
+          token: ${{ secrets.VOYYA_SHARED_REPO_TOKEN }}
+          path: voyya-shared
+
+      - name: Comparar packages/shared/src contra voyya-shared/src
+        if: steps.check-secret.outputs.skip == 'false'
+        run: |
+          diff -rq voyya-backend/packages/shared/src voyya-shared/src \
+            && echo "Sin deriva: los contratos coinciden." \
+            || { echo "DERIVA DETECTADA entre packages/shared/src y voyya-shared/src (ver diff arriba)."; exit 1; }
