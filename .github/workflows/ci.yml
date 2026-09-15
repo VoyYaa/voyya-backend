@@ -66,11 +66,12 @@ jobs:
       # DATABASE_URL aunque no se conecte durante install/typecheck/lint/build.
       # Mismo patrón que usa el Dockerfile de este repo (build stage).
       DATABASE_URL: postgresql://build:build@localhost:5432/build?schema=public
-      # `.npmrc` referencia ${NPM_TOKEN} para el registry de @voyyaa (GitHub
-      # Packages). Si el secreto no está configurado, esta variable queda
-      # vacía: pnpm emite un WARN pero NO falla (comprobado localmente).
-      # Crear el secreto NPM_TOKEN solo si @voyyaa/shared llega a publicarse
-      # como paquete privado real en GitHub Packages.
+      # Tras ADR-008, el `.npmrc` versionado ya NO lee ${NPM_TOKEN} (esa
+      # interpolación anulaba el archivo completo si la variable no existía).
+      # Este env sigue aquí porque es inofensivo, pero ya no es el mecanismo
+      # de autenticación: la credencial, cuando @voyyaa/shared se publique,
+      # vive en actions/setup-node (registry-url + NODE_AUTH_TOKEN), no en un
+      # .npmrc versionado. Ver ADR-008 §3 y §6.
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     steps:
