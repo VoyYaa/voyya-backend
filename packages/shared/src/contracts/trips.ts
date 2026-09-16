@@ -22,7 +22,12 @@ export type TripStatus = z.infer<typeof TripStatus>;
 
 export const TRIP_STATUS_TRANSITIONS = {
   pending_assignment: ['assigned', 'no_driver', 'cancelled_by_passenger', 'expired'],
-  assigned: ['driver_en_route', 'pending_assignment', 'cancelled_by_passenger', 'cancelled_by_driver'],
+  assigned: [
+    'driver_en_route',
+    'pending_assignment',
+    'cancelled_by_passenger',
+    'cancelled_by_driver',
+  ],
   driver_en_route: ['in_progress', 'cancelled_by_passenger', 'cancelled_by_driver', 'no_show'],
   in_progress: ['completed'],
   completed: [],
@@ -41,6 +46,12 @@ export const PassengerUiState = z.enum([
   'calculating_fare',
   'searching',
   'driver_assigned',
+  'driver_en_route',
+  'driver_waiting',
+  'trip_in_progress',
+  'trip_completed',
+  'trip_no_show',
+  'trip_cancelled',
   'no_driver',
   'out_of_coverage',
   'offline',
@@ -58,7 +69,8 @@ export const Location = Coordinate.extend({
 });
 export type Location = z.infer<typeof Location>;
 
-const AmountCop = z.number().int().nonnegative();
+export const AmountCop = z.number().int().nonnegative();
+export type AmountCop = z.infer<typeof AmountCop>;
 
 export const FareBreakdown = z.object({
   base_fare: AmountCop,
@@ -145,6 +157,7 @@ export const TripRequestStatus = z.object({
   ui: PassengerUiState,
   fare: FareBreakdown,
   driver: AssignedDriverSummary.nullable(),
+  arrived_at: z.string().datetime().nullable(),
   updated_at: z.string().datetime(),
 });
 export type TripRequestStatus = z.infer<typeof TripRequestStatus>;
@@ -157,12 +170,18 @@ export const TripErrorCode = z.enum([
   'NOT_OWNER',
   'TRIP_REQUEST_NOT_FOUND',
   'FARE_NOT_CONFIGURED',
+  'INVALID_TRIP_TRANSITION',
+  'NOT_THE_DRIVER',
+  'NO_ACTIVE_ASSIGNMENT',
+  'ARRIVAL_NOT_MARKED',
+  'NO_SHOW_GRACE_PENDING',
 ]);
 export type TripErrorCode = z.infer<typeof TripErrorCode>;
 
 export const TripError = z.object({
   code: TripErrorCode,
   message: z.string(),
+  remaining_seconds: z.number().int().nonnegative().optional(),
 });
 export type TripError = z.infer<typeof TripError>;
 
@@ -171,6 +190,8 @@ export const TRIPS_EVENTS = {
   TRIP_REQUEST_CANCELLED: 'trip_request.cancelled',
   TRIP_REQUEST_NO_DRIVER: 'trip_request.no_driver',
   TRIP_REQUEST_EXPIRED: 'trip_request.expired',
+  TRIP_REQUEST_COMPLETED: 'trip_request.completed',
+  TRIP_REQUEST_NO_SHOW: 'trip_request.no_show',
 } as const;
 export type TripsEventName = (typeof TRIPS_EVENTS)[keyof typeof TRIPS_EVENTS];
 
@@ -205,3 +226,24 @@ export const TripRequestExpiredEvent = z.object({
   occurred_at: z.string().datetime(),
 });
 export type TripRequestExpiredEvent = z.infer<typeof TripRequestExpiredEvent>;
+
+export const TripRequestCompletedEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  net_earnings: AmountCop,
+  cash_collected: z.boolean(),
+  occurred_at: z.string().datetime(),
+});
+export type TripRequestCompletedEvent = z.infer<typeof TripRequestCompletedEvent>;
+
+export const TripRequestNoShowEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  arrived_at: z.string().datetime(),
+  occurred_at: z.string().datetime(),
+});
+export type TripRequestNoShowEvent = z.infer<typeof TripRequestNoShowEvent>;

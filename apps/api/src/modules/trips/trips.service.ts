@@ -241,6 +241,7 @@ export class TripsService {
       ui: passengerUiState(t.status),
       fare: await this.rebuildFare(t),
       driver,
+      arrived_at: null,
       updated_at: t.updatedAt.toISOString(),
     };
   }

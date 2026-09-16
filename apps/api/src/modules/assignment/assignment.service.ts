@@ -482,6 +482,7 @@ export class AssignmentService {
       trip_request_id: r.tripRequestId,
       driver_id: driverId,
       reason: dto.reason,
+      trip_request_status: 'pending_assignment',
       occurred_at: new Date().toISOString(),
     };
     this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER, ev);
