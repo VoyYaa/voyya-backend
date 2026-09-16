@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Assignment, Prisma } from '@prisma/client';
+import type { TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 export interface TripRequestInfo {
@@ -129,19 +130,23 @@ export class AssignmentRepository {
     });
   }
 
-  async getActiveAssignment(
+  async getAssignmentForDriver(
     tx: Prisma.TransactionClient,
     tripRequestId: number,
+    driverId: number,
     companyId: number,
-  ): Promise<Assignment | null> {
-    return tx.assignment.findFirst({
+  ): Promise<{ assignmentId: number } | null> {
+    const a = await tx.assignment.findFirst({
       where: {
         tripRequestId,
+        driverId,
         companyId,
-        status: { in: ['notified', 'accepted'] },
+        status: { in: ['accepted', 'completed', 'cancelled'] },
       },
       orderBy: { assignmentId: 'desc' },
+      select: { assignmentId: true },
     });
+    return a ? { assignmentId: a.assignmentId } : null;
   }
 
   async getAssignedDriver(
@@ -150,7 +155,7 @@ export class AssignmentRepository {
     companyId: number,
   ): Promise<AssignedDriverRow | null> {
     const a = await tx.assignment.findFirst({
-      where: { tripRequestId, companyId, status: 'accepted' },
+      where: { tripRequestId, companyId, status: { in: ['accepted', 'completed'] } },
       select: {
         driver: {
           select: {
@@ -341,17 +346,163 @@ export class AssignmentRepository {
     return rows.length === 1;
   }
 
-  async markAssignmentCancelled(
+  async reopenTripRequest(
     tx: Prisma.TransactionClient,
-    assignmentId: number,
-    companyId: number,
-  ): Promise<void> {
-    await tx.$executeRaw`
-      UPDATE assignment.assignment
-         SET status = 'cancelled', responded_at = now()
-       WHERE assignment_id = ${assignmentId}
-         AND company_id = ${companyId}
-         AND status IN ('notified', 'accepted')
+    tripRequestId: number,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
+      UPDATE trips.trip_request
+         SET status = 'pending_assignment', arrived_at = NULL, updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'assigned'
+      RETURNING trip_request_id
     `;
+    return rows.length === 1;
   }
+
+  async closeTripRequest(
+    tx: Prisma.TransactionClient,
+    params: CloseTripRequestParams,
+  ): Promise<TripClosingRow | null> {
+    const graceMin = params.noShowGraceMin ?? 0;
+    const rows = await tx.$queryRaw<
+      Array<{
+        status: TripStatus;
+        arrived_at: Date | null;
+        finished_at: Date | null;
+        net_earnings: number | null;
+        cash_collected_at: Date | null;
+        penalty_recorded: boolean;
+      }>
+    >`
+      UPDATE trips.trip_request
+         SET status = ${params.to}::trips."TripStatus",
+             finished_at = (now() AT TIME ZONE 'UTC'),
+             updated_at = (now() AT TIME ZONE 'UTC'),
+             net_earnings = CASE WHEN ${params.to} = 'completed' THEN fare - commission ELSE net_earnings END,
+             cash_collected_at = CASE WHEN ${params.cashCollected} THEN (now() AT TIME ZONE 'UTC') ELSE cash_collected_at END,
+             penalty_recorded = ${params.penaltyRecorded}
+       WHERE trip_request_id = ${params.tripRequestId}
+         AND status = ANY(${[...params.from]}::trips."TripStatus"[])
+         AND (
+           ${params.to} <> 'no_show'
+           OR (
+             arrived_at IS NOT NULL
+             AND (arrived_at AT TIME ZONE 'UTC') <= now() - (${graceMin} * interval '1 minute')
+           )
+         )
+      RETURNING
+        status,
+        arrived_at,
+        finished_at,
+        net_earnings::float8 AS net_earnings,
+        cash_collected_at,
+        penalty_recorded
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      status: row.status,
+      arrivedAt: row.arrived_at,
+      finishedAt: row.finished_at,
+      netEarnings: row.net_earnings,
+      cashCollectedAt: row.cash_collected_at,
+      penaltyRecorded: row.penalty_recorded,
+    };
+  }
+
+  async getTripClosingSnapshot(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+  ): Promise<TripClosingRow | null> {
+    const t = await tx.tripRequest.findUnique({
+      where: { tripRequestId },
+      select: {
+        status: true,
+        arrivedAt: true,
+        finishedAt: true,
+        netEarnings: true,
+        cashCollectedAt: true,
+        penaltyRecorded: true,
+      },
+    });
+    if (!t) return null;
+    return {
+      status: t.status,
+      arrivedAt: t.arrivedAt,
+      finishedAt: t.finishedAt,
+      netEarnings: t.netEarnings === null ? null : Number(t.netEarnings),
+      cashCollectedAt: t.cashCollectedAt,
+      penaltyRecorded: t.penaltyRecorded,
+    };
+  }
+
+  async closeAssignmentsForTrip(
+    tx: Prisma.TransactionClient,
+    params: {
+      tripRequestId: number;
+      companyId: number;
+      status: 'completed' | 'cancelled';
+      reason: string | null;
+    },
+  ): Promise<ClosedAssignmentRow | null> {
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number; driver_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = ${params.status}::assignment."AssignmentStatus",
+             responded_at = (now() AT TIME ZONE 'UTC'),
+             cancellation_reason = ${params.reason}
+       WHERE trip_request_id = ${params.tripRequestId}
+         AND company_id = ${params.companyId}
+         AND status IN ('notified', 'accepted')
+      RETURNING assignment_id, driver_id
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return { assignmentId: row.assignment_id, driverId: row.driver_id };
+  }
+
+  async getNoShowRemainingSeconds(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+    graceMin: number,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<Array<{ remaining_seconds: number | null }>>`
+      SELECT GREATEST(
+               0,
+               CEIL(
+                 EXTRACT(
+                   EPOCH FROM (
+                     (arrived_at AT TIME ZONE 'UTC') + (${graceMin} * interval '1 minute') - now()
+                   )
+                 )
+               )
+             )::int AS remaining_seconds
+        FROM trips.trip_request
+       WHERE trip_request_id = ${tripRequestId}
+    `;
+    return rows[0]?.remaining_seconds ?? 0;
+  }
+}
+
+export interface CloseTripRequestParams {
+  tripRequestId: number;
+  to: TripStatus;
+  from: readonly TripStatus[];
+  cashCollected: boolean;
+  penaltyRecorded: boolean;
+  noShowGraceMin?: number;
+}
+
+export interface TripClosingRow {
+  status: TripStatus;
+  arrivedAt: Date | null;
+  finishedAt: Date | null;
+  netEarnings: number | null;
+  cashCollectedAt: Date | null;
+  penaltyRecorded: boolean;
+}
+
+export interface ClosedAssignmentRow {
+  assignmentId: number;
+  driverId: number;
 }

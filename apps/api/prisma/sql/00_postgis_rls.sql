@@ -87,3 +87,12 @@ CREATE POLICY tenant_isolation_assignment ON assignment.assignment
 --   SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'app_voyya';
 --   SELECT relname, relrowsecurity, relforcerowsecurity
 --   FROM pg_class WHERE relname IN ('driver','vehicle','assignment');
+
+-- (f) Trip lifecycle partial indexes (ADR-010) ---------------------------------
+CREATE INDEX IF NOT EXISTS idx_trip_request_cash_pending
+  ON trips.trip_request (trip_request_id)
+  WHERE status = 'completed' AND cash_collected_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_trip_request_penalty
+  ON trips.trip_request (passenger_id, finished_at)
+  WHERE penalty_recorded;

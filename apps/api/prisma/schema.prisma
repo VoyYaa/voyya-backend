@@ -235,6 +235,7 @@ model TripRequest {
   requestedAt       DateTime      @default(now()) @map("requested_at")
   status            TripStatus    @default(pending_assignment) @map("status")
   assignedAt        DateTime?     @map("assigned_at")
+  arrivedAt         DateTime?     @map("arrived_at")
   type              String        @default("immediate") @map("type")
   scheduledPickupAt DateTime?     @map("scheduled_pickup_at")
   finishedAt        DateTime?     @map("finished_at")
@@ -242,6 +243,8 @@ model TripRequest {
   fare              Decimal       @map("fare") @db.Decimal(12, 2)
   commission        Decimal       @map("commission") @db.Decimal(12, 2)
   netEarnings       Decimal?      @map("net_earnings") @db.Decimal(12, 2)
+  cashCollectedAt   DateTime?     @map("cash_collected_at")
+  penaltyRecorded   Boolean       @default(false) @map("penalty_recorded")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
   passenger    Passenger    @relation(fields: [passengerId], references: [passengerId])

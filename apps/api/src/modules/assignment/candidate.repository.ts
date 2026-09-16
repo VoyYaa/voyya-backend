@@ -14,6 +14,7 @@ export interface CandidateSearch {
   lng: number;
   radiusKm: number;
   tiebreakWindowHours: number;
+  locationStaleMin: number;
   limit: number;
   exclude: number[];
 }
@@ -48,6 +49,13 @@ export class CandidateRepository {
         AND d.current_vehicle_id IS NOT NULL
         AND d.current_location IS NOT NULL
         AND ST_DWithin(d.current_location, ${point}, ${radiusMeters})
+        AND (
+          ${q.locationStaleMin} <= 0
+          OR (
+            d.location_updated_at IS NOT NULL
+            AND (d.location_updated_at AT TIME ZONE 'UTC') > now() - (${q.locationStaleMin} * interval '1 minute')
+          )
+        )
         ${exclusion}
       ORDER BY "distanceM" ASC, "tripsLast3h" ASC
       LIMIT ${q.limit}

@@ -59,6 +59,8 @@ export const EnvSchema = z.object({
   TIEBREAK_WINDOW_HOURS: z.coerce.number().positive().default(3),
   CANCELLATION_WINDOW_MIN: z.coerce.number().positive().default(2),
   AVG_SPEED_KMH: z.coerce.number().positive().default(20),
+  NO_SHOW_GRACE_MIN: z.coerce.number().positive().default(5),
+  LOCATION_STALE_MIN: z.coerce.number().nonnegative().default(15),
 
   PG_TEST_URL: z.string().min(1).optional(),
 });

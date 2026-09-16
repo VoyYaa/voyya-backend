@@ -17,9 +17,9 @@ import {
   type QuoteFareDTO,
   type QuoteResponse,
   type TripRequestCancelled,
-  type TripRequestCancelledEvent,
   type TripRequestCreated,
   type TripRequestCreatedEvent,
+  type TripRequestCancelledEvent,
   type TripRequestNoDriverEvent,
   type TripRequestStatus,
   type TripStatus,
@@ -30,6 +30,7 @@ import {
 import type { TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
 import { AssignmentService } from '../assignment/assignment.service';
+import { TripClosingService } from '../assignment/trip-closing.service';
 import { calculateFare } from './domain/fare.calculator';
 import { haversineKm } from './domain/geo';
 import { passengerUiState } from './domain/ui-state';
@@ -43,6 +44,7 @@ const STATUSES_WITH_DRIVER: readonly TripStatus[] = [
   'assigned',
   'driver_en_route',
   'in_progress',
+  'completed',
 ];
 
 @Injectable()
@@ -56,6 +58,7 @@ export class TripsService {
     private readonly emitter: EventEmitter2,
     @Inject(HOLIDAYS_PROVIDER) private readonly holidays: HolidaysProvider,
     private readonly assignment: AssignmentService,
+    private readonly tripClosing: TripClosingService,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
@@ -192,30 +195,36 @@ export class TripsService {
       const reference = tripRequest.assignedAt ?? tripRequest.updatedAt;
       freeOfCharge = minutesSince(reference) <= windowMin;
     }
-    const penalty_recorded = !freeOfCharge;
+    const penaltyRecorded = !freeOfCharge;
 
-    await this.repo.updateStatus(tripRequestId, 'cancelled_by_passenger');
+    const outcome = await this.tripClosing.closeTrip({
+      tripRequestId,
+      to: 'cancelled_by_passenger',
+      penaltyRecorded,
+    });
+    if (outcome.kind === 'rejected') {
+      throw new ConflictException({
+        code: 'STATUS_NOT_CANCELLABLE',
+        message: 'La solicitud ya no se puede cancelar',
+      });
+    }
 
-    const event: TripRequestCancelledEvent = {
-      trip_request_id: tripRequestId,
-      cancelled_by: 'passenger',
-      released_driver_id: null,
-      occurred_at: new Date().toISOString(),
-    };
-    this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_CANCELLED, event);
-
-    if (penalty_recorded) {
-      this.logger.warn(
-        `Penalty recorded (not charged) for late cancellation tripRequest=${tripRequestId}`,
-      );
+    if (outcome.kind === 'applied') {
+      const event: TripRequestCancelledEvent = {
+        trip_request_id: tripRequestId,
+        cancelled_by: 'passenger',
+        released_driver_id: null,
+        occurred_at: new Date().toISOString(),
+      };
+      this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_CANCELLED, event);
     }
 
     return {
       trip_request_id: tripRequestId,
       status: 'cancelled_by_passenger',
-      free_of_charge: freeOfCharge,
-      penalty_recorded,
-      cancelled_at: new Date().toISOString(),
+      free_of_charge: !outcome.penaltyRecorded,
+      penalty_recorded: outcome.penaltyRecorded,
+      cancelled_at: (outcome.finishedAt ?? new Date()).toISOString(),
     };
   }
 
@@ -238,10 +247,10 @@ export class TripsService {
     return {
       trip_request_id: t.tripRequestId,
       status: t.status,
-      ui: passengerUiState(t.status),
+      ui: passengerUiState(t.status, t.arrivedAt),
       fare: await this.rebuildFare(t),
       driver,
-      arrived_at: null,
+      arrived_at: t.arrivedAt ? t.arrivedAt.toISOString() : null,
       updated_at: t.updatedAt.toISOString(),
     };
   }
@@ -280,15 +289,10 @@ export class TripsService {
 
   @OnEvent(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER)
   async onCancelledByDriver(ev: AssignmentCancelledByDriverEvent): Promise<void> {
+    if (ev.trip_request_status !== 'pending_assignment') return;
     const tripRequest = await this.repo.getTripRequest(ev.trip_request_id);
     if (!tripRequest) return;
-    if (
-      !TripStateMachine.tripRequest.canTransition(tripRequest.status, 'pending_assignment')
-    ) {
-      return;
-    }
-    await this.repo.updateStatus(ev.trip_request_id, 'pending_assignment');
-    this.emitTripRequestCreated({ ...tripRequest, status: 'pending_assignment' });
+    this.emitTripRequestCreated(tripRequest);
   }
 
   private async transition(

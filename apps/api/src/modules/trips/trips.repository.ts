@@ -3,6 +3,11 @@ import type { FareConfig, TripRequest } from '@prisma/client';
 import { type TripStatus, ACTIVE_TRIP_STATUSES, type ServiceType } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
+export type TripTransitionOutcome<T> =
+  | { kind: 'applied'; row: T }
+  | { kind: 'idempotent'; row: T }
+  | { kind: 'rejected'; status: TripStatus };
+
 export interface CreateTripRequestData {
   passengerId: number;
   municipalityId: number;
@@ -94,5 +99,91 @@ export class TripsRepository {
       where: { tripRequestId },
       data: { status },
     });
+  }
+
+  async markEnRoute(
+    tripRequestId: number,
+  ): Promise<TripTransitionOutcome<{ updatedAt: Date }>> {
+    const rows = await this.prisma.$queryRaw<Array<{ updated_at: Date }>>`
+      UPDATE trips.trip_request
+         SET status = 'driver_en_route'::trips."TripStatus", updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'assigned'::trips."TripStatus"
+      RETURNING updated_at
+    `;
+    const row = rows[0];
+    if (row) return { kind: 'applied', row: { updatedAt: row.updated_at } };
+
+    const current = await this.getTripRequest(tripRequestId);
+    if (!current) return { kind: 'rejected', status: 'expired' };
+    if (current.status === 'driver_en_route') {
+      return { kind: 'idempotent', row: { updatedAt: current.updatedAt } };
+    }
+    return { kind: 'rejected', status: current.status };
+  }
+
+  async markArrived(
+    tripRequestId: number,
+  ): Promise<TripTransitionOutcome<{ arrivedAt: Date }>> {
+    const rows = await this.prisma.$queryRaw<Array<{ arrived_at: Date }>>`
+      UPDATE trips.trip_request
+         SET arrived_at = (now() AT TIME ZONE 'UTC'), updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'driver_en_route'::trips."TripStatus"
+         AND arrived_at IS NULL
+      RETURNING arrived_at
+    `;
+    const row = rows[0];
+    if (row) return { kind: 'applied', row: { arrivedAt: row.arrived_at } };
+
+    const current = await this.getTripRequest(tripRequestId);
+    if (!current) return { kind: 'rejected', status: 'expired' };
+    if (current.status === 'driver_en_route' && current.arrivedAt !== null) {
+      return { kind: 'idempotent', row: { arrivedAt: current.arrivedAt } };
+    }
+    return { kind: 'rejected', status: current.status };
+  }
+
+  async markStarted(
+    tripRequestId: number,
+  ): Promise<TripTransitionOutcome<{ updatedAt: Date }>> {
+    const rows = await this.prisma.$queryRaw<Array<{ updated_at: Date }>>`
+      UPDATE trips.trip_request
+         SET status = 'in_progress'::trips."TripStatus", updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'driver_en_route'::trips."TripStatus"
+      RETURNING updated_at
+    `;
+    const row = rows[0];
+    if (row) return { kind: 'applied', row: { updatedAt: row.updated_at } };
+
+    const current = await this.getTripRequest(tripRequestId);
+    if (!current) return { kind: 'rejected', status: 'expired' };
+    if (current.status === 'in_progress') {
+      return { kind: 'idempotent', row: { updatedAt: current.updatedAt } };
+    }
+    return { kind: 'rejected', status: current.status };
+  }
+
+  async markCashCollected(
+    tripRequestId: number,
+  ): Promise<TripTransitionOutcome<{ cashCollectedAt: Date }>> {
+    const rows = await this.prisma.$queryRaw<Array<{ cash_collected_at: Date }>>`
+      UPDATE trips.trip_request
+         SET cash_collected_at = (now() AT TIME ZONE 'UTC'), updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE trip_request_id = ${tripRequestId}
+         AND status = 'completed'::trips."TripStatus"
+         AND cash_collected_at IS NULL
+      RETURNING cash_collected_at
+    `;
+    const row = rows[0];
+    if (row) return { kind: 'applied', row: { cashCollectedAt: row.cash_collected_at } };
+
+    const current = await this.getTripRequest(tripRequestId);
+    if (!current) return { kind: 'rejected', status: 'expired' };
+    if (current.status === 'completed' && current.cashCollectedAt !== null) {
+      return { kind: 'idempotent', row: { cashCollectedAt: current.cashCollectedAt } };
+    }
+    return { kind: 'rejected', status: current.status };
   }
 }

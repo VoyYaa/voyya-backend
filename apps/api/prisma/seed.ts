@@ -30,6 +30,8 @@ const PARAMETERS: Array<[string, string]> = [
   ['tiebreak_window_hours', '3'],
   ['cancellation_window_min', '2'],
   ['avg_speed_kmh', '20'],
+  ['no_show_grace_min', '5'],
+  ['location_stale_min', '15'],
 ];
 
 async function main(): Promise<void> {

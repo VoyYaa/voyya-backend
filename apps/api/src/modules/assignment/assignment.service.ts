@@ -28,13 +28,14 @@ import {
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { calculateEta, haversineKm } from '../trips/domain/geo';
-import {
-  AssignmentParamsService,
-  type AssignmentParams,
-} from './assignment-params.service';
 import { AssignmentRepository, type TripRequestInfo } from './assignment.repository';
 import { CandidateRepository } from './candidate.repository';
+import {
+  OperationalParamsService,
+  type OperationalParams,
+} from './operational-params.service';
 import { PUSH_PROVIDER, type PushProvider } from './ports/push-provider.port';
+import { TripClosingService } from './trip-closing.service';
 
 export class TripRequestAlreadyTakenError extends Error {
   constructor() {
@@ -49,7 +50,7 @@ interface ChainContext {
   municipalityId: number;
   origin: { lat: number; lng: number };
   info: TripRequestInfo;
-  params: AssignmentParams;
+  params: OperationalParams;
   attempted: Set<number>;
   order: number;
   expanded: boolean;
@@ -66,9 +67,10 @@ export class AssignmentService {
     private readonly prisma: PrismaService,
     private readonly candidateRepo: CandidateRepository,
     private readonly repo: AssignmentRepository,
-    private readonly paramsService: AssignmentParamsService,
+    private readonly paramsService: OperationalParamsService,
     private readonly emitter: EventEmitter2,
     @Inject(PUSH_PROVIDER) private readonly push: PushProvider,
+    private readonly tripClosing: TripClosingService,
   ) {}
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CREATED)
@@ -125,6 +127,7 @@ export class AssignmentService {
         lng: ctx.origin.lng,
         radiusKm,
         tiebreakWindowHours: ctx.params.tiebreakWindowHours,
+        locationStaleMin: ctx.params.locationStaleMin,
         limit: 1,
         exclude: [...ctx.attempted],
       }),
@@ -380,6 +383,16 @@ export class AssignmentService {
     };
   }
 
+  async getAcceptedAssignment(
+    tripRequestId: number,
+    driverId: number,
+    companyId: number,
+  ): Promise<{ assignmentId: number } | null> {
+    return this.prisma.runInTenant(companyId, (tx) =>
+      this.repo.getAssignmentForDriver(tx, tripRequestId, driverId, companyId),
+    );
+  }
+
   async listNearby(driverId: number, companyId: number): Promise<AssignmentNotification[]> {
     const { offers, location } = await this.prisma.runInTenant(companyId, async (tx) => ({
       offers: await this.repo.getPendingOffers(tx, driverId, companyId),
@@ -458,10 +471,31 @@ export class AssignmentService {
       if (!a) return { kind: 'not_found' as const };
       if (a.driverId !== driverId) return { kind: 'not_driver' as const };
       if (a.status !== 'accepted') return { kind: 'invalid_status' as const };
-      const ok = await this.repo.markCancelledByDriver(tx, assignmentId, companyId, dto.reason);
-      if (!ok) return { kind: 'invalid_status' as const };
-      await this.repo.releaseDriver(tx, driverId, companyId);
-      return { kind: 'ok' as const, tripRequestId: a.tripRequestId };
+
+      const reopened = await this.repo.reopenTripRequest(tx, a.tripRequestId);
+      if (reopened) {
+        await this.repo.markCancelledByDriver(tx, assignmentId, companyId, dto.reason);
+        await this.repo.releaseDriver(tx, driverId, companyId);
+        return {
+          kind: 'ok' as const,
+          tripRequestId: a.tripRequestId,
+          status: 'pending_assignment' as const,
+        };
+      }
+
+      const closed = await this.tripClosing.closeTripInTx(tx, companyId, {
+        tripRequestId: a.tripRequestId,
+        to: 'cancelled_by_driver',
+        cancellationReason: dto.reason,
+      });
+      if (closed.kind === 'applied' || closed.kind === 'idempotent') {
+        return {
+          kind: 'ok' as const,
+          tripRequestId: a.tripRequestId,
+          status: 'cancelled_by_driver' as const,
+        };
+      }
+      return { kind: 'invalid_status' as const };
     });
 
     if (r.kind === 'not_found') {
@@ -482,7 +516,7 @@ export class AssignmentService {
       trip_request_id: r.tripRequestId,
       driver_id: driverId,
       reason: dto.reason,
-      trip_request_status: 'pending_assignment',
+      trip_request_status: r.status,
       occurred_at: new Date().toISOString(),
     };
     this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER, ev);
@@ -490,35 +524,16 @@ export class AssignmentService {
     return {
       assignment_id: assignmentId,
       trip_request_id: r.tripRequestId,
-      trip_request_status: 'pending_assignment',
-      searching_again: true,
+      trip_request_status: r.status,
+      searching_again: r.status === 'pending_assignment',
     };
   }
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CANCELLED)
-  async onTripRequestCancelled(ev: TripRequestCancelledEvent): Promise<void> {
-    try {
-      const ctx = this.chains.get(ev.trip_request_id);
-      if (ctx?.currentAssignment != null) this.clearTimer(ctx.currentAssignment);
-      this.chains.delete(ev.trip_request_id);
-
-      const info = await this.repo.getTripRequestInfo(ev.trip_request_id);
-      if (!info) return;
-      const companyId =
-        ctx?.companyId ?? (await this.repo.resolveActiveCompany(info.municipalityId));
-      if (companyId === null) return;
-
-      await this.prisma.runInTenant(companyId, async (tx) => {
-        const a = await this.repo.getActiveAssignment(tx, ev.trip_request_id, companyId);
-        if (!a) return;
-        if (a.status === 'accepted') {
-          await this.repo.releaseDriver(tx, a.driverId, companyId);
-        }
-        await this.repo.markAssignmentCancelled(tx, a.assignmentId, companyId);
-      });
-    } catch (e) {
-      this.logger.error(`Release on cancel failed tripRequest=${ev.trip_request_id}: ${msg(e)}`);
-    }
+  onTripRequestCancelled(ev: TripRequestCancelledEvent): void {
+    const ctx = this.chains.get(ev.trip_request_id);
+    if (ctx?.currentAssignment != null) this.clearTimer(ctx.currentAssignment);
+    this.chains.delete(ev.trip_request_id);
   }
 }
 

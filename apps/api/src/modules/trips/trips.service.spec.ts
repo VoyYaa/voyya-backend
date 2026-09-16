@@ -8,6 +8,11 @@ import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { AssignmentService } from '../assignment/assignment.service';
+import type {
+  CloseTripInput,
+  CloseTripOutcome,
+  TripClosingService,
+} from '../assignment/trip-closing.service';
 import type { HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
@@ -30,6 +35,7 @@ interface FakeTripRequest {
   passengerId: number;
   status: string;
   assignedAt: Date | null;
+  arrivedAt?: Date | null;
   updatedAt: Date;
   municipalityId?: number;
   serviceType?: string;
@@ -42,6 +48,7 @@ interface FakeState {
   active?: boolean;
   tripRequest?: FakeTripRequest | null;
   summary?: AssignedDriverSummary | null;
+  tripClosingRejected?: boolean;
 }
 
 function fakeRepo(state: FakeState): TripsRepository {
@@ -88,6 +95,25 @@ function fakeAssignment(summary: AssignedDriverSummary | null): AssignmentServic
   } as unknown as AssignmentService;
 }
 
+function fakeTripClosing(rejected = false): TripClosingService {
+  return {
+    async closeTrip(input: CloseTripInput): Promise<CloseTripOutcome> {
+      if (rejected) {
+        return { kind: 'rejected', reason: 'invalid_status', status: 'cancelled_by_passenger' };
+      }
+      return {
+        kind: 'applied',
+        status: input.to,
+        arrivedAt: null,
+        finishedAt: new Date(),
+        netEarnings: null,
+        cashCollectedAt: null,
+        penaltyRecorded: input.penaltyRecorded ?? false,
+      };
+    },
+  } as unknown as TripClosingService;
+}
+
 const ORIGIN = { lat: 6.9639, lng: -75.4186, address: 'Parque principal' };
 const DESTINATION = { lat: 6.97, lng: -75.42, address: 'Hospital' };
 
@@ -105,6 +131,7 @@ function createService(
     emitter as unknown as EventEmitter2,
     NO_HOLIDAYS,
     fakeAssignment(state.summary ?? null),
+    fakeTripClosing(state.tripClosingRejected ?? false),
   );
   return { service, emitter };
 }
@@ -211,6 +238,7 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
     passengerId: 1,
     status: 'pending_assignment',
     assignedAt: null,
+    arrivedAt: null,
     updatedAt: new Date(),
     municipalityId: 1,
     serviceType: 'taxi',
@@ -244,6 +272,37 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
     });
     const r = await service.getStatus(9, 1);
     expect(r.ui).toBe('driver_assigned');
+    expect(r.driver).toEqual(SUMMARY);
+  });
+
+  it('driver_en_route without arrival -> ui "driver_en_route", arrived_at null', async () => {
+    const { service } = createService({
+      tripRequest: base({ status: 'driver_en_route', assignedAt: new Date() }),
+      summary: SUMMARY,
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.ui).toBe('driver_en_route');
+    expect(r.arrived_at).toBeNull();
+  });
+
+  it('driver_en_route with arrival -> ui "driver_waiting", arrived_at present', async () => {
+    const arrivedAt = new Date();
+    const { service } = createService({
+      tripRequest: base({ status: 'driver_en_route', assignedAt: new Date(), arrivedAt }),
+      summary: SUMMARY,
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.ui).toBe('driver_waiting');
+    expect(r.arrived_at).toBe(arrivedAt.toISOString());
+  });
+
+  it('completed -> driver still present, ui "trip_completed" (HU-VJ-11)', async () => {
+    const { service } = createService({
+      tripRequest: base({ status: 'completed', assignedAt: new Date() }),
+      summary: SUMMARY,
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.ui).toBe('trip_completed');
     expect(r.driver).toEqual(SUMMARY);
   });
 
@@ -308,5 +367,13 @@ describe('TripsService.cancel (free window from assignedAt)', () => {
   it('not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {
     const { service } = createService({ tripRequest: null });
     await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('closeTrip rejects the transition (lost the race) -> 409 STATUS_NOT_CANCELLABLE', async () => {
+    const { service } = createService({
+      tripRequest: tr({ assignedAt: minutesAgo(1) }),
+      tripClosingRejected: true,
+    });
+    await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(ConflictException);
   });
 });

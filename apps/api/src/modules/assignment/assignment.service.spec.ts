@@ -1,10 +1,11 @@
 import { NotFoundException } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { AssignmentService } from './assignment.service';
-import type { AssignmentParamsService } from './assignment-params.service';
 import type { AssignmentRepository } from './assignment.repository';
 import type { CandidateRepository } from './candidate.repository';
+import type { OperationalParamsService } from './operational-params.service';
 import type { PushProvider } from './ports/push-provider.port';
+import type { TripClosingService } from './trip-closing.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 interface DriverRow {
@@ -114,9 +115,10 @@ function buildService(db: FakeDb): AssignmentService {
   const emitter = { emit: () => true } as unknown as EventEmitter2;
   const push = { async sendAssignment() {} } as unknown as PushProvider;
   const candidateRepo = {} as unknown as CandidateRepository;
-  const params = {} as unknown as AssignmentParamsService;
+  const params = {} as unknown as OperationalParamsService;
+  const tripClosing = {} as unknown as TripClosingService;
 
-  return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push);
+  return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
 }
 
 const COMPANY = 1;
@@ -211,8 +213,9 @@ describe('AssignmentService.listNearby (GET /assignments/nearby · polling)', ()
     const emitter = { emit: () => true } as unknown as EventEmitter2;
     const push = { async sendAssignment() {} } as unknown as PushProvider;
     const candidateRepo = {} as unknown as CandidateRepository;
-    const params = {} as unknown as AssignmentParamsService;
-    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push);
+    const params = {} as unknown as OperationalParamsService;
+    const tripClosing = {} as unknown as TripClosingService;
+    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
   }
 
   const offer = {
