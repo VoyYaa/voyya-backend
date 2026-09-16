@@ -1,7 +1,8 @@
 import { NotFoundException } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
+import type { AssignmentStatus } from '@voyyaa/shared';
 import { AssignmentService } from './assignment.service';
-import type { AssignmentRepository } from './assignment.repository';
+import type { AssignedDriverRow, AssignmentRepository, TripRequestInfo } from './assignment.repository';
 import type { CandidateRepository } from './candidate.repository';
 import type { OperationalParamsService } from './operational-params.service';
 import type { PushProvider } from './ports/push-provider.port';
@@ -262,5 +263,122 @@ describe('AssignmentService.listNearby (GET /assignments/nearby · polling)', ()
     expect(await service.listNearby(5, 2)).toEqual([]);
     expect(await service.listNearby(5, 1)).toHaveLength(1);
     expect(getOffers).toHaveBeenCalledWith(expect.anything(), 5, 2);
+  });
+});
+
+describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only while active)', () => {
+  const ROW: AssignedDriverRow = {
+    name: 'Carlos Ruiz',
+    phone: '3001234567',
+    plate: 'ABC123',
+    model: 'Logan',
+    lat: 6.965,
+    lng: -75.42,
+  };
+
+  function build(row: AssignedDriverRow | null): AssignmentService {
+    const prisma = {
+      runInTenant: async <T>(_c: number, fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
+    } as unknown as PrismaService;
+    const repo = {
+      async getTripRequestInfo(): Promise<TripRequestInfo> {
+        return {
+          tripRequestId: 1,
+          passengerId: 1,
+          municipalityId: 1,
+          pickupAddress: 'Cra 1',
+          dropoffAddress: 'Cra 2',
+          pickupLat: 6.9639,
+          pickupLng: -75.4186,
+          fare: 8000,
+          status: 'assigned',
+        };
+      },
+      async resolveActiveCompany(): Promise<number> {
+        return 1;
+      },
+      async getAssignedDriver(): Promise<AssignedDriverRow | null> {
+        return row;
+      },
+    } as unknown as AssignmentRepository;
+    const params = {
+      async get() {
+        return { avgSpeedKmh: 20 } as never;
+      },
+    } as unknown as OperationalParamsService;
+    const emitter = { emit: () => true } as unknown as EventEmitter2;
+    const push = { async sendAssignment() {} } as unknown as PushProvider;
+    const candidateRepo = {} as unknown as CandidateRepository;
+    const tripClosing = {} as unknown as TripClosingService;
+    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+  }
+
+  it('includeContact=true -> exposes contact_phone and computes eta', async () => {
+    const service = build(ROW);
+    const r = await service.getAssignedDriverSummary(1, true);
+    expect(r?.name).toBe('Carlos Ruiz');
+    expect(r?.plate).toBe('ABC123');
+    expect(r?.contact_phone).toBe('3001234567');
+    expect(r?.eta).not.toBeNull();
+  });
+
+  it('includeContact=false -> hides contact_phone and eta, keeps name/plate/model (HU-VJ-11)', async () => {
+    const service = build(ROW);
+    const r = await service.getAssignedDriverSummary(1, false);
+    expect(r?.name).toBe('Carlos Ruiz');
+    expect(r?.plate).toBe('ABC123');
+    expect(r?.model).toBe('Logan');
+    expect(r?.contact_phone).toBeNull();
+    expect(r?.eta).toBeNull();
+  });
+
+  it('no assignment found -> null regardless of includeContact', async () => {
+    const service = build(null);
+    expect(await service.getAssignedDriverSummary(1, true)).toBeNull();
+    expect(await service.getAssignedDriverSummary(1, false)).toBeNull();
+  });
+});
+
+describe('AssignmentService.getAcceptedAssignment (V-01: allow-list, never "cancelled")', () => {
+  function build(getAssignmentForDriver: jest.Mock): AssignmentService {
+    const prisma = {
+      runInTenant: async <T>(_c: number, fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
+    } as unknown as PrismaService;
+    const repo = { getAssignmentForDriver } as unknown as AssignmentRepository;
+    const emitter = { emit: () => true } as unknown as EventEmitter2;
+    const push = { async sendAssignment() {} } as unknown as PushProvider;
+    const candidateRepo = {} as unknown as CandidateRepository;
+    const params = {} as unknown as OperationalParamsService;
+    const tripClosing = {} as unknown as TripClosingService;
+    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+  }
+
+  it('defaults to allow=["accepted"] when the caller does not specify one', async () => {
+    const getAssignmentForDriver = jest.fn().mockResolvedValue(null);
+    const service = build(getAssignmentForDriver);
+
+    await service.getAcceptedAssignment(42, 7, 1);
+
+    expect(getAssignmentForDriver).toHaveBeenCalledWith(expect.anything(), 42, 7, 1, ['accepted']);
+  });
+
+  it('forwards an explicit allow-list (e.g. ["completed"] for cash-collected) unchanged', async () => {
+    const getAssignmentForDriver = jest.fn().mockResolvedValue(null);
+    const service = build(getAssignmentForDriver);
+    const allow: AssignmentStatus[] = ['completed'];
+
+    await service.getAcceptedAssignment(42, 7, 1, allow);
+
+    expect(getAssignmentForDriver).toHaveBeenCalledWith(expect.anything(), 42, 7, 1, allow);
+  });
+
+  it('"cancelled" is never part of the default allow-list (V-01 regression guard)', async () => {
+    const getAssignmentForDriver = jest.fn().mockResolvedValue(null);
+    const service = build(getAssignmentForDriver);
+
+    await service.getAcceptedAssignment(42, 7, 1);
+
+    const forwarded = getAssignmentForDriver.mock.calls[0]?.[4] as AssignmentStatus[];
+    expect(forwarded).not.toContain('cancelled');
   });
 });

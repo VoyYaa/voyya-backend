@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Assignment, Prisma } from '@prisma/client';
-import type { TripStatus } from '@voyyaa/shared';
+import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 export interface TripRequestInfo {
@@ -135,13 +135,14 @@ export class AssignmentRepository {
     tripRequestId: number,
     driverId: number,
     companyId: number,
+    statuses: readonly AssignmentStatus[],
   ): Promise<{ assignmentId: number } | null> {
     const a = await tx.assignment.findFirst({
       where: {
         tripRequestId,
         driverId,
         companyId,
-        status: { in: ['accepted', 'completed', 'cancelled'] },
+        status: { in: [...statuses] },
       },
       orderBy: { assignmentId: 'desc' },
       select: { assignmentId: true },
@@ -241,7 +242,7 @@ export class AssignmentRepository {
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ driver_id: number }>>`
       UPDATE fleet.driver
-         SET status = 'on_trip', updated_at = now()
+         SET status = 'on_trip', updated_at = (now() AT TIME ZONE 'UTC')
        WHERE driver_id = ${driverId}
          AND status = 'available'
          AND company_id = ${companyId}
@@ -257,7 +258,7 @@ export class AssignmentRepository {
   ): Promise<void> {
     await tx.$executeRaw`
       UPDATE fleet.driver
-         SET status = 'available', updated_at = now()
+         SET status = 'available', updated_at = (now() AT TIME ZONE 'UTC')
        WHERE driver_id = ${driverId}
          AND status = 'on_trip'
          AND company_id = ${companyId}
@@ -271,7 +272,7 @@ export class AssignmentRepository {
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
       UPDATE assignment.assignment
-         SET status = 'accepted', responded_at = now()
+         SET status = 'accepted', responded_at = (now() AT TIME ZONE 'UTC')
        WHERE assignment_id = ${assignmentId}
          AND company_id = ${companyId}
          AND status = 'notified'
@@ -286,7 +287,9 @@ export class AssignmentRepository {
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
       UPDATE trips.trip_request
-         SET status = 'assigned', assigned_at = now(), updated_at = now()
+         SET status = 'assigned',
+             assigned_at = (now() AT TIME ZONE 'UTC'),
+             updated_at = (now() AT TIME ZONE 'UTC')
        WHERE trip_request_id = ${tripRequestId}
          AND status = 'pending_assignment'
       RETURNING trip_request_id
@@ -301,7 +304,7 @@ export class AssignmentRepository {
   ): Promise<{ assignmentId: number; driverId: number } | null> {
     const rows = await tx.$queryRaw<Array<{ assignment_id: number; driver_id: number }>>`
       UPDATE assignment.assignment
-         SET status = 'timeout', responded_at = now()
+         SET status = 'timeout', responded_at = (now() AT TIME ZONE 'UTC')
        WHERE assignment_id = ${assignmentId}
          AND company_id = ${companyId}
          AND status = 'notified'
@@ -320,7 +323,7 @@ export class AssignmentRepository {
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
       UPDATE assignment.assignment
-         SET status = 'rejected', responded_at = now(), cancellation_reason = ${reason}
+         SET status = 'rejected', responded_at = (now() AT TIME ZONE 'UTC'), cancellation_reason = ${reason}
        WHERE assignment_id = ${assignmentId}
          AND company_id = ${companyId}
          AND status = 'notified'
@@ -337,7 +340,7 @@ export class AssignmentRepository {
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
       UPDATE assignment.assignment
-         SET status = 'cancelled', responded_at = now(), cancellation_reason = ${reason}
+         SET status = 'cancelled', responded_at = (now() AT TIME ZONE 'UTC'), cancellation_reason = ${reason}
        WHERE assignment_id = ${assignmentId}
          AND company_id = ${companyId}
          AND status = 'accepted'
@@ -381,7 +384,7 @@ export class AssignmentRepository {
              updated_at = (now() AT TIME ZONE 'UTC'),
              net_earnings = CASE WHEN ${params.to} = 'completed' THEN fare - commission ELSE net_earnings END,
              cash_collected_at = CASE WHEN ${params.cashCollected} THEN (now() AT TIME ZONE 'UTC') ELSE cash_collected_at END,
-             penalty_recorded = ${params.penaltyRecorded}
+             penalty_recorded = penalty_recorded OR ${params.penaltyRecorded}
        WHERE trip_request_id = ${params.tripRequestId}
          AND status = ANY(${[...params.from]}::trips."TripStatus"[])
          AND (
@@ -444,8 +447,10 @@ export class AssignmentRepository {
       companyId: number;
       status: 'completed' | 'cancelled';
       reason: string | null;
+      driverId?: number;
     },
   ): Promise<ClosedAssignmentRow | null> {
+    const driverId = params.driverId ?? null;
     const rows = await tx.$queryRaw<Array<{ assignment_id: number; driver_id: number }>>`
       UPDATE assignment.assignment
          SET status = ${params.status}::assignment."AssignmentStatus",
@@ -454,6 +459,7 @@ export class AssignmentRepository {
        WHERE trip_request_id = ${params.tripRequestId}
          AND company_id = ${params.companyId}
          AND status IN ('notified', 'accepted')
+         AND (${driverId}::int IS NULL OR driver_id = ${driverId}::int)
       RETURNING assignment_id, driver_id
     `;
     const row = rows[0];

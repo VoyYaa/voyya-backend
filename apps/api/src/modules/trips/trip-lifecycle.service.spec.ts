@@ -1,6 +1,6 @@
 import { ConflictException, ForbiddenException, HttpException } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
-import type { TripStatus } from '@voyyaa/shared';
+import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
 import { TripLifecycleService } from './trip-lifecycle.service';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
@@ -236,5 +236,186 @@ describe('TripLifecycleService.complete', () => {
     expect(r.net_earnings).toBe(9200);
     expect(r.finished_at).toBe(finishedAt.toISOString());
     expect(emitter.emit).toHaveBeenCalledWith('trip_request.completed', expect.anything());
+  });
+});
+
+function buildAssignmentSpy(): { assignment: AssignmentService; spy: jest.Mock } {
+  const spy = jest.fn(async () => ({ assignmentId: 1 }));
+  return { assignment: { getAcceptedAssignment: spy } as unknown as AssignmentService, spy };
+}
+
+describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment (V-01)', () => {
+  it('markEnRoute -> allow=["accepted"]', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'applied',
+      row: { updatedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markEnRoute: async () => outcome }),
+      assignment,
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.markEnRoute(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+  });
+
+  it('markArrived -> allow=["accepted"]', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const outcome: TripTransitionOutcome<{ arrivedAt: Date }> = {
+      kind: 'applied',
+      row: { arrivedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markArrived: async () => outcome }),
+      assignment,
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+  });
+
+  it('markStarted -> allow=["accepted"]', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'applied',
+      row: { updatedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markStarted: async () => outcome }),
+      assignment,
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+  });
+
+  it('complete -> allow=["accepted"] (the assignment is still "accepted" when /complete runs)', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const service = new TripLifecycleService(
+      buildRepo({}),
+      assignment,
+      buildTripClosing({
+        kind: 'applied',
+        status: 'completed',
+        arrivedAt: null,
+        finishedAt: new Date(),
+        netEarnings: 9200,
+        cashCollectedAt: new Date(),
+        penaltyRecorded: false,
+      }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.complete(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { cash_collected: true });
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+  });
+
+  it('declareNoShow -> allow=["accepted"]', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const service = new TripLifecycleService(
+      buildRepo({}),
+      assignment,
+      buildTripClosing({
+        kind: 'applied',
+        status: 'no_show',
+        arrivedAt: new Date(),
+        finishedAt: new Date(),
+        netEarnings: null,
+        cashCollectedAt: null,
+        penaltyRecorded: false,
+      }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.declareNoShow(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+  });
+
+  it('confirmCashCollected -> allow=["completed"] (the assignment is already closed by /complete)', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const outcome: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
+      kind: 'applied',
+      row: { cashCollectedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markCashCollected: async () => outcome }),
+      assignment,
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['completed']);
+  });
+
+  it('none of the six lifecycle transitions ever allow a "cancelled" assignment (V-01 regression guard)', async () => {
+    const { assignment, spy } = buildAssignmentSpy();
+    const enRouteOutcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'applied',
+      row: { updatedAt: new Date() },
+    };
+    const arrivedOutcome: TripTransitionOutcome<{ arrivedAt: Date }> = {
+      kind: 'applied',
+      row: { arrivedAt: new Date() },
+    };
+    const startedOutcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'applied',
+      row: { updatedAt: new Date() },
+    };
+    const cashOutcome: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
+      kind: 'applied',
+      row: { cashCollectedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({
+        markEnRoute: async () => enRouteOutcome,
+        markArrived: async () => arrivedOutcome,
+        markStarted: async () => startedOutcome,
+        markCashCollected: async () => cashOutcome,
+      }),
+      assignment,
+      buildTripClosing({
+        kind: 'applied',
+        status: 'completed',
+        arrivedAt: new Date(),
+        finishedAt: new Date(),
+        netEarnings: 9200,
+        cashCollectedAt: new Date(),
+        penaltyRecorded: false,
+      }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    await service.markEnRoute(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.complete(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { cash_collected: false });
+    await service.declareNoShow(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(spy).toHaveBeenCalledTimes(6);
+    for (const call of spy.mock.calls as unknown as [number, number, number, AssignmentStatus[]][]) {
+      expect(call[3]).not.toContain('cancelled');
+    }
   });
 });

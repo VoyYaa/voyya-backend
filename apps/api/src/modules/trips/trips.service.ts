@@ -47,6 +47,8 @@ const STATUSES_WITH_DRIVER: readonly TripStatus[] = [
   'completed',
 ];
 
+const STATUSES_WITH_DRIVER_CONTACT: readonly TripStatus[] = ['assigned', 'driver_en_route'];
+
 @Injectable()
 export class TripsService {
   private readonly logger = new Logger(TripsService.name);
@@ -241,7 +243,10 @@ export class TripsService {
     }
 
     const driver = STATUSES_WITH_DRIVER.includes(t.status)
-      ? await this.assignment.getAssignedDriverSummary(tripRequestId)
+      ? await this.assignment.getAssignedDriverSummary(
+          tripRequestId,
+          STATUSES_WITH_DRIVER_CONTACT.includes(t.status),
+        )
       : null;
 
     return {

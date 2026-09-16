@@ -87,12 +87,12 @@ function fakeRepo(state: FakeState): TripsRepository {
   } as unknown as TripsRepository;
 }
 
-function fakeAssignment(summary: AssignedDriverSummary | null): AssignmentService {
+function fakeAssignment(
+  summary: AssignedDriverSummary | null,
+): AssignmentService & { getAssignedDriverSummary: jest.Mock } {
   return {
-    async getAssignedDriverSummary(): Promise<AssignedDriverSummary | null> {
-      return summary;
-    },
-  } as unknown as AssignmentService;
+    getAssignedDriverSummary: jest.fn(async () => summary),
+  } as unknown as AssignmentService & { getAssignedDriverSummary: jest.Mock };
 }
 
 function fakeTripClosing(rejected = false): TripClosingService {
@@ -120,20 +120,25 @@ const DESTINATION = { lat: 6.97, lng: -75.42, address: 'Hospital' };
 function createService(
   state: FakeState = {},
   ttl = 120,
-): { service: TripsService; emitter: { emit: jest.Mock } } {
+): {
+  service: TripsService;
+  emitter: { emit: jest.Mock };
+  assignment: AssignmentService & { getAssignedDriverSummary: jest.Mock };
+} {
   const env = fakeEnv(ttl);
   const quote = new QuoteTokenService(env);
   const emitter = { emit: jest.fn(() => true) };
+  const assignment = fakeAssignment(state.summary ?? null);
   const service = new TripsService(
     fakeRepo(state),
     quote,
     env,
     emitter as unknown as EventEmitter2,
     NO_HOLIDAYS,
-    fakeAssignment(state.summary ?? null),
+    assignment,
     fakeTripClosing(state.tripClosingRejected ?? false),
   );
-  return { service, emitter };
+  return { service, emitter, assignment };
 }
 
 describe('TripsService.quote', () => {
@@ -265,45 +270,59 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
     expect(r.fare.currency).toBe('COP');
   });
 
-  it('assigned -> driver present, ui "driver_assigned"', async () => {
-    const { service } = createService({
+  it('assigned -> driver present, ui "driver_assigned", requests contact info (V-02)', async () => {
+    const { service, assignment } = createService({
       tripRequest: base({ status: 'assigned', assignedAt: new Date() }),
       summary: SUMMARY,
     });
     const r = await service.getStatus(9, 1);
     expect(r.ui).toBe('driver_assigned');
     expect(r.driver).toEqual(SUMMARY);
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
   });
 
-  it('driver_en_route without arrival -> ui "driver_en_route", arrived_at null', async () => {
-    const { service } = createService({
+  it('driver_en_route without arrival -> ui "driver_en_route", arrived_at null, requests contact info (V-02)', async () => {
+    const { service, assignment } = createService({
       tripRequest: base({ status: 'driver_en_route', assignedAt: new Date() }),
       summary: SUMMARY,
     });
     const r = await service.getStatus(9, 1);
     expect(r.ui).toBe('driver_en_route');
     expect(r.arrived_at).toBeNull();
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
   });
 
-  it('driver_en_route with arrival -> ui "driver_waiting", arrived_at present', async () => {
+  it('driver_en_route with arrival -> ui "driver_waiting", arrived_at present, requests contact info (V-02)', async () => {
     const arrivedAt = new Date();
-    const { service } = createService({
+    const { service, assignment } = createService({
       tripRequest: base({ status: 'driver_en_route', assignedAt: new Date(), arrivedAt }),
       summary: SUMMARY,
     });
     const r = await service.getStatus(9, 1);
     expect(r.ui).toBe('driver_waiting');
     expect(r.arrived_at).toBe(arrivedAt.toISOString());
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
   });
 
-  it('completed -> driver still present, ui "trip_completed" (HU-VJ-11)', async () => {
-    const { service } = createService({
+  it('in_progress -> driver present, does NOT request contact info (V-02: no phone/eta once boarded)', async () => {
+    const { service, assignment } = createService({
+      tripRequest: base({ status: 'in_progress', assignedAt: new Date() }),
+      summary: SUMMARY,
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.driver).toEqual(SUMMARY);
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, false);
+  });
+
+  it('completed -> driver still present, ui "trip_completed" (HU-VJ-11), does NOT request contact info (V-02)', async () => {
+    const { service, assignment } = createService({
       tripRequest: base({ status: 'completed', assignedAt: new Date() }),
       summary: SUMMARY,
     });
     const r = await service.getStatus(9, 1);
     expect(r.ui).toBe('trip_completed');
     expect(r.driver).toEqual(SUMMARY);
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, false);
   });
 
   it('not the owner -> 403 NOT_OWNER', async () => {

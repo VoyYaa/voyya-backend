@@ -15,6 +15,7 @@ import {
   type AssignmentExpiredEvent,
   type AssignmentNotification,
   type AssignmentRejectedEvent,
+  type AssignmentStatus,
   ASSIGNMENT_EVENTS,
   type AssignedDriverSummary,
   type CancelAssignmentByDriverDTO,
@@ -350,7 +351,10 @@ export class AssignmentService {
     return { result: 'already_taken', message: 'La solicitud ya fue tomada' };
   }
 
-  async getAssignedDriverSummary(tripRequestId: number): Promise<AssignedDriverSummary | null> {
+  async getAssignedDriverSummary(
+    tripRequestId: number,
+    includeContact: boolean,
+  ): Promise<AssignedDriverSummary | null> {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info) return null;
 
@@ -361,6 +365,16 @@ export class AssignmentService {
       this.repo.getAssignedDriver(tx, tripRequestId, companyId),
     );
     if (!row) return null;
+
+    if (!includeContact) {
+      return {
+        name: row.name,
+        plate: row.plate,
+        model: row.model,
+        contact_phone: null,
+        eta: null,
+      };
+    }
 
     const params = await this.paramsService.get(info.municipalityId);
     const eta =
@@ -387,9 +401,10 @@ export class AssignmentService {
     tripRequestId: number,
     driverId: number,
     companyId: number,
+    allow: readonly AssignmentStatus[] = ['accepted'],
   ): Promise<{ assignmentId: number } | null> {
     return this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.getAssignmentForDriver(tx, tripRequestId, driverId, companyId),
+      this.repo.getAssignmentForDriver(tx, tripRequestId, driverId, companyId, allow),
     );
   }
 
@@ -487,6 +502,7 @@ export class AssignmentService {
         tripRequestId: a.tripRequestId,
         to: 'cancelled_by_driver',
         cancellationReason: dto.reason,
+        driverId,
       });
       if (closed.kind === 'applied' || closed.kind === 'idempotent') {
         return {

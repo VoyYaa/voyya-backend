@@ -10,6 +10,7 @@ type FixtureStatus = 'in_progress' | 'driver_en_route';
 
 suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   let raw: PrismaClient;
+  let repo: AssignmentRepository;
   let tripClosing: TripClosingService;
   let companyId: number;
   let municipalityId: number;
@@ -41,7 +42,7 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
         }),
     } as unknown as PrismaService;
 
-    const repo = new AssignmentRepository(prismaService);
+    repo = new AssignmentRepository(prismaService);
     tripClosing = new TripClosingService(prismaService, repo);
 
     const municipality = await raw.municipality.upsert({
@@ -293,5 +294,39 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
 
     const driver = await getDriver();
     expect(driver?.status).toBe('available');
+  });
+
+  it('V-09: penalty_recorded is monotonic, closeTripRequest never clears a previously recorded penalty', async () => {
+    const trip = await raw.tripRequest.create({
+      data: {
+        passengerId,
+        municipalityId,
+        serviceType: 'taxi',
+        paymentMethod: 'cash',
+        pickupAddress: 'A',
+        dropoffAddress: 'B',
+        pickupLat: 0.1,
+        pickupLng: 0.1,
+        dropoffLat: 0.2,
+        dropoffLng: 0.2,
+        fare: 10000,
+        commission: 800,
+        status: 'in_progress',
+        penaltyRecorded: true,
+      },
+    });
+
+    const row = await raw.$transaction((tx) =>
+      repo.closeTripRequest(tx, {
+        tripRequestId: trip.tripRequestId,
+        to: 'completed',
+        from: ['in_progress'],
+        cashCollected: true,
+        penaltyRecorded: false,
+      }),
+    );
+
+    expect(row).not.toBeNull();
+    expect(row?.penaltyRecorded).toBe(true);
   });
 });

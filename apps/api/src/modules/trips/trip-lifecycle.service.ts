@@ -1,6 +1,7 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type {
+  AssignmentStatus,
   CompleteTripDTO,
   TripRequestCompletedEvent,
   TripRequestNoShowEvent,
@@ -75,7 +76,7 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
+    await this.assertOwnership(tripRequestId, driverId, companyId, ['completed']);
     const outcome = await this.repo.markCashCollected(tripRequestId);
     if (outcome.kind === 'rejected') {
       throw new ConflictException({
@@ -103,6 +104,7 @@ export class TripLifecycleService {
       tripRequestId,
       to: 'completed',
       companyId,
+      driverId,
       cashCollected: dto.cash_collected,
     });
     if (outcome.kind === 'applied') {
@@ -132,6 +134,7 @@ export class TripLifecycleService {
       tripRequestId,
       to: 'no_show',
       companyId,
+      driverId,
       noShowGraceMin: graceMin,
     });
     if (outcome.kind === 'applied') {
@@ -152,8 +155,14 @@ export class TripLifecycleService {
     tripRequestId: number,
     driverId: number,
     companyId: number,
+    allow: readonly AssignmentStatus[] = ['accepted'],
   ): Promise<void> {
-    const owned = await this.assignment.getAcceptedAssignment(tripRequestId, driverId, companyId);
+    const owned = await this.assignment.getAcceptedAssignment(
+      tripRequestId,
+      driverId,
+      companyId,
+      allow,
+    );
     if (!owned) {
       throw new ForbiddenException({
         code: 'NOT_THE_DRIVER',

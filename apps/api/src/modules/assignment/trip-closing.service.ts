@@ -14,6 +14,7 @@ export interface CloseTripInput {
   tripRequestId: number;
   to: TripClosingTarget;
   companyId?: number;
+  driverId?: number;
   cashCollected?: boolean;
   penaltyRecorded?: boolean;
   cancellationReason?: string | null;
@@ -86,6 +87,7 @@ export class TripClosingService {
       companyId,
       status: ASSIGNMENT_STATUS_BY_TARGET[input.to],
       reason: input.cancellationReason ?? null,
+      driverId: input.driverId,
     });
     if (closedAssignment) {
       await this.repo.releaseDriver(tx, closedAssignment.driverId, companyId);

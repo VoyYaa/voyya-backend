@@ -87,9 +87,10 @@ function buildRepo(db: FakeDb): AssignmentRepository {
     },
     async closeAssignmentsForTrip(
       _tx: unknown,
-      params: { status: 'completed' | 'cancelled' },
+      params: { status: 'completed' | 'cancelled'; driverId?: number },
     ): Promise<ClosedAssignmentRow | null> {
       if (db.assignment.status !== 'notified' && db.assignment.status !== 'accepted') return null;
+      if (params.driverId !== undefined && params.driverId !== db.assignment.driverId) return null;
       const driverId = db.assignment.driverId;
       db.assignment.status = params.status;
       return { assignmentId: 1, driverId };
@@ -261,6 +262,46 @@ describe('TripClosingService.closeTripInTx', () => {
 
     expect(outcome.kind).toBe('applied');
     if (outcome.kind !== 'rejected') expect(outcome.penaltyRecorded).toBe(true);
+    expect(db.driver.status).toBe('available');
+  });
+
+  it('V-01 defense in depth: a driverId that does not own the assignment closes nothing and does not release the driver', async () => {
+    const db = new FakeDb(
+      { status: 'in_progress', arrivedAt: null, finishedAt: null, netEarnings: null, cashCollectedAt: null, penaltyRecorded: false, fare: 10000, commission: 800 },
+      { status: 'accepted', driverId: 7 },
+      { status: 'on_trip' },
+    );
+    const service = buildService(db);
+
+    const outcome = await service.closeTripInTx({} as never, 1, {
+      tripRequestId: 1,
+      to: 'completed',
+      cashCollected: true,
+      driverId: 999,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(db.assignment.status).toBe('accepted');
+    expect(db.driver.status).toBe('on_trip');
+  });
+
+  it('V-01 defense in depth: the owning driverId closes the assignment and releases the driver as usual', async () => {
+    const db = new FakeDb(
+      { status: 'in_progress', arrivedAt: null, finishedAt: null, netEarnings: null, cashCollectedAt: null, penaltyRecorded: false, fare: 10000, commission: 800 },
+      { status: 'accepted', driverId: 7 },
+      { status: 'on_trip' },
+    );
+    const service = buildService(db);
+
+    const outcome = await service.closeTripInTx({} as never, 1, {
+      tripRequestId: 1,
+      to: 'completed',
+      cashCollected: true,
+      driverId: 7,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(db.assignment.status).toBe('completed');
     expect(db.driver.status).toBe('available');
   });
 });
