@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const Role = z.enum(['passenger', 'driver', 'company', 'admin', 'operator']);
 export type Role = z.infer<typeof Role>;
 
-export const TENANT_SCOPED_ROLES = ['driver', 'company'] as const;
+export const TENANT_SCOPED_ROLES = ['driver', 'company', 'admin', 'operator'] as const;
 
 export const Phone = z
   .string()
@@ -11,7 +11,10 @@ export const Phone = z
   .regex(/^(?:\+?57)?3\d{9}$/, 'Teléfono colombiano inválido (celular de 10 dígitos)');
 export type Phone = z.infer<typeof Phone>;
 
-export const NationalId = z.string().trim().regex(/^\d{5,15}$/, 'Cédula inválida');
+export const NationalId = z
+  .string()
+  .trim()
+  .regex(/^\d{5,15}$/, 'Cédula inválida');
 
 export const Pin = z.string().regex(/^\d{4,6}$/, 'PIN inválido (4 a 6 dígitos)');
 
@@ -110,6 +113,8 @@ export const AuthErrorCode = z.enum([
   'REFRESH_REVOKED',
   'SESSION_REQUIRED',
   'FORBIDDEN',
+  'STAFF_WITHOUT_COMPANY',
+  'PIN_NOT_DELIVERED',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
 
