@@ -30,6 +30,7 @@ export const EnvSchema = z.object({
 
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_BLOCK_MINUTES: z.coerce.number().int().positive().default(15),
+  DRIVER_PIN_LENGTH: z.coerce.number().int().min(4).max(6).default(6),
 
   AUTH_DEV_HEADERS: z
     .enum(['true', 'false'])

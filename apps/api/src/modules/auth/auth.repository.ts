@@ -9,6 +9,7 @@ export interface AuthUser {
   passwordHash: string | null;
   role: string;
   accountStatus: string;
+  companyId: number | null;
 }
 
 export interface AuthDriver {
@@ -21,6 +22,7 @@ export interface AuthDriver {
   firstName: string;
   lastName: string;
   accountStatus: string;
+  pinDeliveredAt: Date | null;
 }
 
 @Injectable()
@@ -62,6 +64,7 @@ export class AuthRepository {
             status: true,
             failedAttempts: true,
             blockedUntil: true,
+            pinDeliveredAt: true,
             user: { select: { firstName: true, lastName: true, accountStatus: true } },
           },
         }),
@@ -77,6 +80,7 @@ export class AuthRepository {
           firstName: d.user.firstName,
           lastName: d.user.lastName,
           accountStatus: d.user.accountStatus,
+          pinDeliveredAt: d.pinDeliveredAt,
         };
       }
     }
@@ -176,4 +180,5 @@ const userSelect = {
   passwordHash: true,
   role: true,
   accountStatus: true,
+  companyId: true,
 } as const;

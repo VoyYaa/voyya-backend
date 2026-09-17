@@ -96,3 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_trip_request_cash_pending
 CREATE INDEX IF NOT EXISTS idx_trip_request_penalty
   ON trips.trip_request (passenger_id, finished_at)
   WHERE penalty_recorded;
+
+-- (g) Ops console live queue (ADR-015) ------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_trip_request_ops_queue
+  ON trips.trip_request (municipality_id, updated_at DESC);

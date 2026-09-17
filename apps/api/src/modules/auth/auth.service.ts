@@ -1,4 +1,3 @@
-import { randomInt } from 'node:crypto';
 import {
   ForbiddenException,
   GoneException,
@@ -29,6 +28,7 @@ import {
   type VerifyOtpDTO,
 } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
+import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
 import { AuthRepository } from './auth.repository';
 import { HASHER, type Hasher } from './hasher.service';
@@ -77,7 +77,7 @@ export class AuthService {
     }
 
     const ttl = this.env.get('OTP_TTL_SECONDS');
-    const code = generateCode(this.env.get('OTP_LENGTH'));
+    const code = generateNumericCode(this.env.get('OTP_LENGTH'));
     const hash = await this.hasher.hash(code);
     await this.repo.createOtp(phone, hash, new Date(Date.now() + ttl * 1000));
 
@@ -143,6 +143,13 @@ export class AuthService {
       throw this.invalidCredentials();
     }
 
+    if (d.pinDeliveredAt === null) {
+      throw new ForbiddenException({
+        code: 'PIN_NOT_DELIVERED',
+        message: 'Tu PIN aún no fue entregado. Pídele a tu empresa que lo reenvíe.',
+      });
+    }
+
     if (
       d.status === 'suspended' ||
       d.status === 'documents_blocked' ||
@@ -171,7 +178,10 @@ export class AuthService {
     if (u.accountStatus === 'suspended') {
       throw new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta suspendida' });
     }
-    return this.issueSession(u, null, userAgent);
+    if (u.companyId === null) {
+      throw this.staffWithoutCompany();
+    }
+    return this.issueSession(u, u.companyId, userAgent);
   }
 
   async refresh(dto: RefreshDTO, userAgent?: string): Promise<SessionTokens> {
@@ -194,6 +204,12 @@ export class AuthService {
         throw this.refreshRevoked();
       }
       companyId = d.companyId;
+    } else if (u.role === 'admin' || u.role === 'operator') {
+      if (u.companyId === null) {
+        await this.refreshTokens.revokeAllForUser(userId);
+        throw this.staffWithoutCompany();
+      }
+      companyId = u.companyId;
     }
 
     return {
@@ -274,6 +290,13 @@ export class AuthService {
     });
   }
 
+  private staffWithoutCompany(): ForbiddenException {
+    return new ForbiddenException({
+      code: 'STAFF_WITHOUT_COMPANY',
+      message: 'Tu usuario no está vinculado a ninguna empresa',
+    });
+  }
+
   private accountBlocked(retryInSec: number): HttpException {
     return new HttpException(
       {
@@ -300,10 +323,4 @@ export class AuthService {
 function normalizePhone(phone: string): string {
   const d = phone.replace(/\D/g, '');
   return d.length === 12 && d.startsWith('57') ? d.slice(2) : d;
-}
-
-function generateCode(length: number): string {
-  return randomInt(0, 10 ** length)
-    .toString()
-    .padStart(length, '0');
 }

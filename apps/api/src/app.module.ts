@@ -7,6 +7,7 @@ import { AppConfigModule } from './config/config.module';
 import { EnvService } from './config/env.service';
 import { HealthController } from './health.controller';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
+import { AdminModule } from './modules/admin/admin.module';
 import { AssignmentModule } from './modules/assignment/assignment.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
@@ -30,6 +31,7 @@ import { TripsModule } from './modules/trips/trips.module';
     AuthModule,
     TripsModule,
     AssignmentModule,
+    AdminModule,
   ],
   controllers: [HealthController],
   providers: [

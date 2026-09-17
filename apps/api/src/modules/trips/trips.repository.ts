@@ -37,12 +37,10 @@ export class TripsRepository {
       where: {
         municipalityId,
         serviceType,
-        AND: [
-          { OR: [{ validFrom: null }, { validFrom: { lte: today } }] },
-          { OR: [{ validTo: null }, { validTo: { gte: today } }] },
-        ],
+        validFrom: { lte: today },
+        OR: [{ validTo: null }, { validTo: { gte: today } }],
       },
-      orderBy: { validFrom: 'desc' },
+      orderBy: [{ validFrom: 'desc' }, { fareConfigId: 'desc' }],
     });
   }
 

@@ -179,6 +179,47 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     });
   });
 
+  describe('getActiveFareConfig (ADR-014 regression: NULLS FIRST no longer wins)', () => {
+    it('an older fareConfig row does not shadow a newer one saved the same day', async () => {
+      const old = await raw.fareConfig.create({
+        data: {
+          municipalityId,
+          serviceType: 'taxi',
+          baseFare: 5000,
+          validFrom: new Date('2020-01-01'),
+        },
+      });
+      const fresh = await raw.fareConfig.create({
+        data: {
+          municipalityId,
+          serviceType: 'taxi',
+          baseFare: 9000,
+        },
+      });
+
+      const active = await repo.getActiveFareConfig(municipalityId, 'taxi');
+
+      expect(active?.fareConfigId).toBe(fresh.fareConfigId);
+      expect(Number(active?.baseFare)).toBe(9000);
+      expect(active?.fareConfigId).not.toBe(old.fareConfigId);
+    });
+
+    it('two versions created the same day: the higher fareConfigId wins the tiebreak', async () => {
+      const first = await raw.fareConfig.create({
+        data: { municipalityId, serviceType: 'comfort', baseFare: 6000 },
+      });
+      const second = await raw.fareConfig.create({
+        data: { municipalityId, serviceType: 'comfort', baseFare: 7000 },
+      });
+      expect(second.fareConfigId).toBeGreaterThan(first.fareConfigId);
+
+      const active = await repo.getActiveFareConfig(municipalityId, 'comfort');
+
+      expect(active?.fareConfigId).toBe(second.fareConfigId);
+      expect(Number(active?.baseFare)).toBe(7000);
+    });
+  });
+
   describe('markCashCollected', () => {
     it('applies completed (cash_collected_at null) -> sets cash_collected_at', async () => {
       const trip = await makeTrip('completed');

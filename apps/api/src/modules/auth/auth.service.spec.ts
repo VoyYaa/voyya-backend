@@ -98,6 +98,7 @@ const newPassengerUser = {
   passwordHash: null,
   role: 'passenger',
   accountStatus: 'active',
+  companyId: null,
 };
 
 describe('AuthService.requestOtp', () => {
@@ -212,6 +213,7 @@ const driverBase = {
   firstName: 'Juan',
   lastName: 'Pérez',
   accountStatus: 'active',
+  pinDeliveredAt: new Date(),
 };
 
 describe('AuthService.driverLogin', () => {
@@ -269,6 +271,28 @@ describe('AuthService.driverLogin', () => {
     const e = await capture(service.driverLogin({ national_id: '99999999', pin: '1234' }));
     expect(code(e)).toBe('INVALID_CREDENTIALS');
   });
+
+  it('PIN never delivered -> 403 PIN_NOT_DELIVERED, checked after a successful PIN compare', async () => {
+    const { service, repo, hasher } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      pinDeliveredAt: null,
+    });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
+    expect((hasher.compare as jest.Mock)).toHaveBeenCalledWith('1234', 'hashed:1234');
+    expect(e).toBeInstanceOf(ForbiddenException);
+    expect(code(e)).toBe('PIN_NOT_DELIVERED');
+  });
+
+  it('wrong PIN with pinDeliveredAt null -> 401 INVALID_CREDENTIALS, not PIN_NOT_DELIVERED', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      pinDeliveredAt: null,
+    });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
+  });
 });
 
 describe('AuthService.adminLogin', () => {
@@ -280,14 +304,15 @@ describe('AuthService.adminLogin', () => {
     passwordHash: 'hashed:Secret12',
     role: 'admin',
     accountStatus: 'active',
+    companyId: 1,
   };
 
-  it('happy: tokens with admin role', async () => {
+  it('happy: tokens with admin role and its company_id', async () => {
     const { service, repo } = create();
     (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
     const r = await service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' });
     expect(r.user.role).toBe('admin');
-    expect(r.user.company_id).toBeNull();
+    expect(r.user.company_id).toBe(1);
   });
 
   it('wrong password -> 401', async () => {
@@ -302,6 +327,14 @@ describe('AuthService.adminLogin', () => {
     (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin, role: 'passenger' });
     const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' }));
     expect(code(e)).toBe('INVALID_CREDENTIALS');
+  });
+
+  it('admin without a linked company -> 403 STAFF_WITHOUT_COMPANY', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin, companyId: null });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' }));
+    expect(e).toBeInstanceOf(ForbiddenException);
+    expect(code(e)).toBe('STAFF_WITHOUT_COMPANY');
   });
 });
 
@@ -356,6 +389,24 @@ describe('AuthService.refresh / logout / revocation', () => {
     const e = await capture(service.refresh({ refresh_token: 'x' }));
     expect(code(e)).toBe('REFRESH_REVOKED');
     expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(5);
+  });
+
+  it('refresh of an admin whose company got unlinked -> 401 REFRESH_REVOKED + revokes family', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 1, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      userId: 1,
+      firstName: 'Admin',
+      lastName: 'VoyYa',
+      email: 'admin@voyya.co',
+      passwordHash: 'hashed:Secret12',
+      role: 'admin',
+      accountStatus: 'active',
+      companyId: null,
+    });
+    const e = await capture(service.refresh({ refresh_token: 'x' }));
+    expect(code(e)).toBe('STAFF_WITHOUT_COMPANY');
+    expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(1);
   });
 
   it('logout is idempotent -> { ok: true } and revokes', async () => {

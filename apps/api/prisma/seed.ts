@@ -97,7 +97,12 @@ async function main(): Promise<void> {
 
   await prisma.user.upsert({
     where: { email: ADMIN_EMAIL },
-    update: { passwordHash: adminHash, role: 'admin', accountStatus: 'active' },
+    update: {
+      passwordHash: adminHash,
+      role: 'admin',
+      accountStatus: 'active',
+      companyId: company.companyId,
+    },
     create: {
       firstName: 'Admin',
       lastName: 'VoyYa',
@@ -105,6 +110,7 @@ async function main(): Promise<void> {
       phone: '3000000000',
       passwordHash: adminHash,
       role: 'admin',
+      companyId: company.companyId,
     },
   });
 
@@ -117,8 +123,13 @@ async function main(): Promise<void> {
   for (const [i, d] of drivers.entries()) {
     const vehicle = await prisma.vehicle.upsert({
       where: { plate: d.plate },
-      update: { status: 'active' },
-      create: { companyId: company.companyId, plate: d.plate, status: 'active' },
+      update: { status: 'active', model: 'Chevrolet Spark' },
+      create: {
+        companyId: company.companyId,
+        plate: d.plate,
+        model: 'Chevrolet Spark',
+        status: 'active',
+      },
     });
 
     const u = await prisma.user.upsert({
@@ -141,6 +152,7 @@ async function main(): Promise<void> {
         currentLng: d.lng,
         locationUpdatedAt: new Date(),
         currentVehicleId: vehicle.vehicleId,
+        pinDeliveredAt: new Date(),
       },
       create: {
         driverId: u.userId,
@@ -152,6 +164,7 @@ async function main(): Promise<void> {
         currentLng: d.lng,
         locationUpdatedAt: new Date(),
         currentVehicleId: vehicle.vehicleId,
+        pinDeliveredAt: new Date(),
       },
     });
   }
