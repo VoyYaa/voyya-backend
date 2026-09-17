@@ -173,6 +173,37 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     expect(vehicle).not.toBeNull();
   });
 
+  describe('Zod validation (400) rejects a malformed body before it touches the database', () => {
+    it('an invalid plate format -> 400 INVALID_DATA, no rows written', async () => {
+      const before = await prisma.runInTenant(companyId, (tx) => tx.driver.count());
+      const dto = { ...createDto(30), vehicle: { plate: 'not-a-plate', model: 'Renault Logan' } };
+
+      const res = await request(app.getHttpServer())
+        .post('/admin/drivers')
+        .set('Authorization', adminAuth)
+        .send(dto);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'vehicle.plate' })]),
+      );
+      expect(await prisma.runInTenant(companyId, (tx) => tx.driver.count())).toBe(before);
+    });
+
+    it('a missing vehicle -> 400 INVALID_DATA', async () => {
+      const { vehicle: _omit, ...dto } = createDto(31);
+
+      const res = await request(app.getHttpServer())
+        .post('/admin/drivers')
+        .set('Authorization', adminAuth)
+        .send(dto);
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+    });
+  });
+
   describe('duplicates: the database is the referee, zero partial rows', () => {
     it('duplicate national_id -> 409 NATIONAL_ID_TAKEN', async () => {
       const dto = { ...createDto(3), national_id: nationalIdFor(1) };

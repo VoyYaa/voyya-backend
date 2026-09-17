@@ -224,4 +224,71 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
     expect(res.status).toBe(422);
     expect(res.body).toMatchObject({ code: 'SETTINGS_OUT_OF_RANGE', field: 'search_radius_km' });
   });
+
+  describe('Zod validation (400) rejects a malformed body before it reaches the service', () => {
+    it('missing version -> 400 INVALID_DATA, settings left untouched', async () => {
+      const before = await getSettings();
+
+      const res = await request(app.getHttpServer())
+        .put('/admin/settings')
+        .set('Authorization', adminAuth)
+        .send({
+          base_fare: before.body.base_fare,
+          night_surcharge_pct: before.body.night_surcharge_pct,
+          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
+          search_radius_km: before.body.search_radius_km,
+          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'version' })]),
+      );
+
+      const after = await getSettings();
+      expect(after.body.version).toBe(before.body.version);
+    });
+
+    it('base_fare above the 1,000,000 COP ceiling -> 400 INVALID_DATA on that field', async () => {
+      const before = await getSettings();
+
+      const res = await request(app.getHttpServer())
+        .put('/admin/settings')
+        .set('Authorization', adminAuth)
+        .send({
+          version: before.body.version,
+          base_fare: 1_000_001,
+          night_surcharge_pct: before.body.night_surcharge_pct,
+          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
+          search_radius_km: before.body.search_radius_km,
+          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'base_fare' })]),
+      );
+    });
+
+    it('negative acceptance_timeout_sec -> 400 INVALID_DATA', async () => {
+      const before = await getSettings();
+
+      const res = await request(app.getHttpServer())
+        .put('/admin/settings')
+        .set('Authorization', adminAuth)
+        .send({
+          version: before.body.version,
+          base_fare: before.body.base_fare,
+          night_surcharge_pct: before.body.night_surcharge_pct,
+          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
+          search_radius_km: before.body.search_radius_km,
+          acceptance_timeout_sec: -5,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+    });
+  });
 });
