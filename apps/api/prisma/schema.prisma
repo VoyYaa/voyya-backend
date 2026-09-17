@@ -115,16 +115,18 @@ model Municipality {
 }
 
 model User {
-  userId        Int      @id @default(autoincrement()) @map("user_id")
-  firstName     String   @map("first_name")
-  lastName      String   @map("last_name")
-  email         String?  @unique @map("email")
-  phone         String   @unique @map("phone")
-  passwordHash  String?  @map("password_hash")
-  role          String   @map("role")
-  accountStatus String   @default("active") @map("account_status")
-  companyId     Int?     @map("company_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  userId         Int       @id @default(autoincrement()) @map("user_id")
+  firstName      String    @map("first_name")
+  lastName       String    @map("last_name")
+  email          String?   @unique @map("email")
+  phone          String    @unique @map("phone")
+  passwordHash   String?   @map("password_hash")
+  role           String    @map("role")
+  accountStatus  String    @default("active") @map("account_status")
+  companyId      Int?      @map("company_id")
+  failedAttempts Int       @default(0) @map("failed_attempts")
+  blockedUntil   DateTime? @map("blocked_until")
+  createdAt      DateTime  @default(now()) @map("created_at")
 
   company                Company?          @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
   passenger              Passenger?

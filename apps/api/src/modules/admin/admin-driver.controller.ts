@@ -1,6 +1,12 @@
 import { Body, Controller, HttpCode, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { type CreatedDriver, CreateDriverDTO, type ResendDriverPinResponse } from '@voyyaa/shared';
+import {
+  type CreatedDriver,
+  CreateDriverDTO,
+  type ResendDriverPinResponse,
+  SuspendDriverDTO,
+  type SuspendDriverResponse,
+} from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentTenant } from '../tenancy/identity.decorators';
@@ -30,5 +36,15 @@ export class AdminDriverController {
     @CurrentTenant() companyId: number,
   ): Promise<ResendDriverPinResponse> {
     return this.service.resendPin(companyId, driverId);
+  }
+
+  @Post(':driverId/suspend')
+  @HttpCode(200)
+  suspend(
+    @Param('driverId', ParseIntPipe) driverId: number,
+    @Body(new ZodValidationPipe(SuspendDriverDTO)) dto: SuspendDriverDTO,
+    @CurrentTenant() companyId: number,
+  ): Promise<SuspendDriverResponse> {
+    return this.service.suspend(companyId, driverId, dto.reason);
   }
 }

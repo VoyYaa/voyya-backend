@@ -173,14 +173,30 @@ export class AuthService {
       await this.hasher.compare(dto.password, await this.dummyHash);
       throw this.invalidCredentials();
     }
+    if (u.blockedUntil && u.blockedUntil.getTime() > Date.now()) {
+      throw this.accountBlocked(Math.ceil((u.blockedUntil.getTime() - Date.now()) / 1000));
+    }
+
     const ok = await this.hasher.compare(dto.password, u.passwordHash as string);
-    if (!ok) throw this.invalidCredentials();
+    if (!ok) {
+      const attempts = u.failedAttempts + 1;
+      const blocked =
+        attempts >= this.env.get('LOGIN_MAX_ATTEMPTS')
+          ? new Date(Date.now() + this.env.get('LOGIN_BLOCK_MINUTES') * 60_000)
+          : null;
+      await this.repo.registerAdminFailure(u.userId, blocked);
+      if (blocked) throw this.accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
+      throw this.invalidCredentials();
+    }
+
     if (u.accountStatus === 'suspended') {
       throw new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta suspendida' });
     }
     if (u.companyId === null) {
       throw this.staffWithoutCompany();
     }
+
+    await this.repo.resetAdminAttempts(u.userId);
     return this.issueSession(u, u.companyId, userAgent);
   }
 
@@ -233,10 +249,6 @@ export class AuthService {
   async onDriverSuspended(ev: DriverSuspendedEvent): Promise<void> {
     const n = await this.refreshTokens.revokeAllForUser(ev.driver_id);
     this.logger.log(`Sessions revoked=${n} driver=${ev.driver_id} reason=${ev.reason}`);
-  }
-
-  emitDriverSuspension(ev: DriverSuspendedEvent): void {
-    this.emitter.emit(DRIVER_SUSPENDED_EVENT, ev);
   }
 
   private async issueSession(

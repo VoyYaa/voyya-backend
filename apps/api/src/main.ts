@@ -8,11 +8,8 @@ import { AppModule } from './app.module';
 import { EnvService } from './config/env.service';
 import { AllExceptionsFilter } from './shared/all-exceptions.filter';
 
-async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  app.enableShutdownHooks();
-  const env = app.get(EnvService);
-
+export function configureApp(app: NestExpressApplication, env: EnvService): void {
+  app.set('trust proxy', 1);
   app.use(helmet());
   (app.getHttpAdapter().getInstance() as Express).disable('x-powered-by');
 
@@ -24,10 +21,20 @@ async function bootstrap(): Promise<void> {
   app.enableCors({ origin: origins.length > 0 ? origins : false, credentials: true });
 
   app.useGlobalFilters(new AllExceptionsFilter());
+}
+
+async function bootstrap(): Promise<void> {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.enableShutdownHooks();
+  const env = app.get(EnvService);
+
+  configureApp(app, env);
 
   const port = process.env.PORT ? Number(process.env.PORT) : env.get('API_PORT');
   await app.listen(port, '::');
   new Logger('Bootstrap').log(`VoyYa API listening on :${port} (${env.get('NODE_ENV')})`);
 }
 
-void bootstrap();
+if (require.main === module) {
+  void bootstrap();
+}

@@ -113,6 +113,18 @@ export class AdminDriverRepository {
     return rows[0]?.pin_delivered_at ?? null;
   }
 
+  async findIdInTenant(
+    tx: Prisma.TransactionClient,
+    driverId: number,
+    companyId: number,
+  ): Promise<number | null> {
+    const driver = await tx.driver.findFirst({
+      where: { driverId, companyId },
+      select: { driverId: true },
+    });
+    return driver?.driverId ?? null;
+  }
+
   async rotatePin(
     tx: Prisma.TransactionClient,
     driverId: number,

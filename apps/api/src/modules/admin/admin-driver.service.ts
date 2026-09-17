@@ -1,6 +1,16 @@
 import { ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import type { CreatedDriver, CreateDriverDTO, PinDeliveryStatus, ResendDriverPinResponse } from '@voyyaa/shared';
+import {
+  type CreatedDriver,
+  type CreateDriverDTO,
+  DRIVER_SUSPENDED_EVENT,
+  type DriverSuspendedEvent,
+  type DriverSuspensionReason,
+  type PinDeliveryStatus,
+  type ResendDriverPinResponse,
+  type SuspendDriverResponse,
+} from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { HASHER, type Hasher } from '../auth/hasher.service';
@@ -16,6 +26,7 @@ export class AdminDriverService {
     private readonly prisma: PrismaService,
     private readonly repo: AdminDriverRepository,
     private readonly env: EnvService,
+    private readonly emitter: EventEmitter2,
     @Inject(HASHER) private readonly hasher: Hasher,
     @Inject(SMS_PROVIDER) private readonly sms: SmsProvider,
   ) {}
@@ -92,6 +103,29 @@ export class AdminDriverService {
       pin_delivery: delivery,
       pin_delivered_at: deliveredAt ? deliveredAt.toISOString() : null,
     };
+  }
+
+  async suspend(
+    companyId: number,
+    driverId: number,
+    reason: DriverSuspensionReason,
+  ): Promise<SuspendDriverResponse> {
+    const found = await this.prisma.runInTenant(companyId, (tx) =>
+      this.repo.findIdInTenant(tx, driverId, companyId),
+    );
+    if (found === null) {
+      throw new NotFoundException({ code: 'DRIVER_NOT_FOUND', message: 'El conductor no existe' });
+    }
+
+    const event: DriverSuspendedEvent = {
+      driver_id: driverId,
+      company_id: companyId,
+      reason,
+      occurred_at: new Date().toISOString(),
+    };
+    this.emitter.emit(DRIVER_SUSPENDED_EVENT, event);
+
+    return { ok: true };
   }
 
   private async deliverPin(

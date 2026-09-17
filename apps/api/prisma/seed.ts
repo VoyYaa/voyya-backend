@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { resolveSeedAdminPassword } from '../src/shared/seed-admin-password';
 
 const prisma = new PrismaClient();
 
@@ -7,7 +8,7 @@ const YARUMAL_ID = 1;
 const BCRYPT_ROUNDS = 12;
 const DEV_PIN = '1234';
 const ADMIN_EMAIL = 'admin@voyya.co';
-const ADMIN_PASSWORD = 'Admin1234!';
+const ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
 
 const YARUMAL_COVERAGE = {
   type: 'Polygon',

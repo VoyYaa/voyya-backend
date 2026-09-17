@@ -49,6 +49,8 @@ function create() {
     getDriverCompany: jest.fn(),
     registerDriverFailure: jest.fn(),
     resetDriverAttempts: jest.fn(),
+    registerAdminFailure: jest.fn(),
+    resetAdminAttempts: jest.fn(),
   };
   const refreshTokens = {
     issue: jest.fn().mockResolvedValue('refresh-1'),
@@ -305,21 +307,44 @@ describe('AuthService.adminLogin', () => {
     role: 'admin',
     accountStatus: 'active',
     companyId: 1,
+    failedAttempts: 0,
+    blockedUntil: null,
   };
 
-  it('happy: tokens with admin role and its company_id', async () => {
+  it('happy: tokens with admin role and its company_id; resets attempts', async () => {
     const { service, repo } = create();
     (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
     const r = await service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' });
     expect(r.user.role).toBe('admin');
     expect(r.user.company_id).toBe(1);
+    expect((repo as RepoMock).resetAdminAttempts).toHaveBeenCalledWith(1);
   });
 
-  it('wrong password -> 401', async () => {
+  it('wrong password (below cap) -> 401 INVALID_CREDENTIALS and records failure', async () => {
     const { service, repo } = create();
     (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
     const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'wrong1234' }));
     expect(code(e)).toBe('INVALID_CREDENTIALS');
+    expect((repo as RepoMock).registerAdminFailure).toHaveBeenCalledWith(1, null);
+  });
+
+  it('wrong password reaching the cap -> 429 ACCOUNT_TEMPORARILY_BLOCKED', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin, failedAttempts: 2 });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'wrong1234' }));
+    expect(code(e)).toBe('ACCOUNT_TEMPORARILY_BLOCKED');
+    expect((repo as RepoMock).registerAdminFailure).toHaveBeenCalledWith(1, expect.any(Date));
+  });
+
+  it('already blocked -> 429 without comparing the password', async () => {
+    const { service, repo, hasher } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({
+      ...admin,
+      blockedUntil: new Date(Date.now() + 60_000),
+    });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' }));
+    expect(code(e)).toBe('ACCOUNT_TEMPORARILY_BLOCKED');
+    expect(hasher.compare).not.toHaveBeenCalled();
   });
 
   it('user without admin/operator role -> 401', async () => {

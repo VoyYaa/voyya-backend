@@ -140,10 +140,13 @@ export type SessionStartedEvent = z.infer<typeof SessionStartedEvent>;
 
 export const DRIVER_SUSPENDED_EVENT = 'fleet.driver_suspended';
 
+export const DriverSuspensionReason = z.enum(['suspended', 'documents_blocked', 'inactive']);
+export type DriverSuspensionReason = z.infer<typeof DriverSuspensionReason>;
+
 export const DriverSuspendedEvent = z.object({
   driver_id: z.number().int().positive(),
   company_id: z.number().int().positive(),
-  reason: z.enum(['suspended', 'documents_blocked', 'inactive']),
+  reason: DriverSuspensionReason,
   occurred_at: z.string().datetime(),
 });
 export type DriverSuspendedEvent = z.infer<typeof DriverSuspendedEvent>;

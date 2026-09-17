@@ -1,10 +1,8 @@
 import { Body, Controller, Headers, HttpCode, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { z } from 'zod';
 import {
   AdminLoginDTO,
   DriverLoginDTO,
-  DriverSuspendedEvent,
   LogoutDTO,
   type LogoutResponse,
   RefreshDTO,
@@ -17,7 +15,6 @@ import {
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AuthService } from './auth.service';
 import { Public } from './decorators/public.decorator';
-import { Roles } from './decorators/roles.decorator';
 
 const TTL = 60_000;
 const LIMIT = { otpRequest: 3, otpVerify: 10, login: 5, refresh: 30 } as const;
@@ -80,23 +77,5 @@ export class AuthController {
   @HttpCode(200)
   logout(@Body(new ZodValidationPipe(LogoutDTO)) dto: LogoutDTO): Promise<LogoutResponse> {
     return this.auth.logout(dto);
-  }
-}
-
-const SuspendDriverDTO = DriverSuspendedEvent.omit({ occurred_at: true });
-type SuspendDriverDTO = z.infer<typeof SuspendDriverDTO>;
-
-@Controller('auth/admin')
-export class AuthAdminController {
-  constructor(private readonly auth: AuthService) {}
-
-  @Post('suspend-driver')
-  @HttpCode(200)
-  @Roles('admin')
-  suspendDriver(
-    @Body(new ZodValidationPipe(SuspendDriverDTO)) dto: SuspendDriverDTO,
-  ): { ok: true } {
-    this.auth.emitDriverSuspension({ ...dto, occurred_at: new Date().toISOString() });
-    return { ok: true };
   }
 }

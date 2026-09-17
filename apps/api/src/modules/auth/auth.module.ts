@@ -4,7 +4,7 @@ import { EnvService } from '../../config/env.service';
 import { SMS_PROVIDER } from '../assignment/ports/sms-provider.port';
 import { createSmsProvider } from '../assignment/providers/sms.factory';
 import { AuthCleanupService } from './auth-cleanup.service';
-import { AuthAdminController, AuthController } from './auth.controller';
+import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { BcryptHasher, HASHER } from './hasher.service';
@@ -21,7 +21,7 @@ import { RefreshTokenService } from './refresh-token.service';
       }),
     }),
   ],
-  controllers: [AuthController, AuthAdminController],
+  controllers: [AuthController],
   providers: [
     AuthService,
     AuthRepository,

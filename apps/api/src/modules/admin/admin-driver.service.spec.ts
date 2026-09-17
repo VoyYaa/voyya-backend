@@ -1,6 +1,7 @@
 import { ConflictException, HttpException, NotFoundException } from '@nestjs/common';
+import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import type { CreateDriverDTO } from '@voyyaa/shared';
+import { DRIVER_SUSPENDED_EVENT, type CreateDriverDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { SmsProvider } from '../assignment/ports/sms-provider.port';
@@ -63,21 +64,24 @@ function create() {
     createDriverWithVehicle: jest.fn().mockResolvedValue(createdRow),
     markPinDelivered: jest.fn().mockResolvedValue(new Date('2026-01-01T00:05:00.000Z')),
     rotatePin: jest.fn(),
+    findIdInTenant: jest.fn(),
   };
   const hasher: Hasher = {
     hash: jest.fn(async (x: string) => `hashed:${x}`),
     compare: jest.fn(),
   };
   const sms: SmsProvider = { send: jest.fn().mockResolvedValue(undefined) };
+  const emitter = { emit: jest.fn() };
   const prisma = fakePrisma();
   const service = new AdminDriverService(
     prisma,
     repo as unknown as AdminDriverRepository,
     fakeEnv(),
+    emitter as unknown as EventEmitter2,
     hasher,
     sms,
   );
-  return { service, repo, hasher, sms, prisma };
+  return { service, repo, hasher, sms, prisma, emitter };
 }
 
 describe('AdminDriverService.create', () => {
@@ -180,5 +184,32 @@ describe('AdminDriverService.resendPin', () => {
     repo.rotatePin.mockResolvedValue(null);
 
     await expect(service.resendPin(COMPANY_ID, 999)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('AdminDriverService.suspend (B-02: must stay inside the caller tenant)', () => {
+  it('driver belongs to the caller tenant -> emits fleet.driver_suspended scoped to that company', async () => {
+    const { service, repo, emitter } = create();
+    repo.findIdInTenant.mockResolvedValue(42);
+
+    const result = await service.suspend(COMPANY_ID, 42, 'suspended');
+
+    expect(result).toEqual({ ok: true });
+    expect(repo.findIdInTenant).toHaveBeenCalledWith(expect.anything(), 42, COMPANY_ID);
+    expect(emitter.emit).toHaveBeenCalledWith(
+      DRIVER_SUSPENDED_EVENT,
+      expect.objectContaining({ driver_id: 42, company_id: COMPANY_ID, reason: 'suspended' }),
+    );
+  });
+
+  it('driver belongs to a different tenant (not found under this company_id) -> 404 DRIVER_NOT_FOUND, no event emitted', async () => {
+    const { service, repo, emitter } = create();
+    repo.findIdInTenant.mockResolvedValue(null);
+
+    const e = await capture(service.suspend(COMPANY_ID, 999, 'suspended'));
+
+    expect(e).toBeInstanceOf(NotFoundException);
+    expect(e.getResponse()).toMatchObject({ code: 'DRIVER_NOT_FOUND' });
+    expect(emitter.emit).not.toHaveBeenCalled();
   });
 });

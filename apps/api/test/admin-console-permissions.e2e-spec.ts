@@ -91,6 +91,15 @@ suite('Admin console — permission matrix per controller (ADR-012 §4/§8)', ()
       expect(res.body).toMatchObject({ code: 'FORBIDDEN' });
     });
 
+    it('POST /admin/drivers/1/suspend -> 403 FORBIDDEN', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/admin/drivers/1/suspend')
+        .set('Authorization', operatorAuth())
+        .send({ reason: 'suspended' });
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ code: 'FORBIDDEN' });
+    });
+
     it('PUT /admin/settings -> 403 FORBIDDEN', async () => {
       const res = await request(app.getHttpServer())
         .put('/admin/settings')
@@ -129,6 +138,7 @@ suite('Admin console — permission matrix per controller (ADR-012 §4/§8)', ()
     it.each([
       ['post', '/admin/drivers'],
       ['post', '/admin/drivers/1/pin/resend'],
+      ['post', '/admin/drivers/1/suspend'],
       ['get', '/admin/settings'],
       ['put', '/admin/settings'],
       ['get', '/ops/trip-requests'],

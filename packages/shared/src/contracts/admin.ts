@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { NationalId, Phone } from './auth';
+import { DriverSuspensionReason, NationalId, Phone } from './auth';
 import { DriverStatus } from './driver';
 import { AmountCop, FareBreakdown, TripStatus } from './trips';
 
@@ -63,6 +63,14 @@ export const ResendDriverPinResponse = z.object({
   pin_delivered_at: z.string().datetime().nullable(),
 });
 export type ResendDriverPinResponse = z.infer<typeof ResendDriverPinResponse>;
+
+export const SuspendDriverDTO = z.object({
+  reason: DriverSuspensionReason,
+});
+export type SuspendDriverDTO = z.infer<typeof SuspendDriverDTO>;
+
+export const SuspendDriverResponse = z.object({ ok: z.literal(true) });
+export type SuspendDriverResponse = z.infer<typeof SuspendDriverResponse>;
 
 export const BaseFareCop = z.number().int().positive().max(1_000_000);
 export type BaseFareCop = z.infer<typeof BaseFareCop>;

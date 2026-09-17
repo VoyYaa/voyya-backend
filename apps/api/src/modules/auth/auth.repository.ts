@@ -10,6 +10,8 @@ export interface AuthUser {
   role: string;
   accountStatus: string;
   companyId: number | null;
+  failedAttempts: number;
+  blockedUntil: Date | null;
 }
 
 export interface AuthDriver {
@@ -122,6 +124,20 @@ export class AuthRepository {
     );
   }
 
+  async registerAdminFailure(userId: number, blockedUntil: Date | null): Promise<void> {
+    await this.prisma.user.update({
+      where: { userId },
+      data: { failedAttempts: { increment: 1 }, blockedUntil },
+    });
+  }
+
+  async resetAdminAttempts(userId: number): Promise<void> {
+    await this.prisma.user.update({
+      where: { userId },
+      data: { failedAttempts: 0, blockedUntil: null },
+    });
+  }
+
   private async activeCompanyIds(): Promise<number[]> {
     const companies = await this.prisma.company.findMany({
       where: { status: 'active' },
@@ -181,4 +197,6 @@ const userSelect = {
   role: true,
   accountStatus: true,
   companyId: true,
+  failedAttempts: true,
+  blockedUntil: true,
 } as const;
