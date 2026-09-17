@@ -131,6 +131,122 @@ async function capture(p: Promise<unknown>): Promise<HttpException> {
   throw new Error('No exception thrown');
 }
 
+describe('TripLifecycleService.markArrived', () => {
+  it('applied -> idempotent=false, arrived_at and no_show_available_at = arrived_at + grace', async () => {
+    const arrivedAt = new Date('2026-01-05T10:00:00.000Z');
+    const outcome: TripTransitionOutcome<{ arrivedAt: Date }> = {
+      kind: 'applied',
+      row: { arrivedAt },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markArrived: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      buildEmitter(),
+    );
+
+    const r = await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.status).toBe('driver_en_route');
+    expect(r.idempotent).toBe(false);
+    expect(r.arrived_at).toBe(arrivedAt.toISOString());
+    expect(r.no_show_available_at).toBe(new Date('2026-01-05T10:05:00.000Z').toISOString());
+  });
+
+  it('repeated call -> idempotent=true, keeps the original arrived_at', async () => {
+    const arrivedAt = new Date('2026-01-05T10:00:00.000Z');
+    const outcome: TripTransitionOutcome<{ arrivedAt: Date }> = {
+      kind: 'idempotent',
+      row: { arrivedAt },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markArrived: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      buildEmitter(),
+    );
+
+    const r = await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.idempotent).toBe(true);
+    expect(r.arrived_at).toBe(arrivedAt.toISOString());
+  });
+
+  it('wrong order (e.g. not yet driver_en_route) -> 409 INVALID_TRIP_TRANSITION', async () => {
+    const rejected: TripTransitionOutcome<{ arrivedAt: Date }> = {
+      kind: 'rejected',
+      status: 'assigned' as TripStatus,
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markArrived: async () => rejected }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      buildEmitter(),
+    );
+
+    const e = await capture(service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
+  });
+});
+
+describe('TripLifecycleService.markStarted', () => {
+  it('applied -> idempotent=false, status in_progress', async () => {
+    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'applied',
+      row: { updatedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markStarted: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const r = await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.status).toBe('in_progress');
+    expect(r.idempotent).toBe(false);
+  });
+
+  it('repeated call -> idempotent=true, no error', async () => {
+    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'idempotent',
+      row: { updatedAt: new Date() },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markStarted: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const r = await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.idempotent).toBe(true);
+    expect(r.status).toBe('in_progress');
+  });
+
+  it('wrong order (driver never marked en-route) -> 409 INVALID_TRIP_TRANSITION', async () => {
+    const rejected: TripTransitionOutcome<{ updatedAt: Date }> = {
+      kind: 'rejected',
+      status: 'assigned' as TripStatus,
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markStarted: async () => rejected }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
+  });
+});
+
 describe('TripLifecycleService.declareNoShow', () => {
   it('grace pending -> 409 NO_SHOW_GRACE_PENDING with remaining_seconds', async () => {
     const service = new TripLifecycleService(
@@ -236,6 +352,65 @@ describe('TripLifecycleService.complete', () => {
     expect(r.net_earnings).toBe(9200);
     expect(r.finished_at).toBe(finishedAt.toISOString());
     expect(emitter.emit).toHaveBeenCalledWith('trip_request.completed', expect.anything());
+  });
+});
+
+describe('TripLifecycleService.confirmCashCollected', () => {
+  it('applied -> status completed, idempotent=false, cash_collected_at populated', async () => {
+    const cashCollectedAt = new Date('2026-01-05T12:00:00.000Z');
+    const outcome: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
+      kind: 'applied',
+      row: { cashCollectedAt },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markCashCollected: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const r = await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.status).toBe('completed');
+    expect(r.idempotent).toBe(false);
+    expect(r.cash_collected_at).toBe(cashCollectedAt.toISOString());
+  });
+
+  it('repeated call -> idempotent=true, keeps the original cash_collected_at', async () => {
+    const cashCollectedAt = new Date('2026-01-05T12:00:00.000Z');
+    const outcome: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
+      kind: 'idempotent',
+      row: { cashCollectedAt },
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markCashCollected: async () => outcome }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const r = await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    expect(r.idempotent).toBe(true);
+    expect(r.cash_collected_at).toBe(cashCollectedAt.toISOString());
+  });
+
+  it('trip not completed yet -> 409 INVALID_TRIP_TRANSITION', async () => {
+    const rejected: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
+      kind: 'rejected',
+      status: 'in_progress' as TripStatus,
+    };
+    const service = new TripLifecycleService(
+      buildRepo({ markCashCollected: async () => rejected }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'in_progress' }),
+      buildParams(),
+      buildEmitter(),
+    );
+
+    const e = await capture(service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
   });
 });
 
