@@ -51,6 +51,7 @@ function create() {
     resetDriverAttempts: jest.fn(),
     registerAdminFailure: jest.fn(),
     resetAdminAttempts: jest.fn(),
+    getCompanyIdentity: jest.fn(),
   };
   const refreshTokens = {
     issue: jest.fn().mockResolvedValue('refresh-1'),
@@ -92,6 +93,9 @@ function code(e: HttpException): string {
 }
 
 const inFuture = (): Date => new Date(Date.now() + 60_000);
+function companyIdentityFixture(companyId: number, companyName = 'Cootrayal') {
+  return { companyId, companyName, municipalityId: 77, municipalityName: 'Yarumal' };
+}
 const newPassengerUser = {
   userId: 10,
   firstName: '',
@@ -151,6 +155,7 @@ describe('AuthService.verifyOtp', () => {
     expect((repo as RepoMock).consumeOtp).toHaveBeenCalledWith(1);
     expect((repo as RepoMock).createPassengerAutoRegister).toHaveBeenCalledTimes(1);
     expect(r.user.role).toBe('passenger');
+    expect(r.user.tenant).toBeNull();
     expect(r.user.profile_complete).toBe(false);
     expect(r.tokens.access_token).toBe('access-jwt');
     expect(r.tokens.refresh_token).toBe('refresh-1');
@@ -219,13 +224,15 @@ const driverBase = {
 };
 
 describe('AuthService.driverLogin', () => {
-  it('happy: tokens with driver role and companyId; resets attempts', async () => {
+  it('happy: tokens with driver role and tenant identity matching fleet.driver.company_id; resets attempts', async () => {
     const { service, repo } = create();
     (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
     const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
     expect((repo as RepoMock).resetDriverAttempts).toHaveBeenCalledWith(5, 2);
+    expect((repo as RepoMock).getCompanyIdentity).toHaveBeenCalledWith(2);
     expect(r.user.role).toBe('driver');
-    expect(r.user.company_id).toBe(2);
+    expect(r.user.tenant?.company_id).toBe(2);
     expect(r.user.profile_complete).toBe(true);
   });
 
@@ -311,13 +318,22 @@ describe('AuthService.adminLogin', () => {
     blockedUntil: null,
   };
 
-  it('happy: tokens with admin role and its company_id; resets attempts', async () => {
-    const { service, repo } = create();
+  it('happy: tokens with admin role and full tenant identity; resets attempts; JWT carries no names', async () => {
+    const { service, repo, jwt } = create();
     (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(1));
     const r = await service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' });
     expect(r.user.role).toBe('admin');
-    expect(r.user.company_id).toBe(1);
+    expect(r.user.tenant).toEqual({
+      company_id: 1,
+      company_name: 'Cootrayal',
+      municipality_id: 77,
+      municipality_name: 'Yarumal',
+    });
     expect((repo as RepoMock).resetAdminAttempts).toHaveBeenCalledWith(1);
+
+    const payload = (jwt.sign as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(Object.keys(payload).sort()).toEqual(['company_id', 'role', 'sub', 'type']);
   });
 
   it('wrong password (below cap) -> 401 INVALID_CREDENTIALS and records failure', async () => {
@@ -364,7 +380,7 @@ describe('AuthService.adminLogin', () => {
 });
 
 describe('AuthService.refresh / logout / revocation', () => {
-  it('refresh: uses the rotated token and issues a new access', async () => {
+  it('refresh: uses the rotated token, issues a new access and returns the user', async () => {
     const { service, repo, refreshTokens } = create();
     (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 5, refreshToken: 'new-refresh' });
     (repo as RepoMock).getUser.mockResolvedValue({
@@ -374,11 +390,56 @@ describe('AuthService.refresh / logout / revocation', () => {
       accountStatus: 'active',
     });
     (repo as RepoMock).getDriverCompany.mockResolvedValue({ companyId: 2, status: 'available' });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
 
     const r = await service.refresh({ refresh_token: 'old' });
     expect(r.refresh_token).toBe('new-refresh');
     expect(r.access_token).toBe('access-jwt');
     expect(r.expires_in).toBe(900);
+    expect(r.user.role).toBe('driver');
+    expect(r.user.tenant?.company_id).toBe(2);
+  });
+
+  it('refresh of a passenger returns user.tenant === null', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 10, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      userId: 10,
+      firstName: 'Ana',
+      lastName: 'P',
+      email: null,
+      passwordHash: null,
+      role: 'passenger',
+      accountStatus: 'active',
+      companyId: null,
+    });
+
+    const r = await service.refresh({ refresh_token: 'x' });
+    expect(r.user.role).toBe('passenger');
+    expect(r.user.tenant).toBeNull();
+    expect((repo as RepoMock).getCompanyIdentity).not.toHaveBeenCalled();
+  });
+
+  it('refresh of an admin returns user; renaming the company between login and refresh surfaces the NEW name', async () => {
+    const { service, repo, refreshTokens } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 1, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      userId: 1,
+      firstName: 'Admin',
+      lastName: 'VoyYa',
+      email: 'admin@voyya.co',
+      passwordHash: 'hashed:Secret12',
+      role: 'admin',
+      accountStatus: 'active',
+      companyId: 1,
+    });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(
+      companyIdentityFixture(1, 'Cootrayal Renamed'),
+    );
+
+    const r = await service.refresh({ refresh_token: 'old' });
+    expect(r.user.role).toBe('admin');
+    expect(r.user.tenant?.company_name).toBe('Cootrayal Renamed');
   });
 
   it('refresh of SUSPENDED passenger/admin -> 401 REFRESH_REVOKED + revokes family', async () => {

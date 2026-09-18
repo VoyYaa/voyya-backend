@@ -6,10 +6,10 @@ import {
   LogoutDTO,
   type LogoutResponse,
   RefreshDTO,
+  type RefreshResponse,
   RequestOtpDTO,
   type RequestOtpResponse,
   type SessionResponse,
-  type SessionTokens,
   VerifyOtpDTO,
 } from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
@@ -69,7 +69,7 @@ export class AuthController {
   refresh(
     @Body(new ZodValidationPipe(RefreshDTO)) dto: RefreshDTO,
     @Headers('user-agent') userAgent?: string,
-  ): Promise<SessionTokens> {
+  ): Promise<RefreshResponse> {
     return this.auth.refresh(dto, userAgent);
   }
 

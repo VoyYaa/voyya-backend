@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -19,12 +20,13 @@ import {
   type LogoutDTO,
   type LogoutResponse,
   type RefreshDTO,
+  type RefreshResponse,
   type RequestOtpDTO,
   type RequestOtpResponse,
   Role,
   type SessionResponse,
   type SessionStartedEvent,
-  type SessionTokens,
+  type SessionUser,
   type VerifyOtpDTO,
 } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
@@ -200,7 +202,7 @@ export class AuthService {
     return this.issueSession(u, u.companyId, userAgent);
   }
 
-  async refresh(dto: RefreshDTO, userAgent?: string): Promise<SessionTokens> {
+  async refresh(dto: RefreshDTO, userAgent?: string): Promise<RefreshResponse> {
     const { userId, refreshToken } = await this.refreshTokens.rotate(dto.refresh_token, userAgent);
     const u = await this.repo.getUser(userId);
     if (!u) {
@@ -233,6 +235,10 @@ export class AuthService {
       refresh_token: refreshToken,
       token_type: 'Bearer',
       expires_in: this.env.get('JWT_ACCESS_TTL_SECONDS'),
+      user: await this.buildSessionUser(
+        { userId: u.userId, firstName: u.firstName, lastName: u.lastName, role: u.role },
+        companyId ?? null,
+      ),
     };
   }
 
@@ -274,14 +280,35 @@ export class AuthService {
         token_type: 'Bearer',
         expires_in: this.env.get('JWT_ACCESS_TTL_SECONDS'),
       },
-      user: {
-        user_id: user.userId,
-        first_name: user.firstName,
-        last_name: user.lastName,
-        role,
-        company_id: companyId,
-        profile_complete: role !== 'passenger' || user.firstName.trim().length > 0,
-      },
+      user: await this.buildSessionUser(user, companyId),
+    };
+  }
+
+  private async buildSessionUser(
+    profile: SessionProfile,
+    companyId: number | null,
+  ): Promise<SessionUser> {
+    const role = Role.parse(profile.role);
+    let tenant: SessionUser['tenant'] = null;
+    if (companyId !== null) {
+      const identity = await this.repo.getCompanyIdentity(companyId);
+      if (!identity) {
+        throw new InternalServerErrorException('Company not found for the authenticated tenant');
+      }
+      tenant = {
+        company_id: identity.companyId,
+        company_name: identity.companyName,
+        municipality_id: identity.municipalityId,
+        municipality_name: identity.municipalityName,
+      };
+    }
+    return {
+      user_id: profile.userId,
+      first_name: profile.firstName,
+      last_name: profile.lastName,
+      role,
+      tenant,
+      profile_complete: role !== 'passenger' || profile.firstName.trim().length > 0,
     };
   }
 

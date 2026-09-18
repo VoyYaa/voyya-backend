@@ -27,6 +27,13 @@ export interface AuthDriver {
   pinDeliveredAt: Date | null;
 }
 
+export interface CompanyIdentity {
+  companyId: number;
+  companyName: string;
+  municipalityId: number;
+  municipalityName: string;
+}
+
 @Injectable()
 export class AuthRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -41,6 +48,24 @@ export class AuthRepository {
 
   async getUser(userId: number): Promise<AuthUser | null> {
     return this.prisma.user.findUnique({ where: { userId }, select: userSelect });
+  }
+
+  async getCompanyIdentity(companyId: number): Promise<CompanyIdentity | null> {
+    const company = await this.prisma.company.findUnique({
+      where: { companyId },
+      select: {
+        companyId: true,
+        legalName: true,
+        municipality: { select: { municipalityId: true, name: true } },
+      },
+    });
+    if (!company) return null;
+    return {
+      companyId: company.companyId,
+      companyName: company.legalName,
+      municipalityId: company.municipality.municipalityId,
+      municipalityName: company.municipality.name,
+    };
   }
 
   async createPassengerAutoRegister(phone: string): Promise<AuthUser> {

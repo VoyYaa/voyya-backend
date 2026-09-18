@@ -38,12 +38,20 @@ export const SessionTokens = z.object({
 });
 export type SessionTokens = z.infer<typeof SessionTokens>;
 
+export const SessionTenant = z.object({
+  company_id: z.number().int().positive(),
+  company_name: z.string().min(1),
+  municipality_id: z.number().int().positive(),
+  municipality_name: z.string().min(1),
+});
+export type SessionTenant = z.infer<typeof SessionTenant>;
+
 export const SessionUser = z.object({
   user_id: z.number().int().positive(),
   first_name: z.string(),
   last_name: z.string(),
   role: Role,
-  company_id: z.number().int().positive().nullable(),
+  tenant: SessionTenant.nullable(),
   profile_complete: z.boolean(),
 });
 export type SessionUser = z.infer<typeof SessionUser>;
@@ -89,8 +97,10 @@ export const RefreshDTO = z.object({
 });
 export type RefreshDTO = z.infer<typeof RefreshDTO>;
 
-export const RefreshResponse = SessionTokens;
-export type RefreshResponse = SessionTokens;
+export const RefreshResponse = SessionTokens.extend({
+  user: SessionUser,
+});
+export type RefreshResponse = z.infer<typeof RefreshResponse>;
 
 export const LogoutDTO = z.object({
   refresh_token: z.string().min(1),
