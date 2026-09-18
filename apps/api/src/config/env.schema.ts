@@ -62,6 +62,7 @@ export const EnvSchema = z.object({
   AVG_SPEED_KMH: z.coerce.number().positive().default(20),
   NO_SHOW_GRACE_MIN: z.coerce.number().positive().default(5),
   LOCATION_STALE_MIN: z.coerce.number().nonnegative().default(15),
+  LOCATION_PURGE_HOURS: z.coerce.number().nonnegative().default(12),
 
   PG_TEST_URL: z.string().min(1).optional(),
 });

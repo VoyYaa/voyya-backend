@@ -6,6 +6,7 @@ import { AssignmentService } from './assignment.service';
 import { CandidateRepository } from './candidate.repository';
 import { DriverController } from './driver.controller';
 import { DriverRepository } from './driver.repository';
+import { DriverLocationPurgeService } from './driver-location-purge.service';
 import { DriverShiftService } from './driver-shift.service';
 import { OperationalParamsService } from './operational-params.service';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
@@ -24,6 +25,7 @@ import { TripClosingService } from './trip-closing.service';
     TripClosingService,
     DriverShiftService,
     DriverRepository,
+    DriverLocationPurgeService,
     { provide: PUSH_PROVIDER, useClass: NoopPushProvider },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],

@@ -7,6 +7,8 @@ import { AuthCleanupService } from './auth-cleanup.service';
 import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
+import { ConsentController } from './consent.controller';
+import { ConsentRepository } from './consent.repository';
 import { BcryptHasher, HASHER } from './hasher.service';
 import { RefreshTokenService } from './refresh-token.service';
 
@@ -21,12 +23,13 @@ import { RefreshTokenService } from './refresh-token.service';
       }),
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, ConsentController],
   providers: [
     AuthService,
     AuthRepository,
     RefreshTokenService,
     AuthCleanupService,
+    ConsentRepository,
     { provide: HASHER, useClass: BcryptHasher },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],

@@ -70,6 +70,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
     process.env.LOCATION_STALE_MIN = '0';
+    process.env.LOCATION_PURGE_HOURS = '0';
 
     sms = { send: jest.fn().mockResolvedValue(undefined) };
 

@@ -56,6 +56,32 @@ export class DriverRepository {
     return company?.municipalityId ?? null;
   }
 
+  async listCompanyIds(): Promise<number[]> {
+    const companies = await this.prisma.company.findMany({ select: { companyId: true } });
+    return companies.map((c) => c.companyId);
+  }
+
+  async purgeStaleLocations(
+    tx: Prisma.TransactionClient,
+    companyId: number,
+    purgeHours: number,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<Array<{ driver_id: number }>>`
+      UPDATE fleet.driver
+         SET current_lat = NULL,
+             current_lng = NULL,
+             location_updated_at = NULL,
+             updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE company_id = ${companyId}
+         AND (current_lat IS NOT NULL OR current_lng IS NOT NULL OR location_updated_at IS NOT NULL)
+         AND ( status = 'off_shift'
+            OR location_updated_at IS NULL
+            OR location_updated_at < (now() AT TIME ZONE 'UTC') - (${purgeHours} * interval '1 hour') )
+      RETURNING driver_id
+    `;
+    return rows.length;
+  }
+
   async getShiftRow(
     tx: Prisma.TransactionClient,
     driverId: number,

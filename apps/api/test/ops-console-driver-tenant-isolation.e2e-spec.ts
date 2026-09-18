@@ -45,6 +45,7 @@ suite('Ops/Admin console — driver reads and writes never cross company_id, eve
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
     process.env.LOCATION_STALE_MIN = '15';
+    process.env.LOCATION_PURGE_HOURS = '0';
 
     sms = { send: jest.fn().mockResolvedValue(undefined) };
 

@@ -75,6 +75,12 @@ enum PaymentMethod {
   @@schema("trips")
 }
 
+enum ConsentPurpose {
+  location
+
+  @@schema("auth")
+}
+
 model Company {
   companyId      Int           @id @default(autoincrement()) @map("company_id")
   legalName      String        @map("legal_name")
@@ -134,6 +140,7 @@ model User {
   refreshTokens          RefreshToken[]
   systemParameterUpdates SystemParameter[]
   fareConfigVersions     FareConfig[]      @relation("FareConfigAuthor")
+  consentRecords         ConsentRecord[]
 
   @@index([companyId, role])
   @@map("user")
@@ -168,6 +175,20 @@ model OtpCode {
 
   @@index([phone, createdAt])
   @@map("otp_code")
+  @@schema("auth")
+}
+
+model ConsentRecord {
+  consentRecordId Int            @id @default(autoincrement()) @map("consent_record_id")
+  userId          Int            @map("user_id")
+  purpose         ConsentPurpose @map("purpose")
+  noticeVersion   String         @map("notice_version")
+  grantedAt       DateTime       @default(now()) @map("granted_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, purpose, noticeVersion])
+  @@map("consent_record")
   @@schema("auth")
 }
 

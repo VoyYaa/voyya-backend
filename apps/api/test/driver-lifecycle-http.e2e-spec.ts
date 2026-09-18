@@ -24,6 +24,7 @@ suite('Driver + trip lifecycle over real HTTP (TenantGuard + Roles + Zod + Postg
     process.env.DATABASE_URL = url;
     process.env.AUTH_DEV_HEADERS = 'true';
     process.env.LOCATION_STALE_MIN = '0';
+    process.env.LOCATION_PURGE_HOURS = '0';
 
     const { AppModule } = await import('../src/app.module');
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
