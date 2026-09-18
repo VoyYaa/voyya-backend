@@ -95,8 +95,7 @@ export class OpsConsoleService {
   }
 
   async listDrivers(companyId: number, query: OpsDriverQuery): Promise<OpsDriverListResponse> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
-    const staleMin = (await this.params.get(municipalityId)).locationStaleMin;
+    const staleMin = (await this.params.get(companyId)).locationStaleMin;
 
     const rows = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.listDrivers(tx, companyId, query.search ?? null, query.status ?? null, query.limit),
@@ -110,8 +109,7 @@ export class OpsConsoleService {
   }
 
   async getDriver(companyId: number, driverId: number): Promise<OpsDriverDetail> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
-    const staleMin = (await this.params.get(municipalityId)).locationStaleMin;
+    const staleMin = (await this.params.get(companyId)).locationStaleMin;
 
     const row = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.getDriver(tx, companyId, driverId),

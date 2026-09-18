@@ -87,11 +87,13 @@ model Company {
   membershipFee  Decimal?      @map("membership_fee") @db.Decimal(12, 2)
   registeredAt   DateTime      @default(now()) @map("registered_at")
 
-  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
-  drivers      Driver[]
-  vehicles     Vehicle[]
-  assignments  Assignment[]
-  staff        User[]
+  municipality     Municipality       @relation(fields: [municipalityId], references: [municipalityId])
+  drivers          Driver[]
+  vehicles         Vehicle[]
+  assignments      Assignment[]
+  staff            User[]
+  fareConfigs      FareConfig[]
+  systemParameters SystemParameter[]
 
   @@index([municipalityId])
   @@map("company")
@@ -105,10 +107,8 @@ model Municipality {
   coveragePolygon Json   @map("coverage_polygon")
   status          String @default("active") @map("status")
 
-  companies        Company[]
-  tripRequests     TripRequest[]
-  fareConfigs      FareConfig[]
-  systemParameters SystemParameter[]
+  companies    Company[]
+  tripRequests TripRequest[]
 
   @@map("municipality")
   @@schema("tenancy")
@@ -133,6 +133,7 @@ model User {
   driver                 Driver?
   refreshTokens          RefreshToken[]
   systemParameterUpdates SystemParameter[]
+  fareConfigVersions     FareConfig[]      @relation("FareConfigAuthor")
 
   @@index([companyId, role])
   @@map("user")
@@ -268,7 +269,7 @@ model TripRequest {
 
 model FareConfig {
   fareConfigId        Int         @id @default(autoincrement()) @map("fare_config_id")
-  municipalityId      Int         @map("municipality_id")
+  companyId           Int         @map("company_id")
   serviceType         ServiceType @default(taxi) @map("service_type")
   baseFare            Decimal     @map("base_fare") @db.Decimal(12, 2)
   nightSurchargePct   Decimal     @default(20) @map("night_surcharge_pct") @db.Decimal(5, 2)
@@ -276,11 +277,14 @@ model FareConfig {
   commissionPct       Decimal     @default(8) @map("commission_pct") @db.Decimal(5, 2)
   validFrom           DateTime    @default(now()) @map("valid_from") @db.Date
   validTo             DateTime?   @map("valid_to") @db.Date
+  createdAt           DateTime    @default(now()) @map("created_at")
+  createdBy           Int?        @map("created_by")
 
-  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
+  company       Company @relation(fields: [companyId], references: [companyId])
+  createdByUser User?   @relation("FareConfigAuthor", fields: [createdBy], references: [userId], onDelete: SetNull, onUpdate: Cascade)
 
-  @@index([municipalityId, serviceType])
-  @@index([municipalityId, serviceType, validFrom])
+  @@index([companyId, serviceType])
+  @@index([companyId, serviceType, validFrom])
   @@map("fare_config")
   @@schema("trips")
 }
@@ -313,17 +317,17 @@ model Assignment {
 }
 
 model SystemParameter {
-  id             Int      @id @default(autoincrement())
-  key            String   @map("key")
-  value          String   @map("value")
-  municipalityId Int?     @map("municipality_id")
-  updatedAt      DateTime @updatedAt @map("updated_at")
-  updatedBy      Int?     @map("updated_by")
+  id        Int      @id @default(autoincrement())
+  key       String   @map("key")
+  value     String   @map("value")
+  companyId Int      @map("company_id")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  updatedBy Int?     @map("updated_by")
 
-  municipality  Municipality? @relation(fields: [municipalityId], references: [municipalityId])
-  updatedByUser User?         @relation(fields: [updatedBy], references: [userId])
+  company       Company @relation(fields: [companyId], references: [companyId])
+  updatedByUser User?   @relation(fields: [updatedBy], references: [userId])
 
-  @@unique([key, municipalityId])
+  @@unique([key, companyId])
   @@map("system_parameter")
   @@schema("admin")
 }

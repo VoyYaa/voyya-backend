@@ -19,7 +19,8 @@
     "prisma:deploy": "prisma migrate deploy",
     "prisma:sql": "prisma db execute --file prisma/sql/00_postgis_rls.sql --schema prisma/schema.prisma",
     "db:release": "prisma migrate deploy && pnpm run prisma:sql",
-    "db:seed": "ts-node prisma/seed.ts"
+    "db:seed": "ts-node prisma/seed.ts",
+    "provision:company": "ts-node scripts/provision-company.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"

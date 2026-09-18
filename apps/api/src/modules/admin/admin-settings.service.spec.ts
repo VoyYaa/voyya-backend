@@ -4,10 +4,9 @@ import type { EnvService } from '../../config/env.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { AdminSettingsRepository, type SystemParameterRow } from './admin-settings.repository';
 import { AdminSettingsService } from './admin-settings.service';
-import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 
 const COMPANY_ID = 1;
-const MUNICIPALITY_ID = 10;
+const USER_ID = 1;
 
 const fareConfig = {
   fareConfigId: 100,
@@ -15,10 +14,11 @@ const fareConfig = {
   nightSurchargePct: 20,
   holidaySurchargePct: 15,
   commissionPct: 8,
+  createdAt: new Date('2025-12-01T00:00:00.000Z'),
 };
 
-function paramRow(key: string, value: string, updatedAt: Date, municipalityId: number | null = MUNICIPALITY_ID): SystemParameterRow {
-  return { key, value, municipalityId, updatedAt };
+function paramRow(key: string, value: string, updatedAt: Date): SystemParameterRow {
+  return { key, value, updatedAt };
 }
 
 const T1 = new Date('2026-01-01T00:00:00.000Z');
@@ -41,7 +41,7 @@ function fakeEnv(): EnvService {
 
 function fakePrisma(): PrismaService {
   return {
-    $transaction: jest.fn((fn: (tx: unknown) => unknown) => fn({})),
+    runInTenant: jest.fn((_companyId: number, fn: (tx: unknown) => unknown) => fn({})),
   } as unknown as PrismaService;
 }
 
@@ -62,14 +62,12 @@ function create() {
     closeAndInsertFareConfig: jest.fn(),
     upsertParameters: jest.fn().mockResolvedValue(undefined),
   };
-  const companyMunicipality = { resolve: jest.fn().mockResolvedValue(MUNICIPALITY_ID) };
   const service = new AdminSettingsService(
     fakePrisma(),
     repo as unknown as AdminSettingsRepository,
-    companyMunicipality as unknown as CompanyMunicipalityResolver,
     fakeEnv(),
   );
-  return { service, repo, companyMunicipality };
+  return { service, repo };
 }
 
 const validDto: UpdateConsoleSettingsDTO = {
@@ -113,7 +111,7 @@ describe('AdminSettingsService.get', () => {
     expect(result.search_radius_km).toBe(2);
     expect(result.acceptance_timeout_sec).toBe(15);
     expect(result.expansion_radius_km).toBe(6);
-    expect(result.updated_at).toBeNull();
+    expect(result.updated_at).toBe(fareConfig.createdAt.toISOString());
   });
 });
 
@@ -122,7 +120,7 @@ describe('AdminSettingsService.update', () => {
     const { service, repo } = create();
 
     const e = await capture(
-      service.update(COMPANY_ID, 1, { ...validDto, version: 'fc:1|sp:1' }),
+      service.update(COMPANY_ID, USER_ID, { ...validDto, version: 'fc:1|sp:1' }),
     );
 
     expect(e).toBeInstanceOf(ConflictException);
@@ -135,7 +133,7 @@ describe('AdminSettingsService.update', () => {
     const { service, repo } = create();
 
     const e = await capture(
-      service.update(COMPANY_ID, 1, { ...validDto, search_radius_km: 7 }),
+      service.update(COMPANY_ID, USER_ID, { ...validDto, search_radius_km: 7 }),
     );
 
     expect(e).toBeInstanceOf(UnprocessableEntityException);
@@ -150,17 +148,17 @@ describe('AdminSettingsService.update', () => {
     const { service, repo } = create();
     repo.getParameters.mockResolvedValueOnce(defaultParamRows).mockResolvedValueOnce(defaultParamRows);
 
-    await service.update(COMPANY_ID, 1, { ...validDto, search_radius_km: 3 });
+    await service.update(COMPANY_ID, USER_ID, { ...validDto, search_radius_km: 3 });
 
     expect(repo.closeAndInsertFareConfig).not.toHaveBeenCalled();
     expect(repo.upsertParameters).toHaveBeenCalledWith(
       expect.anything(),
-      MUNICIPALITY_ID,
+      COMPANY_ID,
       [
         { key: 'search_radius_km', value: '3' },
         { key: 'acceptance_timeout_sec', value: '15' },
       ],
-      1,
+      USER_ID,
     );
   });
 
@@ -168,13 +166,29 @@ describe('AdminSettingsService.update', () => {
     const { service, repo } = create();
     repo.closeAndInsertFareConfig.mockResolvedValue({ ...fareConfig, fareConfigId: 101, baseFare: 9000 });
 
-    await service.update(COMPANY_ID, 1, { ...validDto, base_fare: 9000 });
+    await service.update(COMPANY_ID, USER_ID, { ...validDto, base_fare: 9000 });
 
-    expect(repo.closeAndInsertFareConfig).toHaveBeenCalledWith(expect.anything(), MUNICIPALITY_ID, {
-      baseFare: 9000,
-      nightSurchargePct: 20,
-      holidaySurchargePct: 15,
-      commissionPct: 8,
-    });
+    expect(repo.closeAndInsertFareConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      COMPANY_ID,
+      fareConfig.fareConfigId,
+      {
+        baseFare: 9000,
+        nightSurchargePct: 20,
+        holidaySurchargePct: 15,
+        commissionPct: 8,
+      },
+      USER_ID,
+    );
+  });
+
+  it('B-13: the write lost the race after the version check passed (closeAndInsertFareConfig returns null) -> 409 SETTINGS_CONFLICT', async () => {
+    const { service, repo } = create();
+    repo.closeAndInsertFareConfig.mockResolvedValue(null);
+
+    const e = await capture(service.update(COMPANY_ID, USER_ID, { ...validDto, base_fare: 9000 }));
+
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'SETTINGS_CONFLICT' });
   });
 });

@@ -17,6 +17,11 @@ import type { HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
 import { TripsService } from './trips.service';
+import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+
+function fakeActiveCompanyResolver(companyId: number | null = 1): ActiveCompanyResolver {
+  return { resolve: async () => companyId } as unknown as ActiveCompanyResolver;
+}
 
 const SECRET = 'test-secret-0123456789';
 const NO_HOLIDAYS: HolidaysProvider = { isHoliday: () => false };
@@ -137,6 +142,7 @@ function createService(
     NO_HOLIDAYS,
     assignment,
     fakeTripClosing(state.tripClosingRejected ?? false),
+    fakeActiveCompanyResolver(),
   );
   return { service, emitter, assignment };
 }

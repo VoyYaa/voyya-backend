@@ -29,19 +29,21 @@ export class TripsRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async getActiveFareConfig(
-    municipalityId: number,
+    companyId: number,
     serviceType: ServiceType,
   ): Promise<FareConfig | null> {
     const today = new Date();
-    return this.prisma.fareConfig.findFirst({
-      where: {
-        municipalityId,
-        serviceType,
-        validFrom: { lte: today },
-        OR: [{ validTo: null }, { validTo: { gte: today } }],
-      },
-      orderBy: [{ validFrom: 'desc' }, { fareConfigId: 'desc' }],
-    });
+    return this.prisma.runInTenant(companyId, (tx) =>
+      tx.fareConfig.findFirst({
+        where: {
+          companyId,
+          serviceType,
+          validFrom: { lte: today },
+          OR: [{ validTo: null }, { validTo: { gte: today } }],
+        },
+        orderBy: [{ validFrom: 'desc' }, { fareConfigId: 'desc' }],
+      }),
+    );
   }
 
   async isPointInCoverage(

@@ -28,6 +28,7 @@ import {
   TRIPS_EVENTS,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { calculateEta, haversineKm } from '../trips/domain/geo';
 import { AssignmentRepository, type TripRequestInfo } from './assignment.repository';
 import { CandidateRepository } from './candidate.repository';
@@ -72,6 +73,7 @@ export class AssignmentService {
     private readonly emitter: EventEmitter2,
     @Inject(PUSH_PROVIDER) private readonly push: PushProvider,
     private readonly tripClosing: TripClosingService,
+    private readonly activeCompanyResolver: ActiveCompanyResolver,
   ) {}
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CREATED)
@@ -91,14 +93,14 @@ export class AssignmentService {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info || info.status !== 'pending_assignment') return;
 
-    const companyId = await this.repo.resolveActiveCompany(municipalityId);
+    const companyId = await this.activeCompanyResolver.resolve(municipalityId);
     if (companyId === null) {
       this.logger.warn(`No active company in municipality=${municipalityId}`);
       this.emitNoDriver(tripRequestId, 0, 0);
       return;
     }
 
-    const params = await this.paramsService.get(municipalityId);
+    const params = await this.paramsService.get(companyId);
     const ctx: ChainContext = {
       tripRequestId,
       companyId,
@@ -358,7 +360,7 @@ export class AssignmentService {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info) return null;
 
-    const companyId = await this.repo.resolveActiveCompany(info.municipalityId);
+    const companyId = await this.activeCompanyResolver.resolve(info.municipalityId);
     if (companyId === null) return null;
 
     const row = await this.prisma.runInTenant(companyId, (tx) =>
@@ -376,7 +378,7 @@ export class AssignmentService {
       };
     }
 
-    const params = await this.paramsService.get(info.municipalityId);
+    const params = await this.paramsService.get(companyId);
     const eta =
       row.lat !== null && row.lng !== null
         ? calculateEta(

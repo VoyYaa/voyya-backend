@@ -54,15 +54,6 @@ export interface CreateAssignmentData {
 export class AssignmentRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async resolveActiveCompany(municipalityId: number): Promise<number | null> {
-    const company = await this.prisma.company.findFirst({
-      where: { municipalityId, status: 'active' },
-      orderBy: { companyId: 'asc' },
-      select: { companyId: true },
-    });
-    return company?.companyId ?? null;
-  }
-
   async getTripRequestInfo(tripRequestId: number): Promise<TripRequestInfo | null> {
     const t = await this.prisma.tripRequest.findUnique({
       where: { tripRequestId },

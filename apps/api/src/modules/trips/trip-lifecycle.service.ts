@@ -49,8 +49,7 @@ export class TripLifecycleService {
         message: `No puedes marcar la llegada: el viaje está en ${outcome.status}`,
       });
     }
-    const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    const graceMin = (await this.params.get(tripRequest.municipalityId)).noShowGraceMin;
+    const graceMin = (await this.params.get(companyId)).noShowGraceMin;
     const arrivedAt = outcome.row.arrivedAt;
     return {
       trip_request_id: tripRequestId,
@@ -129,7 +128,7 @@ export class TripLifecycleService {
   ): Promise<TripTransitionResult> {
     await this.assertOwnership(tripRequestId, driverId, companyId);
     const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    const graceMin = (await this.params.get(tripRequest.municipalityId)).noShowGraceMin;
+    const graceMin = (await this.params.get(companyId)).noShowGraceMin;
     const outcome = await this.tripClosing.closeTrip({
       tripRequestId,
       to: 'no_show',
@@ -173,7 +172,7 @@ export class TripLifecycleService {
 
   private async getTripRequestOrThrow(
     tripRequestId: number,
-  ): Promise<{ passengerId: number; municipalityId: number }> {
+  ): Promise<{ passengerId: number }> {
     const tripRequest = await this.repo.getTripRequest(tripRequestId);
     if (!tripRequest) {
       throw new NotFoundException({

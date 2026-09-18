@@ -8,7 +8,7 @@ import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
 
-suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', () => {
+suite('Admin console — settings: versioned fare + optimistic lock (ADR-014, tenant-owned by ADR-018)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let jwt: JwtService;
@@ -66,30 +66,33 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
     });
     companyId = company.companyId;
 
-    await prisma.fareConfig.create({
-      data: {
-        municipalityId,
-        serviceType: 'taxi',
-        baseFare: 8000,
-        nightSurchargePct: 20,
-        holidaySurchargePct: 15,
-        commissionPct: 8,
-      },
-    });
-    await prisma.systemParameter.upsert({
-      where: { key_municipalityId: { key: 'search_radius_km', municipalityId } },
-      update: { value: '2' },
-      create: { key: 'search_radius_km', value: '2', municipalityId },
-    });
-    await prisma.systemParameter.upsert({
-      where: { key_municipalityId: { key: 'acceptance_timeout_sec', municipalityId } },
-      update: { value: '15' },
-      create: { key: 'acceptance_timeout_sec', value: '15', municipalityId },
-    });
-    await prisma.systemParameter.upsert({
-      where: { key_municipalityId: { key: 'expansion_radius_km', municipalityId } },
-      update: { value: '6' },
-      create: { key: 'expansion_radius_km', value: '6', municipalityId },
+    await prisma.runInTenant(companyId, async (tx) => {
+      await tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } });
+      await tx.fareConfig.create({
+        data: {
+          companyId,
+          serviceType: 'taxi',
+          baseFare: 8000,
+          nightSurchargePct: 20,
+          holidaySurchargePct: 15,
+          commissionPct: 8,
+        },
+      });
+      await tx.systemParameter.upsert({
+        where: { key_companyId: { key: 'search_radius_km', companyId } },
+        update: { value: '2' },
+        create: { key: 'search_radius_km', value: '2', companyId },
+      });
+      await tx.systemParameter.upsert({
+        where: { key_companyId: { key: 'acceptance_timeout_sec', companyId } },
+        update: { value: '15' },
+        create: { key: 'acceptance_timeout_sec', value: '15', companyId },
+      });
+      await tx.systemParameter.upsert({
+        where: { key_companyId: { key: 'expansion_radius_km', companyId } },
+        update: { value: '6' },
+        create: { key: 'expansion_radius_km', value: '6', companyId },
+      });
     });
 
     const adminUser = await prisma.user.upsert({
@@ -121,6 +124,16 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
     return request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminAuth);
   }
 
+  async function fareConfigCount(): Promise<number> {
+    return prisma.runInTenant(companyId, (tx) => tx.fareConfig.count({ where: { companyId } }));
+  }
+
+  async function systemParameterRows(): Promise<Array<{ key: string; value: string }>> {
+    return prisma.runInTenant(companyId, (tx) =>
+      tx.systemParameter.findMany({ where: { companyId } }),
+    );
+  }
+
   it('GET returns the seeded fare + parameters with a version string', async () => {
     const res = await getSettings();
     expect(res.status).toBe(200);
@@ -132,7 +145,7 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
 
   it('saving only the radius does not create a new fare_config version', async () => {
     const before = await getSettings();
-    const fareRowsBefore = await prisma.fareConfig.count({ where: { municipalityId } });
+    const fareRowsBefore = await fareConfigCount();
 
     const res = await request(app.getHttpServer())
       .put('/admin/settings')
@@ -148,7 +161,7 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
 
     expect(res.status).toBe(200);
     expect(res.body.search_radius_km).toBe(3);
-    const fareRowsAfter = await prisma.fareConfig.count({ where: { municipalityId } });
+    const fareRowsAfter = await fareConfigCount();
     expect(fareRowsAfter).toBe(fareRowsBefore);
   });
 
@@ -170,20 +183,20 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
     expect(res.status).toBe(200);
     expect(res.body.base_fare).toBe(9500);
 
-    const active = await prisma.fareConfig.findFirst({
-      where: { municipalityId, serviceType: 'taxi', validTo: null },
-    });
+    const active = await prisma.runInTenant(companyId, (tx) =>
+      tx.fareConfig.findFirst({ where: { companyId, serviceType: 'taxi', validTo: null } }),
+    );
     expect(Number(active?.baseFare)).toBe(9500);
 
-    const closed = await prisma.fareConfig.count({
-      where: { municipalityId, serviceType: 'taxi', validTo: { not: null } },
-    });
+    const closed = await prisma.runInTenant(companyId, (tx) =>
+      tx.fareConfig.count({ where: { companyId, serviceType: 'taxi', validTo: { not: null } } }),
+    );
     expect(closed).toBeGreaterThan(0);
   });
 
   it('a stale version -> 409 SETTINGS_CONFLICT, zero writes', async () => {
     const current = await getSettings();
-    const paramsBefore = await prisma.systemParameter.findMany({ where: { municipalityId } });
+    const paramsBefore = await systemParameterRows();
 
     const res = await request(app.getHttpServer())
       .put('/admin/settings')
@@ -200,7 +213,7 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ code: 'SETTINGS_CONFLICT' });
 
-    const paramsAfter = await prisma.systemParameter.findMany({ where: { municipalityId } });
+    const paramsAfter = await systemParameterRows();
     expect(paramsAfter).toEqual(paramsBefore);
     const stillCurrent = await getSettings();
     expect(stillCurrent.body.base_fare).toBe(current.body.base_fare);
@@ -259,6 +272,28 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014)', 
         .send({
           version: before.body.version,
           base_fare: 1_000_001,
+          night_surcharge_pct: before.body.night_surcharge_pct,
+          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
+          search_radius_km: before.body.search_radius_km,
+          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
+      expect(res.body.details).toEqual(
+        expect.arrayContaining([expect.objectContaining({ field: 'base_fare' })]),
+      );
+    });
+
+    it('base_fare below the 1,000 COP floor -> 400 INVALID_DATA on that field (ADR-018 §7)', async () => {
+      const before = await getSettings();
+
+      const res = await request(app.getHttpServer())
+        .put('/admin/settings')
+        .set('Authorization', adminAuth)
+        .send({
+          version: before.body.version,
+          base_fare: 999,
           night_surcharge_pct: before.body.night_surcharge_pct,
           holiday_surcharge_pct: before.body.holiday_surcharge_pct,
           search_radius_km: before.body.search_radius_km,

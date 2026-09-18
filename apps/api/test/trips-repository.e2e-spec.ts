@@ -1,4 +1,4 @@
-import type { PrismaClient, TripRequest } from '@prisma/client';
+import type { Prisma, PrismaClient, TripRequest } from '@prisma/client';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 
@@ -9,16 +9,36 @@ type FixtureStatus = 'pending_assignment' | 'assigned' | 'driver_en_route' | 'in
 
 suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () => {
   let raw: PrismaClient;
+  let prismaService: PrismaService;
   let repo: TripsRepository;
   let municipalityId: number;
+  let companyId: number;
   let passengerId: number;
+
+  async function withTenant<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return raw.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
+      return fn(tx);
+    });
+  }
 
   beforeAll(async () => {
     const { PrismaClient: Client } = await import('@prisma/client');
     raw = new Client({ datasources: { db: { url } } });
     await raw.$connect();
 
-    repo = new TripsRepository(raw as unknown as PrismaService);
+    prismaService = Object.assign(raw, {
+      runInTenant: async <T>(
+        cId: number,
+        fn: (tx: Prisma.TransactionClient) => Promise<T>,
+      ): Promise<T> =>
+        raw.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT set_config('app.current_company', ${String(cId)}, true)`;
+          return fn(tx);
+        }),
+    }) as unknown as PrismaService;
+
+    repo = new TripsRepository(prismaService);
 
     const municipality = await raw.municipality.upsert({
       where: { municipalityId: 9005 },
@@ -43,6 +63,19 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
       },
     });
     municipalityId = municipality.municipalityId;
+
+    const company = await raw.company.upsert({
+      where: { taxId: '_trips-repo-test' },
+      update: { status: 'active' },
+      create: {
+        legalName: '_TripsRepoTestCo',
+        taxId: '_trips-repo-test',
+        type: 'cooperative',
+        municipalityId,
+        status: 'active',
+      },
+    });
+    companyId = company.companyId;
 
     const passengerUser = await raw.user.upsert({
       where: { phone: '_9990000301' },
@@ -179,44 +212,77 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     });
   });
 
-  describe('getActiveFareConfig (ADR-014 regression: NULLS FIRST no longer wins)', () => {
-    it('an older fareConfig row does not shadow a newer one saved the same day', async () => {
-      const old = await raw.fareConfig.create({
-        data: {
-          municipalityId,
-          serviceType: 'taxi',
-          baseFare: 5000,
-          validFrom: new Date('2020-01-01'),
-        },
-      });
-      const fresh = await raw.fareConfig.create({
-        data: {
-          municipalityId,
-          serviceType: 'taxi',
-          baseFare: 9000,
-        },
-      });
+  describe('getActiveFareConfig (ADR-014 regression: NULLS FIRST no longer wins; ADR-018: scoped by company_id)', () => {
+    it('an older, already-closed fareConfig row does not shadow the open one (B-13: one open row per company+service)', async () => {
+      await withTenant((tx) => tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } }));
+      const old = await withTenant((tx) =>
+        tx.fareConfig.create({
+          data: {
+            companyId,
+            serviceType: 'taxi',
+            baseFare: 5000,
+            validFrom: new Date('2020-01-01'),
+            validTo: new Date('2020-01-02'),
+          },
+        }),
+      );
+      const fresh = await withTenant((tx) =>
+        tx.fareConfig.create({
+          data: { companyId, serviceType: 'taxi', baseFare: 9000 },
+        }),
+      );
 
-      const active = await repo.getActiveFareConfig(municipalityId, 'taxi');
+      const active = await repo.getActiveFareConfig(companyId, 'taxi');
 
       expect(active?.fareConfigId).toBe(fresh.fareConfigId);
       expect(Number(active?.baseFare)).toBe(9000);
       expect(active?.fareConfigId).not.toBe(old.fareConfigId);
     });
 
-    it('two versions created the same day: the higher fareConfigId wins the tiebreak', async () => {
-      const first = await raw.fareConfig.create({
-        data: { municipalityId, serviceType: 'comfort', baseFare: 6000 },
-      });
-      const second = await raw.fareConfig.create({
-        data: { municipalityId, serviceType: 'comfort', baseFare: 7000 },
-      });
+    it('two versions valid the same day: the higher fareConfigId wins the tiebreak', async () => {
+      await withTenant((tx) => tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'comfort' } }));
+      const today = new Date();
+      const first = await withTenant((tx) =>
+        tx.fareConfig.create({
+          data: { companyId, serviceType: 'comfort', baseFare: 6000, validTo: today },
+        }),
+      );
+      const second = await withTenant((tx) =>
+        tx.fareConfig.create({ data: { companyId, serviceType: 'comfort', baseFare: 7000 } }),
+      );
       expect(second.fareConfigId).toBeGreaterThan(first.fareConfigId);
 
-      const active = await repo.getActiveFareConfig(municipalityId, 'comfort');
+      const active = await repo.getActiveFareConfig(companyId, 'comfort');
 
       expect(active?.fareConfigId).toBe(second.fareConfigId);
       expect(Number(active?.baseFare)).toBe(7000);
+    });
+
+    it('a fare config from another company is never resolved, even with the same municipality (RLS + WHERE)', async () => {
+      const otherCompany = await raw.company.upsert({
+        where: { taxId: '_trips-repo-test-other' },
+        update: { status: 'active' },
+        create: {
+          legalName: '_TripsRepoTestCoOther',
+          taxId: '_trips-repo-test-other',
+          type: 'cooperative',
+          municipalityId,
+          status: 'active',
+        },
+      });
+      await raw.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT set_config('app.current_company', ${String(otherCompany.companyId)}, true)`;
+        await tx.fareConfig.deleteMany({
+          where: { companyId: otherCompany.companyId, serviceType: 'delivery' },
+        });
+        await tx.fareConfig.create({
+          data: { companyId: otherCompany.companyId, serviceType: 'delivery', baseFare: 4000 },
+        });
+      });
+
+      const active = await repo.getActiveFareConfig(companyId, 'delivery');
+
+      expect(active).toBeNull();
     });
   });
 

@@ -6,6 +6,7 @@ import type { AssignmentService } from '../src/modules/assignment/assignment.ser
 import type { EnvService } from '../src/config/env.service';
 import type { HolidaysProvider } from '../src/modules/trips/holidays/holidays.provider';
 import type { QuoteTokenService } from '../src/modules/trips/quote-token.service';
+import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import { TripsService } from '../src/modules/trips/trips.service';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
@@ -43,7 +44,8 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
     } as unknown as PrismaService;
 
     assignmentRepo = new AssignmentRepository(prismaService);
-    tripClosing = new TripClosingService(prismaService, assignmentRepo);
+    const activeCompanyResolver = new ActiveCompanyResolver(prismaService);
+    tripClosing = new TripClosingService(prismaService, assignmentRepo, activeCompanyResolver);
     tripsRepo = new TripsRepository(raw as unknown as PrismaService);
 
     const fakeEnv = { get: (k: string) => (k === 'CANCELLATION_WINDOW_MIN' ? 2 : undefined) } as unknown as EnvService;
@@ -60,6 +62,7 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
       fakeHolidays,
       fakeAssignment,
       tripClosing,
+      activeCompanyResolver,
     );
 
     const municipality = await raw.municipality.upsert({

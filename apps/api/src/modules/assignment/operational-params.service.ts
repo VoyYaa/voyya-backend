@@ -20,16 +20,11 @@ export class OperationalParamsService {
     private readonly env: EnvService,
   ) {}
 
-  async get(municipalityId: number): Promise<OperationalParams> {
-    const rows = await this.prisma.systemParameter.findMany({
-      where: { OR: [{ municipalityId }, { municipalityId: null }] },
-    });
-
-    const map = new Map<string, string>();
-    for (const row of rows) {
-      if (row.municipalityId === null && map.has(row.key)) continue;
-      map.set(row.key, row.value);
-    }
+  async get(companyId: number): Promise<OperationalParams> {
+    const rows = await this.prisma.runInTenant(companyId, (tx) =>
+      tx.systemParameter.findMany({ where: { companyId } }),
+    );
+    const map = new Map(rows.map((r) => [r.key, r.value]));
 
     const num = (key: string, fallback: number): number => {
       const v = map.get(key);

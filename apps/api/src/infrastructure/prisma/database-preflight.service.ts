@@ -32,8 +32,9 @@ const PREFLIGHT_QUERY = `
       JOIN pg_namespace n ON n.oid = c.relnamespace
       WHERE c.relforcerowsecurity
         AND (n.nspname, c.relname) IN
-            (('fleet','driver'), ('fleet','vehicle'), ('assignment','assignment'))
-    ) = 3 AS "hasForcedRls"
+            (('fleet','driver'), ('fleet','vehicle'), ('assignment','assignment'),
+             ('trips','fare_config'), ('admin','system_parameter'))
+    ) = 5 AS "hasForcedRls"
 `;
 
 @Injectable()

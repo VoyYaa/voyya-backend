@@ -73,11 +73,13 @@ suite('Ops console — live queue polling and driver roster (ADR-015)', () => {
     });
     companyId = company.companyId;
 
-    await prisma.systemParameter.upsert({
-      where: { key_municipalityId: { key: 'location_stale_min', municipalityId } },
-      update: { value: '15' },
-      create: { key: 'location_stale_min', value: '15', municipalityId },
-    });
+    await prisma.runInTenant(companyId, (tx) =>
+      tx.systemParameter.upsert({
+        where: { key_companyId: { key: 'location_stale_min', companyId } },
+        update: { value: '15' },
+        create: { key: 'location_stale_min', value: '15', companyId },
+      }),
+    );
 
     const passengerPhone = uniquePhone();
     const passengerUser = await prisma.user.upsert({

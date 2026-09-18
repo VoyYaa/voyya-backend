@@ -4,10 +4,10 @@ import {
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { ConsoleSettings, UpdateConsoleSettingsDTO } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import {
   AdminSettingsRepository,
   type ActiveFareConfigRow,
@@ -35,17 +35,15 @@ export class AdminSettingsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repo: AdminSettingsRepository,
-    private readonly companyMunicipality: CompanyMunicipalityResolver,
     private readonly env: EnvService,
   ) {}
 
   async get(companyId: number): Promise<ConsoleSettings> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
-    return this.prisma.$transaction(async (tx) => {
-      const fareConfig = await this.repo.getActiveFareConfig(tx, municipalityId);
+    return this.prisma.runInTenant(companyId, async (tx) => {
+      const fareConfig = await this.repo.getActiveFareConfig(tx, companyId);
       if (!fareConfig) throw this.fareConfigNotFound();
-      const rows = await this.repo.getParameters(tx, municipalityId, ALL_KEYS);
-      return this.compose(fareConfig, this.resolveParams(rows, municipalityId));
+      const rows = await this.repo.getParameters(tx, companyId, ALL_KEYS);
+      return this.compose(fareConfig, this.resolveParams(rows));
     });
   }
 
@@ -54,21 +52,16 @@ export class AdminSettingsService {
     userId: number,
     dto: UpdateConsoleSettingsDTO,
   ): Promise<ConsoleSettings> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
-
-    return this.prisma.$transaction(async (tx) => {
-      const fareConfig = await this.repo.getActiveFareConfig(tx, municipalityId);
+    return this.prisma.runInTenant(companyId, async (tx) => {
+      const fareConfig = await this.repo.getActiveFareConfig(tx, companyId);
       if (!fareConfig) throw this.fareConfigNotFound();
 
-      const rows = await this.repo.getParameters(tx, municipalityId, ALL_KEYS);
-      const resolved = this.resolveParams(rows, municipalityId);
+      const rows = await this.repo.getParameters(tx, companyId, ALL_KEYS);
+      const resolved = this.resolveParams(rows);
 
       const currentVersion = this.buildVersion(fareConfig.fareConfigId, resolved);
       if (currentVersion !== dto.version) {
-        throw new ConflictException({
-          code: 'SETTINGS_CONFLICT',
-          message: 'Alguien más actualizó los parámetros mientras editabas',
-        });
+        throw this.settingsConflict();
       }
 
       if (dto.search_radius_km > resolved.expansionRadiusKm.value) {
@@ -85,17 +78,12 @@ export class AdminSettingsService {
         dto.holiday_surcharge_pct !== fareConfig.holidaySurchargePct;
 
       const newFareConfig = fareChanged
-        ? await this.repo.closeAndInsertFareConfig(tx, municipalityId, {
-            baseFare: dto.base_fare,
-            nightSurchargePct: dto.night_surcharge_pct,
-            holidaySurchargePct: dto.holiday_surcharge_pct,
-            commissionPct: fareConfig.commissionPct,
-          })
+        ? await this.insertFareConfigVersion(tx, companyId, fareConfig, dto, userId)
         : fareConfig;
 
       await this.repo.upsertParameters(
         tx,
-        municipalityId,
+        companyId,
         [
           { key: SEARCH_RADIUS_KEY, value: String(dto.search_radius_km) },
           { key: ACCEPTANCE_TIMEOUT_KEY, value: String(dto.acceptance_timeout_sec) },
@@ -103,9 +91,42 @@ export class AdminSettingsService {
         userId,
       );
 
-      const updatedRows = await this.repo.getParameters(tx, municipalityId, ALL_KEYS);
-      return this.compose(newFareConfig, this.resolveParams(updatedRows, municipalityId));
+      const updatedRows = await this.repo.getParameters(tx, companyId, ALL_KEYS);
+      return this.compose(newFareConfig, this.resolveParams(updatedRows));
     });
+  }
+
+  private async insertFareConfigVersion(
+    tx: Prisma.TransactionClient,
+    companyId: number,
+    fareConfig: ActiveFareConfigRow,
+    dto: UpdateConsoleSettingsDTO,
+    userId: number,
+  ): Promise<ActiveFareConfigRow> {
+    let inserted: ActiveFareConfigRow | null;
+    try {
+      inserted = await this.repo.closeAndInsertFareConfig(
+        tx,
+        companyId,
+        fareConfig.fareConfigId,
+        {
+          baseFare: dto.base_fare,
+          nightSurchargePct: dto.night_surcharge_pct,
+          holidaySurchargePct: dto.holiday_surcharge_pct,
+          commissionPct: fareConfig.commissionPct,
+        },
+        userId,
+      );
+    } catch (error) {
+      if (isUniqueOpenFareConfigViolation(error)) {
+        throw this.settingsConflict();
+      }
+      throw error;
+    }
+    if (!inserted) {
+      throw this.settingsConflict();
+    }
+    return inserted;
   }
 
   private fareConfigNotFound(): NotFoundException {
@@ -115,23 +136,23 @@ export class AdminSettingsService {
     });
   }
 
-  private resolveParams(rows: SystemParameterRow[], municipalityId: number): ResolvedParams {
+  private settingsConflict(): ConflictException {
+    return new ConflictException({
+      code: 'SETTINGS_CONFLICT',
+      message: 'Alguien más actualizó los parámetros mientras editabas',
+    });
+  }
+
+  private resolveParams(rows: SystemParameterRow[]): ResolvedParams {
     return {
-      searchRadiusKm: this.resolveParam(
-        rows,
-        municipalityId,
-        SEARCH_RADIUS_KEY,
-        this.env.get('SEARCH_RADIUS_KM'),
-      ),
+      searchRadiusKm: this.resolveParam(rows, SEARCH_RADIUS_KEY, this.env.get('SEARCH_RADIUS_KM')),
       acceptanceTimeoutSec: this.resolveParam(
         rows,
-        municipalityId,
         ACCEPTANCE_TIMEOUT_KEY,
         this.env.get('ACCEPTANCE_TIMEOUT_SEC'),
       ),
       expansionRadiusKm: this.resolveParam(
         rows,
-        municipalityId,
         EXPANSION_RADIUS_KEY,
         this.env.get('EXPANSION_RADIUS_KM'),
       ),
@@ -140,13 +161,10 @@ export class AdminSettingsService {
 
   private resolveParam(
     rows: SystemParameterRow[],
-    municipalityId: number,
     key: string,
     fallback: number,
   ): ResolvedParam {
-    const specific = rows.find((r) => r.key === key && r.municipalityId === municipalityId);
-    const generic = rows.find((r) => r.key === key && r.municipalityId === null);
-    const row = specific ?? generic;
+    const row = rows.find((r) => r.key === key);
     if (!row) return { value: fallback, updatedAt: new Date(0) };
     const n = Number(row.value);
     return { value: Number.isFinite(n) ? n : fallback, updatedAt: row.updatedAt };
@@ -164,6 +182,7 @@ export class AdminSettingsService {
     const lastChangeMs = Math.max(
       resolved.searchRadiusKm.updatedAt.getTime(),
       resolved.acceptanceTimeoutSec.updatedAt.getTime(),
+      fareConfig.createdAt.getTime(),
     );
     return {
       version: this.buildVersion(fareConfig.fareConfigId, resolved),
@@ -177,4 +196,14 @@ export class AdminSettingsService {
       updated_at: lastChangeMs === 0 ? null : new Date(lastChangeMs).toISOString(),
     };
   }
+}
+
+const POSTGRES_UNIQUE_VIOLATION = '23505';
+
+function isUniqueOpenFareConfigViolation(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === 'P2010' &&
+    (error.meta as { code?: string } | undefined)?.code === POSTGRES_UNIQUE_VIOLATION
+  );
 }

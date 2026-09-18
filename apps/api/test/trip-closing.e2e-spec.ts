@@ -1,6 +1,7 @@
 import type { Assignment, Driver, Prisma, PrismaClient } from '@prisma/client';
 import { AssignmentRepository } from '../src/modules/assignment/assignment.repository';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
+import type { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 
 const url = process.env.PG_TEST_URL;
@@ -43,7 +44,8 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
     } as unknown as PrismaService;
 
     repo = new AssignmentRepository(prismaService);
-    tripClosing = new TripClosingService(prismaService, repo);
+    const activeCompanyResolver = {} as unknown as ActiveCompanyResolver;
+    tripClosing = new TripClosingService(prismaService, repo, activeCompanyResolver);
 
     const municipality = await raw.municipality.upsert({
       where: { municipalityId: 9001 },

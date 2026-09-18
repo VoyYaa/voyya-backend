@@ -10,6 +10,10 @@
 --   (c) RLS by company_id (with WITH CHECK for tenant INSERT/UPDATE)
 --   (d) Non-owner app role
 --   (e) Deploy verification
+--   (f) Trip lifecycle partial indexes (ADR-010)
+--   (g) Ops console live queue (ADR-015)
+--   (h) RLS by company_id — trips.fare_config and admin.system_parameter (ADR-018)
+--   (i) One open fare version per company and service type (ADR-018, closes B-13)
 --
 -- Idempotent (IF [NOT] EXISTS / DROP POLICY IF EXISTS).
 -- =============================================================================
@@ -100,3 +104,23 @@ CREATE INDEX IF NOT EXISTS idx_trip_request_penalty
 -- (g) Ops console live queue (ADR-015) ------------------------------------------
 CREATE INDEX IF NOT EXISTS idx_trip_request_ops_queue
   ON trips.trip_request (municipality_id, updated_at DESC);
+
+-- (h) RLS by company_id — trips.fare_config and admin.system_parameter (ADR-018) ---
+ALTER TABLE trips.fare_config       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips.fare_config       FORCE  ROW LEVEL SECURITY;
+ALTER TABLE admin.system_parameter  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin.system_parameter  FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation_fare_config ON trips.fare_config;
+CREATE POLICY tenant_isolation_fare_config ON trips.fare_config
+  USING (company_id = current_setting('app.current_company', true)::int)
+  WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+DROP POLICY IF EXISTS tenant_isolation_system_parameter ON admin.system_parameter;
+CREATE POLICY tenant_isolation_system_parameter ON admin.system_parameter
+  USING (company_id = current_setting('app.current_company', true)::int)
+  WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+-- (i) One open fare version per company and service type (ADR-018, closes B-13) ----
+CREATE UNIQUE INDEX IF NOT EXISTS uq_fare_config_open_per_company_service
+  ON trips.fare_config (company_id, service_type) WHERE valid_to IS NULL;

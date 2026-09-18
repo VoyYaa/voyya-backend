@@ -29,6 +29,7 @@ import {
 } from '@voyyaa/shared';
 import type { TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
+import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import { calculateFare } from './domain/fare.calculator';
@@ -61,12 +62,21 @@ export class TripsService {
     @Inject(HOLIDAYS_PROVIDER) private readonly holidays: HolidaysProvider,
     private readonly assignment: AssignmentService,
     private readonly tripClosing: TripClosingService,
+    private readonly activeCompanyResolver: ActiveCompanyResolver,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
     await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    const config = await this.repo.getActiveFareConfig(dto.municipality_id, dto.service_type);
+    const companyId = await this.activeCompanyResolver.resolve(dto.municipality_id);
+    if (companyId === null) {
+      throw new ConflictException({
+        code: 'NO_COMPANY_AVAILABLE',
+        message: 'No hay ninguna empresa prestando el servicio en este municipio',
+      });
+    }
+
+    const config = await this.repo.getActiveFareConfig(companyId, dto.service_type);
     if (!config) {
       throw new ConflictException({
         code: 'FARE_NOT_CONFIGURED',
@@ -263,7 +273,9 @@ export class TripsService {
   private async rebuildFare(t: TripRequest): Promise<FareBreakdown> {
     const total = Number(t.fare);
     const commission = Number(t.commission);
-    const config = await this.repo.getActiveFareConfig(t.municipalityId, t.serviceType);
+    const companyId = await this.activeCompanyResolver.resolve(t.municipalityId);
+    const config =
+      companyId === null ? null : await this.repo.getActiveFareConfig(companyId, t.serviceType);
     if (config) {
       const d = calculateFare(
         {

@@ -72,7 +72,7 @@ export type SuspendDriverDTO = z.infer<typeof SuspendDriverDTO>;
 export const SuspendDriverResponse = z.object({ ok: z.literal(true) });
 export type SuspendDriverResponse = z.infer<typeof SuspendDriverResponse>;
 
-export const BaseFareCop = z.number().int().positive().max(1_000_000);
+export const BaseFareCop = z.number().int().min(1_000).max(1_000_000);
 export type BaseFareCop = z.infer<typeof BaseFareCop>;
 
 export const SurchargePct = z.number().min(0).max(100).multipleOf(0.01);

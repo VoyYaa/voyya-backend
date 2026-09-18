@@ -8,6 +8,11 @@ import type { OperationalParamsService } from './operational-params.service';
 import type { PushProvider } from './ports/push-provider.port';
 import type { TripClosingService } from './trip-closing.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+
+function fakeActiveCompanyResolver(companyId = 1): ActiveCompanyResolver {
+  return { resolve: async () => companyId } as unknown as ActiveCompanyResolver;
+}
 
 interface DriverRow {
   status: string;
@@ -119,7 +124,16 @@ function buildService(db: FakeDb): AssignmentService {
   const params = {} as unknown as OperationalParamsService;
   const tripClosing = {} as unknown as TripClosingService;
 
-  return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+  return new AssignmentService(
+    prisma,
+    candidateRepo,
+    repo,
+    params,
+    emitter,
+    push,
+    tripClosing,
+    fakeActiveCompanyResolver(),
+  );
 }
 
 const COMPANY = 1;
@@ -216,7 +230,16 @@ describe('AssignmentService.listNearby (GET /assignments/nearby · polling)', ()
     const candidateRepo = {} as unknown as CandidateRepository;
     const params = {} as unknown as OperationalParamsService;
     const tripClosing = {} as unknown as TripClosingService;
-    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+    return new AssignmentService(
+      prisma,
+      candidateRepo,
+      repo,
+      params,
+      emitter,
+      push,
+      tripClosing,
+      fakeActiveCompanyResolver(),
+    );
   }
 
   const offer = {
@@ -294,9 +317,6 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
           status: 'assigned',
         };
       },
-      async resolveActiveCompany(): Promise<number> {
-        return 1;
-      },
       async getAssignedDriver(): Promise<AssignedDriverRow | null> {
         return row;
       },
@@ -310,7 +330,16 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
     const push = { async sendAssignment() {} } as unknown as PushProvider;
     const candidateRepo = {} as unknown as CandidateRepository;
     const tripClosing = {} as unknown as TripClosingService;
-    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+    return new AssignmentService(
+      prisma,
+      candidateRepo,
+      repo,
+      params,
+      emitter,
+      push,
+      tripClosing,
+      fakeActiveCompanyResolver(),
+    );
   }
 
   it('includeContact=true -> exposes contact_phone and computes eta', async () => {
@@ -350,7 +379,16 @@ describe('AssignmentService.getAcceptedAssignment (V-01: allow-list, never "canc
     const candidateRepo = {} as unknown as CandidateRepository;
     const params = {} as unknown as OperationalParamsService;
     const tripClosing = {} as unknown as TripClosingService;
-    return new AssignmentService(prisma, candidateRepo, repo, params, emitter, push, tripClosing);
+    return new AssignmentService(
+      prisma,
+      candidateRepo,
+      repo,
+      params,
+      emitter,
+      push,
+      tripClosing,
+      fakeActiveCompanyResolver(),
+    );
   }
 
   it('defaults to allow=["accepted"] when the caller does not specify one', async () => {

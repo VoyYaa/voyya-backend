@@ -64,19 +64,19 @@ async function main(): Promise<void> {
   });
 
   const fareConfig = await prisma.fareConfig.findFirst({
-    where: { municipalityId: YARUMAL_ID, serviceType: 'taxi' },
+    where: { companyId: company.companyId, serviceType: 'taxi' },
   });
   if (!fareConfig) {
     await prisma.fareConfig.create({
-      data: { municipalityId: YARUMAL_ID, serviceType: 'taxi', baseFare: 8000 },
+      data: { companyId: company.companyId, serviceType: 'taxi', baseFare: 8000 },
     });
   }
 
   for (const [key, value] of PARAMETERS) {
     await prisma.systemParameter.upsert({
-      where: { key_municipalityId: { key, municipalityId: YARUMAL_ID } },
+      where: { key_companyId: { key, companyId: company.companyId } },
       update: { value },
-      create: { key, value, municipalityId: YARUMAL_ID },
+      create: { key, value, companyId: company.companyId },
     });
   }
 
