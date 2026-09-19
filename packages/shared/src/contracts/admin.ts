@@ -319,6 +319,7 @@ export const AdminErrorCode = z.enum([
   'DOCUMENT_TOO_LARGE',
   'DOCUMENT_TYPE_NOT_ALLOWED',
   'DOCUMENT_NOT_FOUND',
+  'DOCUMENT_STORAGE_UNAVAILABLE',
 ]);
 export type AdminErrorCode = z.infer<typeof AdminErrorCode>;
 

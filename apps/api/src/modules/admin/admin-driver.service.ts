@@ -1,9 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import {
   ConflictException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -23,6 +25,7 @@ import {
 import { EnvService } from '../../config/env.service';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { assertStagedDocumentKey, driverDocumentKey } from '../affiliation/document-key';
+import { DOCUMENT_STORAGE_UNAVAILABLE_MESSAGE } from '../affiliation/messages';
 import { FILE_STORAGE, type FileStorageProvider } from '../affiliation/ports/file-storage.port';
 import { HASHER, type Hasher } from '../auth/hasher.service';
 import { generateNumericCode } from '../../shared/numeric-code';
@@ -78,9 +81,39 @@ export class AdminDriverService {
     const pin = generateNumericCode(this.env.get('DRIVER_PIN_LENGTH'));
     const pinHash = await this.hasher.hash(pin);
 
+    const promotionScope = randomUUID();
+    const documentRows: Array<DriverDocumentRowInput & { fromKey: string; toKey: string }> =
+      staged.map(({ doc, stat }) => {
+        const toKey = driverDocumentKey(companyId, promotionScope, doc.type, stat.contentType);
+        return {
+          type: doc.type,
+          storageKey: toKey,
+          fromKey: doc.storage_key,
+          toKey,
+          fileName: toKey.slice(toKey.lastIndexOf('/') + 1),
+          contentType: stat.contentType,
+          sizeBytes: stat.sizeBytes,
+          issuedAt: doc.issued_at ? new Date(doc.issued_at) : null,
+          expiresAt: new Date(doc.expires_at),
+        };
+      });
+
+    const promoted: string[] = [];
+    try {
+      for (const doc of documentRows) {
+        await this.storage.move(doc.fromKey, doc.toKey);
+        promoted.push(doc.toKey);
+      }
+    } catch {
+      await this.rollbackPromotedDocuments(promoted);
+      throw new ServiceUnavailableException({
+        code: 'DOCUMENT_STORAGE_UNAVAILABLE',
+        message: DOCUMENT_STORAGE_UNAVAILABLE_MESSAGE,
+      });
+    }
+
     let created: CreatedDriverRow;
     let documents: CreatedDriverDocumentRow[];
-    let movable: Array<{ fromKey: string; toKey: string }>;
     try {
       const result = await this.prisma.runInTenant(companyId, async (tx) => {
         const quota = await this.repo.lockFleetQuota(tx, companyId);
@@ -106,22 +139,6 @@ export class AdminDriverService {
           },
         });
 
-        const documentRows: Array<DriverDocumentRowInput & { fromKey: string; toKey: string }> =
-          staged.map(({ doc, stat }) => {
-            const toKey = driverDocumentKey(companyId, driver.driverId, doc.type, stat.contentType);
-            return {
-              type: doc.type,
-              storageKey: toKey,
-              fromKey: doc.storage_key,
-              toKey,
-              fileName: toKey.slice(toKey.lastIndexOf('/') + 1),
-              contentType: stat.contentType,
-              sizeBytes: stat.sizeBytes,
-              issuedAt: doc.issued_at ? new Date(doc.issued_at) : null,
-              expiresAt: new Date(doc.expires_at),
-            };
-          });
-
         const documents = await this.repo.createDriverDocuments(
           tx,
           driver.driverId,
@@ -129,20 +146,12 @@ export class AdminDriverService {
           documentRows,
         );
 
-        return { driver, documents, movable: documentRows.map((d) => ({ fromKey: d.fromKey, toKey: d.toKey })) };
+        return { driver, documents };
       });
       created = result.driver;
       documents = result.documents;
-      movable = result.movable;
-
-      for (const move of movable) {
-        try {
-          await this.storage.move(move.fromKey, move.toKey);
-        } catch {
-          this.logger.error(`Failed to move driver document for driver=${created.driverId}`);
-        }
-      }
     } catch (error) {
+      await this.rollbackPromotedDocuments(promoted);
       throw this.translateUniqueViolation(error);
     }
 
@@ -290,6 +299,17 @@ export class AdminDriverService {
       }
     }
     throw error;
+  }
+
+  private async rollbackPromotedDocuments(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
+    try {
+      await this.storage.remove(keys);
+    } catch {
+      this.logger.error(
+        `Failed to roll back ${keys.length} promoted document(s) after an aborted operation`,
+      );
+    }
   }
 }
 

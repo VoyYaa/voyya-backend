@@ -6,6 +6,8 @@ import { AffiliationStagingPurgeService } from './affiliation-staging-purge.serv
 import { AffiliationController } from './affiliation.controller';
 import { AffiliationRepository } from './affiliation.repository';
 import { AffiliationService } from './affiliation.service';
+import { DocumentDownloadController } from './document-download.controller';
+import { DocumentDownloadTokenService } from './document-download-token.service';
 import { DocumentStagingService } from './document-staging.service';
 import { EMAIL_PROVIDER } from './ports/email-provider.port';
 import { FILE_STORAGE } from './ports/file-storage.port';
@@ -16,13 +18,14 @@ import { createEmailProvider } from './providers/email.factory';
 import { createFileStorageProvider } from './providers/file-storage.factory';
 
 @Module({
-  controllers: [AffiliationController, PlatformCompanyController],
+  controllers: [AffiliationController, PlatformCompanyController, DocumentDownloadController],
   providers: [
     AffiliationRepository,
     AffiliationService,
     AffiliationLinkService,
     DocumentStagingService,
     AffiliationStagingPurgeService,
+    DocumentDownloadTokenService,
     PlatformCompanyRepository,
     PlatformCompanyService,
     { provide: FILE_STORAGE, useFactory: createFileStorageProvider, inject: [EnvService] },

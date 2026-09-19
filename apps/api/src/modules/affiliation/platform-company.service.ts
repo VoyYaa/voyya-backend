@@ -16,8 +16,8 @@ import { generateTemporaryPassword } from '../../shared/temporary-password';
 import { HASHER, type Hasher } from '../auth/hasher.service';
 import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { CompanyProvisioningService } from '../tenancy/company-provisioning.service';
+import { DocumentDownloadTokenService } from './document-download-token.service';
 import { EMAIL_PROVIDER, type EmailProvider } from './ports/email-provider.port';
-import { FILE_STORAGE, type FileStorageProvider } from './ports/file-storage.port';
 import {
   approvedCompanyEmail,
   documentsRequestedEmail,
@@ -33,9 +33,9 @@ export class PlatformCompanyService {
     private readonly activeCompanies: ActiveCompanyResolver,
     private readonly provisioning: CompanyProvisioningService,
     private readonly links: AffiliationLinkService,
+    private readonly downloadTokens: DocumentDownloadTokenService,
     private readonly env: EnvService,
     @Inject(EMAIL_PROVIDER) private readonly email: EmailProvider,
-    @Inject(FILE_STORAGE) private readonly storage: FileStorageProvider,
     @Inject(HASHER) private readonly hasher: Hasher,
   ) {}
 
@@ -62,7 +62,7 @@ export class PlatformCompanyService {
     };
   }
 
-  async detail(companyId: number): Promise<PlatformCompanyDetail> {
+  async detail(companyId: number, platformAdminUserId: number): Promise<PlatformCompanyDetail> {
     const row = await this.repo.getDetail(companyId);
     if (!row) {
       throw new NotFoundException({ code: 'COMPANY_NOT_FOUND', message: 'La empresa no existe' });
@@ -82,23 +82,21 @@ export class PlatformCompanyService {
         ? (await this.repo.getDetail(conflictCompanyId))?.legalName ?? null
         : null;
 
-    const signedDocuments = await Promise.all(
-      documents.map(async (d) => ({
-        company_document_id: d.companyDocumentId,
-        type: d.type as CompanyDocumentType,
-        file_name: d.fileName,
-        content_type: d.contentType,
-        size_bytes: d.sizeBytes,
-        verification: d.verification as PlatformCompanyDetail['documents'][number]['verification'],
-        review_note: d.reviewNote,
-        issued_at: d.issuedAt ? isoDate(d.issuedAt) : null,
-        expires_at: d.expiresAt ? isoDate(d.expiresAt) : null,
-        uploaded_at: d.uploadedAt.toISOString(),
-        verified_at: d.verifiedAt ? d.verifiedAt.toISOString() : null,
-        download_url: await this.storage.signedUrl(d.storageKey, ttlSeconds),
-        download_url_expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
-      })),
-    );
+    const documentsWithDownload = documents.map((d) => ({
+      company_document_id: d.companyDocumentId,
+      type: d.type as CompanyDocumentType,
+      file_name: d.fileName,
+      content_type: d.contentType,
+      size_bytes: d.sizeBytes,
+      verification: d.verification as PlatformCompanyDetail['documents'][number]['verification'],
+      review_note: d.reviewNote,
+      issued_at: d.issuedAt ? isoDate(d.issuedAt) : null,
+      expires_at: d.expiresAt ? isoDate(d.expiresAt) : null,
+      uploaded_at: d.uploadedAt.toISOString(),
+      verified_at: d.verifiedAt ? d.verifiedAt.toISOString() : null,
+      download_url: this.downloadTokens.buildUrl(d.companyDocumentId, companyId, platformAdminUserId),
+      download_url_expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
+    }));
 
     return {
       company_id: row.companyId,
@@ -118,7 +116,7 @@ export class PlatformCompanyService {
       contact_first_name: row.contactFirstName,
       contact_last_name: row.contactLastName,
       contact_phone: row.contactPhone,
-      documents: signedDocuments,
+      documents: documentsWithDownload,
       reviews: reviews.map((r) => ({
         company_review_id: r.companyReviewId,
         decision: r.decision as PlatformCompanyDetail['reviews'][number]['decision'],

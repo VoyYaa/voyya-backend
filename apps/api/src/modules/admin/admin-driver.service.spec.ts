@@ -99,9 +99,10 @@ function create() {
       sizeBytes: 1024,
     }),
     move: jest.fn().mockResolvedValue(undefined),
-    signedUrl: jest.fn(),
+    read: jest.fn(),
     remove: jest.fn(),
     listOlderThan: jest.fn(),
+    freeBytes: jest.fn().mockResolvedValue(Number.MAX_SAFE_INTEGER),
   };
   const emitter = { emit: jest.fn() };
   const prisma = fakePrisma();
@@ -231,6 +232,34 @@ describe('AdminDriverService.create', () => {
     repo.createDriverWithVehicle.mockRejectedValueOnce(err);
 
     await expect(service.create(COMPANY_ID, dto)).rejects.toBe(err);
+  });
+
+  it('a move failure mid-batch aborts with 503 DOCUMENT_STORAGE_UNAVAILABLE, rolls back what was promoted, and never opens the tenant transaction (C-16b)', async () => {
+    const { service, repo, storage, prisma } = create();
+    (storage.move as jest.Mock)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('ENOSPC'));
+
+    const e = await capture(service.create(COMPANY_ID, dto));
+
+    expect(e.getStatus()).toBe(503);
+    expect(e.getResponse()).toMatchObject({ code: 'DOCUMENT_STORAGE_UNAVAILABLE' });
+    expect(prisma.runInTenant).not.toHaveBeenCalled();
+    expect(repo.createDriverWithVehicle).not.toHaveBeenCalled();
+    expect(storage.remove).toHaveBeenCalledTimes(1);
+    expect((storage.remove as jest.Mock).mock.calls[0]?.[0]).toHaveLength(3);
+  });
+
+  it('a tenant transaction failure after a full promotion rolls back the promoted files before rethrowing (C-16b)', async () => {
+    const { service, storage, repo } = create();
+    repo.createDriverWithVehicle.mockRejectedValueOnce(p2002('Driver', null));
+
+    await capture(service.create(COMPANY_ID, dto));
+
+    expect(storage.remove).toHaveBeenCalledTimes(1);
+    expect((storage.remove as jest.Mock).mock.calls[0]?.[0]).toHaveLength(dto.documents.length);
   });
 });
 

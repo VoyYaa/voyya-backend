@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
-import type { DocumentContentType } from '@voyyaa/shared';
+import { DOCUMENT_ALLOWED_CONTENT_TYPES, type DocumentContentType } from '@voyyaa/shared';
 
 const EXTENSIONS: Record<DocumentContentType, string> = {
   'application/pdf': 'pdf',
@@ -12,6 +12,10 @@ const STAGED_KEY_PATTERN = /^staging\/\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9_-]{1,120}\
 
 export function extensionFor(contentType: DocumentContentType): string {
   return EXTENSIONS[contentType];
+}
+
+export function isDocumentContentType(value: string): value is DocumentContentType {
+  return (DOCUMENT_ALLOWED_CONTENT_TYPES as readonly string[]).includes(value);
 }
 
 export function stagingKey(contentType: DocumentContentType, now = new Date()): string {
@@ -35,25 +39,38 @@ export function assertStagedDocumentKey(key: string, field?: string): void {
 }
 
 export function companyDocumentKey(
-  companyId: number,
+  companyScope: number | string,
   documentType: string,
   contentType: string,
 ): string {
-  const ext = contentType.split('/')[1] ?? 'bin';
-  return `companies/${companyId}/${documentType}/${randomUUID()}.${ext}`;
+  const ext = isDocumentContentType(contentType) ? extensionFor(contentType) : 'bin';
+  return `companies/${companyScope}/${documentType}/${randomUUID()}.${ext}`;
 }
 
 export function driverDocumentKey(
   companyId: number,
-  driverId: number,
+  driverScope: number | string,
   documentType: string,
   contentType: string,
 ): string {
-  const ext = contentType.split('/')[1] ?? 'bin';
-  return `drivers/${companyId}/${driverId}/${documentType}/${randomUUID()}.${ext}`;
+  const ext = isDocumentContentType(contentType) ? extensionFor(contentType) : 'bin';
+  return `drivers/${companyId}/${driverScope}/${documentType}/${randomUUID()}.${ext}`;
 }
 
 export function basename(key: string): string {
   const idx = key.lastIndexOf('/');
   return idx === -1 ? key : key.slice(idx + 1);
+}
+
+export function downloadContentType(contentType: string): string {
+  return isDocumentContentType(contentType) ? contentType : 'application/octet-stream';
+}
+
+export function downloadFilename(
+  documentType: string,
+  companyId: number,
+  contentType: string,
+): string {
+  const ext = isDocumentContentType(contentType) ? extensionFor(contentType) : 'bin';
+  return `${documentType}-${companyId}.${ext}`;
 }

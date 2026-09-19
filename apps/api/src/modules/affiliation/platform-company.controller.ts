@@ -29,8 +29,11 @@ export class PlatformCompanyController {
   }
 
   @Get(':companyId')
-  detail(@Param('companyId', ParseIntPipe) companyId: number): Promise<PlatformCompanyDetail> {
-    return this.service.detail(companyId);
+  detail(
+    @Param('companyId', ParseIntPipe) companyId: number,
+    @CurrentUserId() platformAdminUserId: number,
+  ): Promise<PlatformCompanyDetail> {
+    return this.service.detail(companyId, platformAdminUserId);
   }
 
   @Post(':companyId/approve')

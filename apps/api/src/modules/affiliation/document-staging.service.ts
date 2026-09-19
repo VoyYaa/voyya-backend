@@ -3,11 +3,13 @@ import {
   Inject,
   Injectable,
   PayloadTooLargeException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import type { UploadedDocument } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 import { detectDocumentContentType } from '../../shared/document-signature';
 import { basename, stagingKey } from './document-key';
+import { DOCUMENT_STORAGE_UNAVAILABLE_MESSAGE } from './messages';
 import { FILE_STORAGE, type FileStorageProvider } from './ports/file-storage.port';
 
 export interface UploadedFilePayload {
@@ -41,6 +43,16 @@ export class DocumentStagingService {
       throw new BadRequestException({
         code: 'DOCUMENT_TYPE_NOT_ALLOWED',
         message: 'Solo se aceptan PDF, JPEG o PNG',
+      });
+    }
+
+    const minFreeBytes =
+      this.env.get('DOCUMENT_STORAGE_MIN_FREE_BYTES') ?? 50 * this.env.get('DOCUMENT_MAX_BYTES');
+    const freeBytes = await this.storage.freeBytes();
+    if (freeBytes < minFreeBytes) {
+      throw new ServiceUnavailableException({
+        code: 'DOCUMENT_STORAGE_UNAVAILABLE',
+        message: DOCUMENT_STORAGE_UNAVAILABLE_MESSAGE,
       });
     }
 

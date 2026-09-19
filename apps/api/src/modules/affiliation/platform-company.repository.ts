@@ -50,6 +50,13 @@ export interface CompanyReviewRow {
   createdAt: Date;
 }
 
+export interface DownloadableDocumentRow {
+  companyDocumentId: number;
+  type: string;
+  storageKey: string;
+  contentType: string;
+}
+
 export interface ActivatedCompanyRow {
   companyId: number;
   municipalityId: number;
@@ -139,6 +146,18 @@ export class PlatformCompanyRepository {
       uploadedAt: r.uploadedAt,
       verifiedAt: r.verifiedAt,
     }));
+  }
+
+  async findDocumentForDownload(
+    tx: Prisma.TransactionClient,
+    companyId: number,
+    companyDocumentId: number,
+  ): Promise<DownloadableDocumentRow | null> {
+    const row = await tx.companyDocument.findFirst({
+      where: { companyDocumentId, companyId },
+      select: { companyDocumentId: true, type: true, storageKey: true, contentType: true },
+    });
+    return row;
   }
 
   async listReviews(tx: Prisma.TransactionClient, companyId: number): Promise<CompanyReviewRow[]> {

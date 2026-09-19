@@ -1,5 +1,8 @@
 import type { EmailMessage } from './ports/email-provider.port';
 
+export const DOCUMENT_STORAGE_UNAVAILABLE_MESSAGE =
+  'No pudimos guardar tu documento en este momento. Inténtalo de nuevo en unos minutos.';
+
 export function approvedCompanyEmail(input: {
   legalName: string;
   loginEmail: string;

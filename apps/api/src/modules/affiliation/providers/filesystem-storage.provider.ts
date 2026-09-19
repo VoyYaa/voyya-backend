@@ -1,15 +1,17 @@
-import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, join, relative, isAbsolute } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { mkdir, readdir, readFile, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { dirname, join, relative, isAbsolute, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Readable } from 'node:stream';
 import { Injectable } from '@nestjs/common';
 import type { FileStorageProvider, StoredObject } from '../ports/file-storage.port';
 
 @Injectable()
-export class LocalFileStorageProvider implements FileStorageProvider {
+export class FilesystemStorageProvider implements FileStorageProvider {
   private readonly root: string;
 
   constructor(root = join(tmpdir(), 'voyya-documents')) {
-    this.root = root;
+    this.root = resolve(root);
   }
 
   async put(input: { key: string; body: Buffer; contentType: string }): Promise<StoredObject> {
@@ -34,7 +36,7 @@ export class LocalFileStorageProvider implements FileStorageProvider {
   async move(fromKey: string, toKey: string): Promise<StoredObject> {
     const existing = await this.stat(fromKey);
     if (!existing) {
-      throw new Error(`LocalFileStorageProvider: object not found for key=${fromKey}`);
+      throw new Error(`FilesystemStorageProvider: object not found for key=${fromKey}`);
     }
     const body = await readFile(this.pathFor(fromKey));
     const moved = await this.put({ key: toKey, body, contentType: existing.contentType });
@@ -42,9 +44,10 @@ export class LocalFileStorageProvider implements FileStorageProvider {
     return moved;
   }
 
-  async signedUrl(key: string, ttlSeconds: number): Promise<string> {
-    const expires = Math.floor(Date.now() / 1000) + ttlSeconds;
-    return `file://${this.pathFor(key)}?expires=${expires}`;
+  async read(key: string): Promise<Readable | null> {
+    const exists = await this.stat(key);
+    if (!exists) return null;
+    return createReadStream(this.pathFor(key));
   }
 
   async remove(keys: readonly string[]): Promise<void> {
@@ -71,6 +74,11 @@ export class LocalFileStorageProvider implements FileStorageProvider {
       }
     }
     return stale;
+  }
+
+  async freeBytes(): Promise<number> {
+    const info = await statfs(this.root);
+    return info.bavail * info.bsize;
   }
 
   private async walk(dir: string): Promise<string[]> {
@@ -102,12 +110,12 @@ export class LocalFileStorageProvider implements FileStorageProvider {
     const resolved = join(this.root, key);
     const inside = relative(this.root, resolved);
     if (inside.startsWith(`..`) || isAbsolute(inside)) {
-      throw new Error(`LocalFileStorageProvider: key escapes the storage root`);
+      throw new Error(`FilesystemStorageProvider: key escapes the storage root`);
     }
     return resolved;
   }
 
   private keyFor(path: string): string {
-    return path.slice(this.root.length + 1).replace(/\\/g, '/');
+    return relative(this.root, path).replace(/\\/g, '/');
   }
 }

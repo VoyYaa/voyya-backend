@@ -265,6 +265,7 @@ export const AffiliationErrorCode = z.enum([
   'DOCUMENT_NOT_FOUND',
   'AFFILIATION_LINK_INVALID',
   'AFFILIATION_LINK_EXPIRED',
+  'DOCUMENT_STORAGE_UNAVAILABLE',
 ]);
 export type AffiliationErrorCode = z.infer<typeof AffiliationErrorCode>;
 

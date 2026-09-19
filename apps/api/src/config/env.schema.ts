@@ -64,12 +64,12 @@ export const EnvSchema = z.object({
   LOCATION_STALE_MIN: z.coerce.number().nonnegative().default(15),
   LOCATION_PURGE_HOURS: z.coerce.number().nonnegative().default(12),
 
-  SUPABASE_URL: z.string().url().optional(),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
-  SUPABASE_STORAGE_BUCKET: z.string().min(1).default('voyya-documents'),
+  DOCUMENT_STORAGE_ROOT: z.string().min(1).optional(),
+  API_PUBLIC_URL: z.string().url(),
   DOCUMENT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
   DOCUMENT_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(600),
   DOCUMENT_STAGING_TTL_HOURS: z.coerce.number().int().positive().default(24),
+  DOCUMENT_STORAGE_MIN_FREE_BYTES: z.coerce.number().int().positive().optional(),
 
   SENDGRID_API_KEY: z.string().min(1).optional(),
   EMAIL_FROM: z.string().email().optional(),
