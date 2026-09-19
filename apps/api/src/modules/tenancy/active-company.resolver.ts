@@ -1,8 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 export interface ActiveCompany {
   companyId: number;
+}
+
+export interface ResolveActiveCompanyOptions {
+  tx?: Prisma.TransactionClient;
+  excludeCompanyId?: number;
 }
 
 @Injectable()
@@ -11,9 +17,16 @@ export class ActiveCompanyResolver {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async resolve(municipalityId: number): Promise<number | null> {
-    const companies = await this.prisma.company.findMany({
-      where: { municipalityId, status: 'active' },
+  async resolve(municipalityId: number, options?: ResolveActiveCompanyOptions): Promise<number | null> {
+    const client = options?.tx ?? this.prisma;
+    const companies = await client.company.findMany({
+      where: {
+        municipalityId,
+        status: 'active',
+        ...(options?.excludeCompanyId !== undefined
+          ? { companyId: { not: options.excludeCompanyId } }
+          : {}),
+      },
       orderBy: { companyId: 'asc' },
       select: { companyId: true },
       take: 2,

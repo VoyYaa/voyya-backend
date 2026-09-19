@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-export const Role = z.enum(['passenger', 'driver', 'company', 'admin', 'operator']);
+export const Role = z.enum([
+  'passenger',
+  'driver',
+  'company',
+  'admin',
+  'operator',
+  'platform_admin',
+]);
 export type Role = z.infer<typeof Role>;
 
 export const TENANT_SCOPED_ROLES = ['driver', 'company', 'admin', 'operator'] as const;
@@ -124,6 +131,7 @@ export const AuthErrorCode = z.enum([
   'SESSION_REQUIRED',
   'FORBIDDEN',
   'STAFF_WITHOUT_COMPANY',
+  'COMPANY_NOT_ACTIVE',
   'PIN_NOT_DELIVERED',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;

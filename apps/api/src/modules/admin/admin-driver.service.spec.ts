@@ -4,6 +4,7 @@ import { Prisma } from '@prisma/client';
 import { DRIVER_SUSPENDED_EVENT, type CreateDriverDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import type { FileStorageProvider } from '../affiliation/ports/file-storage.port';
 import type { SmsProvider } from '../assignment/ports/sms-provider.port';
 import type { Hasher } from '../auth/hasher.service';
 import { AdminDriverRepository } from './admin-driver.repository';
@@ -41,13 +42,29 @@ const createdRow = {
   vehicle: { vehicleId: 5, plate: 'ABC123', model: 'Renault Logan', year: 2020 },
 };
 
+const documentTypes = ['license', 'soat', 'vehicle_inspection', 'operation_card'] as const;
+
 const dto: CreateDriverDTO = {
   first_name: 'Juan',
   last_name: 'Conductor',
   national_id: '71000099',
   phone: '3009998877',
   vehicle: { plate: 'ABC123', model: 'Renault Logan' },
+  documents: documentTypes.map((type) => ({
+    type,
+    storage_key: `staging/2026/01/01/${type}-uuid.pdf`,
+    expires_at: '2027-01-01',
+  })),
 };
+
+const createdDocumentRows = documentTypes.map((type, i) => ({
+  driverDocumentId: i + 1,
+  type,
+  fileName: `${type}.pdf`,
+  issuedAt: null,
+  expiresAt: new Date('2027-01-01T00:00:00.000Z'),
+  uploadedAt: new Date('2026-01-01T00:00:00.000Z'),
+}));
 
 async function capture(p: Promise<unknown>): Promise<HttpException> {
   try {
@@ -62,6 +79,9 @@ async function capture(p: Promise<unknown>): Promise<HttpException> {
 function create() {
   const repo = {
     createDriverWithVehicle: jest.fn().mockResolvedValue(createdRow),
+    createDriverDocuments: jest.fn().mockResolvedValue(createdDocumentRows),
+    lockFleetQuota: jest.fn().mockResolvedValue({ declared: null, used: 0 }),
+    readFleetQuota: jest.fn().mockResolvedValue({ declared: null, used: 0 }),
     markPinDelivered: jest.fn().mockResolvedValue(new Date('2026-01-01T00:05:00.000Z')),
     rotatePin: jest.fn(),
     findIdInTenant: jest.fn(),
@@ -71,6 +91,18 @@ function create() {
     compare: jest.fn(),
   };
   const sms: SmsProvider = { send: jest.fn().mockResolvedValue(undefined) };
+  const storage: FileStorageProvider = {
+    put: jest.fn(),
+    stat: jest.fn().mockResolvedValue({
+      storageKey: 'staging/2026/01/01/x.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: 1024,
+    }),
+    move: jest.fn().mockResolvedValue(undefined),
+    signedUrl: jest.fn(),
+    remove: jest.fn(),
+    listOlderThan: jest.fn(),
+  };
   const emitter = { emit: jest.fn() };
   const prisma = fakePrisma();
   const service = new AdminDriverService(
@@ -80,8 +112,9 @@ function create() {
     emitter as unknown as EventEmitter2,
     hasher,
     sms,
+    storage,
   );
-  return { service, repo, hasher, sms, prisma, emitter };
+  return { service, repo, hasher, sms, storage, prisma, emitter };
 }
 
 describe('AdminDriverService.create', () => {
@@ -141,6 +174,41 @@ describe('AdminDriverService.create', () => {
     expect(e.getResponse()).toMatchObject({ code: 'PLATE_TAKEN' });
   });
 
+  it('missing a required document type -> 422 DRIVER_DOCUMENTS_INCOMPLETE, nothing created', async () => {
+    const { service, repo } = create();
+    const incomplete: CreateDriverDTO = { ...dto, documents: dto.documents.slice(0, 3) };
+
+    await expect(service.create(COMPANY_ID, incomplete)).rejects.toMatchObject({
+      response: { code: 'DRIVER_DOCUMENTS_INCOMPLETE' },
+    });
+    expect(repo.createDriverWithVehicle).not.toHaveBeenCalled();
+  });
+
+  it('fleet quota reached (declared <= used) -> 409 FLEET_LIMIT_REACHED, driver not created', async () => {
+    const { service, repo } = create();
+    repo.lockFleetQuota.mockResolvedValueOnce({ declared: 5, used: 5 });
+
+    const e = await capture(service.create(COMPANY_ID, dto));
+    expect(e.getResponse()).toMatchObject({ code: 'FLEET_LIMIT_REACHED' });
+    expect(repo.createDriverWithVehicle).not.toHaveBeenCalled();
+  });
+
+  it('vehicle_count is NULL (undeclared fleet, e.g. Cootrayal) -> never blocked by quota', async () => {
+    const { service, repo } = create();
+    repo.lockFleetQuota.mockResolvedValueOnce({ declared: null, used: 999 });
+
+    const result = await service.create(COMPANY_ID, dto);
+    expect(result.driver_id).toBe(42);
+  });
+
+  it('a staged document no longer exists in storage -> 409 DOCUMENT_NOT_FOUND', async () => {
+    const { service, storage } = create();
+    (storage.stat as jest.Mock).mockResolvedValueOnce(null);
+
+    const e = await capture(service.create(COMPANY_ID, dto));
+    expect(e.getResponse()).toMatchObject({ code: 'DOCUMENT_NOT_FOUND' });
+  });
+
   it('an unrelated error is rethrown as-is, not swallowed', async () => {
     const { service, repo } = create();
     const boom = new Error('connection reset');
@@ -163,6 +231,30 @@ describe('AdminDriverService.create', () => {
     repo.createDriverWithVehicle.mockRejectedValueOnce(err);
 
     await expect(service.create(COMPANY_ID, dto)).rejects.toBe(err);
+  });
+});
+
+describe('AdminDriverService.getFleetQuota', () => {
+  it('declared fleet -> available = declared - used', async () => {
+    const { service, repo } = create();
+    repo.readFleetQuota.mockResolvedValueOnce({ declared: 10, used: 4 });
+
+    await expect(service.getFleetQuota(COMPANY_ID)).resolves.toEqual({
+      declared: 10,
+      used: 4,
+      available: 6,
+    });
+  });
+
+  it('undeclared fleet (null) -> available is null, never negative', async () => {
+    const { service, repo } = create();
+    repo.readFleetQuota.mockResolvedValueOnce({ declared: null, used: 3 });
+
+    await expect(service.getFleetQuota(COMPANY_ID)).resolves.toEqual({
+      declared: null,
+      used: 3,
+      available: null,
+    });
   });
 });
 

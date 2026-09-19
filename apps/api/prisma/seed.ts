@@ -5,10 +5,26 @@ import { resolveSeedAdminPassword } from '../src/shared/seed-admin-password';
 const prisma = new PrismaClient();
 
 const YARUMAL_ID = 1;
+const SANTA_ROSA_ID = 2;
 const BCRYPT_ROUNDS = 12;
 const DEV_PIN = '1234';
 const ADMIN_EMAIL = 'admin@voyya.co';
 const ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
+const PLATFORM_ADMIN_EMAIL = 'plataforma@voyya.co';
+const PLATFORM_ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
+
+const SANTA_ROSA_COVERAGE = {
+  type: 'Polygon',
+  coordinates: [
+    [
+      [-75.63, 6.63],
+      [-75.6, 6.63],
+      [-75.6, 6.66],
+      [-75.63, 6.66],
+      [-75.63, 6.63],
+    ],
+  ],
+};
 
 const YARUMAL_COVERAGE = {
   type: 'Polygon',
@@ -38,6 +54,7 @@ const PARAMETERS: Array<[string, string]> = [
 async function main(): Promise<void> {
   const pinHash = await bcrypt.hash(DEV_PIN, BCRYPT_ROUNDS);
   const adminHash = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS);
+  const platformAdminHash = await bcrypt.hash(PLATFORM_ADMIN_PASSWORD, BCRYPT_ROUNDS);
 
   await prisma.municipality.upsert({
     where: { municipalityId: YARUMAL_ID },
@@ -48,6 +65,32 @@ async function main(): Promise<void> {
       department: 'Antioquia',
       coveragePolygon: YARUMAL_COVERAGE,
       status: 'active',
+    },
+  });
+
+  await prisma.municipality.upsert({
+    where: { municipalityId: SANTA_ROSA_ID },
+    update: { coveragePolygon: SANTA_ROSA_COVERAGE },
+    create: {
+      municipalityId: SANTA_ROSA_ID,
+      name: 'Santa Rosa de Osos',
+      department: 'Antioquia',
+      coveragePolygon: SANTA_ROSA_COVERAGE,
+      status: 'active',
+    },
+  });
+
+  await prisma.user.upsert({
+    where: { email: PLATFORM_ADMIN_EMAIL },
+    update: { passwordHash: platformAdminHash, role: 'platform_admin', accountStatus: 'active' },
+    create: {
+      firstName: 'Plataforma',
+      lastName: 'VoyYa',
+      email: PLATFORM_ADMIN_EMAIL,
+      phone: '3000000001',
+      passwordHash: platformAdminHash,
+      role: 'platform_admin',
+      companyId: null,
     },
   });
 

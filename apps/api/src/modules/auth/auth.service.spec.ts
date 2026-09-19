@@ -314,6 +314,7 @@ describe('AuthService.adminLogin', () => {
     role: 'admin',
     accountStatus: 'active',
     companyId: 1,
+    companyStatus: 'active',
     failedAttempts: 0,
     blockedUntil: null,
   };
@@ -377,6 +378,31 @@ describe('AuthService.adminLogin', () => {
     expect(e).toBeInstanceOf(ForbiddenException);
     expect(code(e)).toBe('STAFF_WITHOUT_COMPANY');
   });
+
+  it('admin of a pending/suspended company -> 403 COMPANY_NOT_ACTIVE', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({ ...admin, companyStatus: 'suspended' });
+    const e = await capture(service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' }));
+    expect(e).toBeInstanceOf(ForbiddenException);
+    expect(code(e)).toBe('COMPANY_NOT_ACTIVE');
+  });
+
+  it('platform_admin logs in with tenant=null and a JWT without company_id', async () => {
+    const { service, repo, jwt } = create();
+    (repo as RepoMock).getUserByEmail.mockResolvedValue({
+      ...admin,
+      role: 'platform_admin',
+      companyId: null,
+      companyStatus: null,
+    });
+    const r = await service.adminLogin({ email: 'admin@voyya.co', password: 'Secret12' });
+    expect(r.user.role).toBe('platform_admin');
+    expect(r.user.tenant).toBeNull();
+    expect((repo as RepoMock).resetAdminAttempts).toHaveBeenCalledWith(1);
+
+    const payload = (jwt.sign as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.company_id).toBeUndefined();
+  });
 });
 
 describe('AuthService.refresh / logout / revocation', () => {
@@ -432,6 +458,7 @@ describe('AuthService.refresh / logout / revocation', () => {
       role: 'admin',
       accountStatus: 'active',
       companyId: 1,
+      companyStatus: 'active',
     });
     (repo as RepoMock).getCompanyIdentity.mockResolvedValue(
       companyIdentityFixture(1, 'Cootrayal Renamed'),

@@ -64,6 +64,23 @@ export const EnvSchema = z.object({
   LOCATION_STALE_MIN: z.coerce.number().nonnegative().default(15),
   LOCATION_PURGE_HOURS: z.coerce.number().nonnegative().default(12),
 
+  SUPABASE_URL: z.string().url().optional(),
+  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1).optional(),
+  SUPABASE_STORAGE_BUCKET: z.string().min(1).default('voyya-documents'),
+  DOCUMENT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
+  DOCUMENT_SIGNED_URL_TTL_SEC: z.coerce.number().int().positive().default(600),
+  DOCUMENT_STAGING_TTL_HOURS: z.coerce.number().int().positive().default(24),
+
+  SENDGRID_API_KEY: z.string().min(1).optional(),
+  EMAIL_FROM: z.string().email().optional(),
+  EMAIL_FROM_NAME: z.string().min(1).default('VoyYa'),
+
+  AFFILIATION_TOKEN_SECRET: z
+    .string()
+    .min(32, 'AFFILIATION_TOKEN_SECRET debe tener ≥32 caracteres aleatorios'),
+  AFFILIATION_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(14),
+  AFFILIATION_PORTAL_URL: z.string().url(),
+
   PG_TEST_URL: z.string().min(1).optional(),
 });
 

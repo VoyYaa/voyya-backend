@@ -4,4 +4,6 @@ export * from './contracts/driver';
 export * from './contracts/assignment';
 export * from './contracts/admin';
 export * from './contracts/consent';
+export * from './contracts/documents';
+export * from './contracts/affiliation';
 export * from './domain/trip-state-machine';

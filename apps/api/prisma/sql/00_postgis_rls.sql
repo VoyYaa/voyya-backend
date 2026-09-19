@@ -14,6 +14,7 @@
 --   (g) Ops console live queue (ADR-015)
 --   (h) RLS by company_id — trips.fare_config and admin.system_parameter (ADR-018)
 --   (i) One open fare version per company and service type (ADR-018, closes B-13)
+--   (j) RLS by company_id — affiliation documents and reviews (ADR-021)
 --
 -- Idempotent (IF [NOT] EXISTS / DROP POLICY IF EXISTS).
 -- =============================================================================
@@ -124,3 +125,26 @@ CREATE POLICY tenant_isolation_system_parameter ON admin.system_parameter
 -- (i) One open fare version per company and service type (ADR-018, closes B-13) ----
 CREATE UNIQUE INDEX IF NOT EXISTS uq_fare_config_open_per_company_service
   ON trips.fare_config (company_id, service_type) WHERE valid_to IS NULL;
+
+-- (j) RLS by company_id — affiliation documents and reviews (ADR-021) -----------
+ALTER TABLE tenancy.company_document ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenancy.company_document FORCE  ROW LEVEL SECURITY;
+ALTER TABLE tenancy.company_review   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenancy.company_review   FORCE  ROW LEVEL SECURITY;
+ALTER TABLE fleet.driver_document    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fleet.driver_document    FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_isolation_company_document ON tenancy.company_document;
+CREATE POLICY tenant_isolation_company_document ON tenancy.company_document
+  USING (company_id = current_setting('app.current_company', true)::int)
+  WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+DROP POLICY IF EXISTS tenant_isolation_company_review ON tenancy.company_review;
+CREATE POLICY tenant_isolation_company_review ON tenancy.company_review
+  USING (company_id = current_setting('app.current_company', true)::int)
+  WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+DROP POLICY IF EXISTS tenant_isolation_driver_document ON fleet.driver_document;
+CREATE POLICY tenant_isolation_driver_document ON fleet.driver_document
+  USING (company_id = current_setting('app.current_company', true)::int)
+  WITH CHECK (company_id = current_setting('app.current_company', true)::int);

@@ -1,12 +1,26 @@
-import { Body, Controller, HttpCode, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  Param,
+  ParseIntPipe,
+  Post,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
+  DOCUMENT_MAX_BYTES,
   type CreatedDriver,
   CreateDriverDTO,
   type ResendDriverPinResponse,
   SuspendDriverDTO,
   type SuspendDriverResponse,
+  type UploadedDocument,
 } from '@voyyaa/shared';
+import { DocumentStagingService } from '../affiliation/document-staging.service';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentTenant } from '../tenancy/identity.decorators';
@@ -17,7 +31,17 @@ import { AdminDriverService } from './admin-driver.service';
 @Roles('admin')
 @UseGuards(TenantGuard)
 export class AdminDriverController {
-  constructor(private readonly service: AdminDriverService) {}
+  constructor(
+    private readonly service: AdminDriverService,
+    private readonly staging: DocumentStagingService,
+  ) {}
+
+  @Post('documents')
+  @HttpCode(201)
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: DOCUMENT_MAX_BYTES, files: 1 } }))
+  uploadDocument(@UploadedFile() file: { buffer: Buffer; size: number }): Promise<UploadedDocument> {
+    return this.staging.stage(file);
+  }
 
   @Post()
   @HttpCode(201)

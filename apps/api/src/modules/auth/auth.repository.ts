@@ -10,6 +10,7 @@ export interface AuthUser {
   role: string;
   accountStatus: string;
   companyId: number | null;
+  companyStatus: string | null;
   failedAttempts: number;
   blockedUntil: Date | null;
 }
@@ -39,15 +40,18 @@ export class AuthRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async getUserByPhone(phone: string): Promise<AuthUser | null> {
-    return this.prisma.user.findUnique({ where: { phone }, select: userSelect });
+    const row = await this.prisma.user.findUnique({ where: { phone }, select: userSelect });
+    return row ? mapUserRow(row) : null;
   }
 
   async getUserByEmail(email: string): Promise<AuthUser | null> {
-    return this.prisma.user.findUnique({ where: { email }, select: userSelect });
+    const row = await this.prisma.user.findUnique({ where: { email }, select: userSelect });
+    return row ? mapUserRow(row) : null;
   }
 
   async getUser(userId: number): Promise<AuthUser | null> {
-    return this.prisma.user.findUnique({ where: { userId }, select: userSelect });
+    const row = await this.prisma.user.findUnique({ where: { userId }, select: userSelect });
+    return row ? mapUserRow(row) : null;
   }
 
   async getCompanyIdentity(companyId: number): Promise<CompanyIdentity | null> {
@@ -69,14 +73,15 @@ export class AuthRepository {
   }
 
   async createPassengerAutoRegister(phone: string): Promise<AuthUser> {
-    return this.prisma.$transaction(async (tx) => {
-      const u = await tx.user.create({
+    const u = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
         data: { firstName: '', lastName: '', phone, role: 'passenger', accountStatus: 'active' },
         select: userSelect,
       });
-      await tx.passenger.create({ data: { passengerId: u.userId } });
-      return u;
+      await tx.passenger.create({ data: { passengerId: created.userId } });
+      return created;
     });
+    return mapUserRow(u);
   }
 
   async getDriverByNationalId(nationalId: string): Promise<AuthDriver | null> {
@@ -224,4 +229,33 @@ const userSelect = {
   companyId: true,
   failedAttempts: true,
   blockedUntil: true,
+  company: { select: { status: true } },
 } as const;
+
+function mapUserRow(row: {
+  userId: number;
+  firstName: string;
+  lastName: string;
+  email: string | null;
+  passwordHash: string | null;
+  role: string;
+  accountStatus: string;
+  companyId: number | null;
+  failedAttempts: number;
+  blockedUntil: Date | null;
+  company: { status: string } | null;
+}): AuthUser {
+  return {
+    userId: row.userId,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    email: row.email,
+    passwordHash: row.passwordHash,
+    role: row.role,
+    accountStatus: row.accountStatus,
+    companyId: row.companyId,
+    companyStatus: row.company?.status ?? null,
+    failedAttempts: row.failedAttempts,
+    blockedUntil: row.blockedUntil,
+  };
+}

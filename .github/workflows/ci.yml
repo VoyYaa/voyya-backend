@@ -181,6 +181,7 @@ jobs:
         # infra/README.md / infra/scripts/bootstrap-db.sh para los e2e reales.
         env:
           PG_TEST_URL: postgresql://app_voyya:app_voyya_ci_pw@localhost:5432/voyya
+          PG_TEST_OWNER_URL: postgresql://voyya_owner:voyya_owner_ci_pw@localhost:5432/voyya
         run: pnpm --filter @voyya/api test
 
   # ===========================================================================

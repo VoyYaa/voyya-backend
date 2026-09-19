@@ -17,6 +17,15 @@ export interface CreateDriverWithVehicleData {
   };
 }
 
+export interface CreatedDriverDocumentRow {
+  driverDocumentId: number;
+  type: string;
+  fileName: string;
+  issuedAt: Date | null;
+  expiresAt: Date;
+  uploadedAt: Date;
+}
+
 export interface CreatedDriverRow {
   driverId: number;
   nationalId: string;
@@ -34,6 +43,21 @@ export interface CreatedDriverRow {
   };
 }
 
+export interface DriverDocumentRowInput {
+  type: string;
+  storageKey: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  issuedAt: Date | null;
+  expiresAt: Date;
+}
+
+export interface FleetQuotaRow {
+  declared: number | null;
+  used: number;
+}
+
 export interface RotatedPinRow {
   driverId: number;
   nationalId: string;
@@ -42,6 +66,55 @@ export interface RotatedPinRow {
 
 @Injectable()
 export class AdminDriverRepository {
+  async lockFleetQuota(tx: Prisma.TransactionClient, companyId: number): Promise<FleetQuotaRow> {
+    const rows = await tx.$queryRaw<Array<{ vehicle_count: number | null }>>`
+      SELECT vehicle_count FROM tenancy.company WHERE company_id = ${companyId} FOR UPDATE
+    `;
+    const used = await tx.vehicle.count({ where: { companyId } });
+    return { declared: rows[0]?.vehicle_count ?? null, used };
+  }
+
+  async readFleetQuota(tx: Prisma.TransactionClient, companyId: number): Promise<FleetQuotaRow> {
+    const [company, used] = await Promise.all([
+      tx.company.findUnique({ where: { companyId }, select: { vehicleCount: true } }),
+      tx.vehicle.count({ where: { companyId } }),
+    ]);
+    return { declared: company?.vehicleCount ?? null, used };
+  }
+
+  async createDriverDocuments(
+    tx: Prisma.TransactionClient,
+    driverId: number,
+    companyId: number,
+    documents: readonly DriverDocumentRowInput[],
+  ): Promise<CreatedDriverDocumentRow[]> {
+    const rows: CreatedDriverDocumentRow[] = [];
+    for (const doc of documents) {
+      const row = await tx.driverDocument.create({
+        data: {
+          driverId,
+          companyId,
+          type: doc.type as never,
+          storageKey: doc.storageKey,
+          fileName: doc.fileName,
+          contentType: doc.contentType,
+          sizeBytes: doc.sizeBytes,
+          issuedAt: doc.issuedAt,
+          expiresAt: doc.expiresAt,
+        },
+      });
+      rows.push({
+        driverDocumentId: row.driverDocumentId,
+        type: row.type,
+        fileName: row.fileName,
+        issuedAt: row.issuedAt,
+        expiresAt: row.expiresAt,
+        uploadedAt: row.uploadedAt,
+      });
+    }
+    return rows;
+  }
+
   async createDriverWithVehicle(
     tx: Prisma.TransactionClient,
     companyId: number,

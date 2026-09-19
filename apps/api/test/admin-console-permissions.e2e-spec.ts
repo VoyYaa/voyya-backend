@@ -133,15 +133,24 @@ suite('Admin console — permission matrix per controller (ADR-012 §4/§8)', ()
         .set('Authorization', operatorAuth());
       expect(res.status).toBe(200);
     });
+
+    it('GET /admin/company-profile -> 200 (readable by admin and operator, HU-AF-03)', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/admin/company-profile')
+        .set('Authorization', operatorAuth());
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ company_id: companyId, tax_id: '_perm-matrix-co', status: 'active' });
+    });
   });
 
-  describe('driver (not staff) hitting all eight console routes', () => {
+  describe('driver (not staff) hitting all nine console routes', () => {
     it.each([
       ['post', '/admin/drivers'],
       ['post', '/admin/drivers/1/pin/resend'],
       ['post', '/admin/drivers/1/suspend'],
       ['get', '/admin/settings'],
       ['put', '/admin/settings'],
+      ['get', '/admin/company-profile'],
       ['get', '/ops/trip-requests'],
       ['get', '/ops/trip-requests/1'],
       ['get', '/ops/drivers'],
@@ -161,6 +170,61 @@ suite('Admin console — permission matrix per controller (ADR-012 §4/§8)', ()
       const res = await request(app.getHttpServer()).get('/ops/trip-requests');
       expect(res.status).toBe(401);
       expect(res.body).toMatchObject({ code: 'SESSION_REQUIRED' });
+    });
+  });
+
+  describe('GET /admin/company-profile — cross-tenant isolation (HU-AF-03, tenancy.company has no forced RLS)', () => {
+    it('an operator from company A never receives company B\'s profile', async () => {
+      const otherMunicipality = await prisma.municipality.upsert({
+        where: { municipalityId: 9102 },
+        update: {},
+        create: {
+          municipalityId: 9102,
+          name: '_PermMuniB',
+          department: 'Test',
+          coveragePolygon: {
+            type: 'Polygon',
+            coordinates: [
+              [
+                [0, 0],
+                [0, 1],
+                [1, 1],
+                [1, 0],
+                [0, 0],
+              ],
+            ],
+          },
+          status: 'active',
+        },
+      });
+
+      const companyB = await prisma.company.upsert({
+        where: { taxId: '_perm-matrix-co-b' },
+        update: { status: 'active' },
+        create: {
+          legalName: '_PermCoB',
+          taxId: '_perm-matrix-co-b',
+          type: 'cooperative',
+          municipalityId: otherMunicipality.municipalityId,
+          status: 'active',
+        },
+      });
+
+      const resA = await request(app.getHttpServer())
+        .get('/admin/company-profile')
+        .set('Authorization', operatorAuth());
+      expect(resA.status).toBe(200);
+      expect(resA.body).toMatchObject({ company_id: companyId, tax_id: '_perm-matrix-co' });
+      expect(resA.body.company_id).not.toBe(companyB.companyId);
+      expect(resA.body.tax_id).not.toBe(companyB.taxId);
+
+      const operatorBAuth = () => bearer({ sub: 900003, role: 'operator', companyId: companyB.companyId });
+      const resB = await request(app.getHttpServer())
+        .get('/admin/company-profile')
+        .set('Authorization', operatorBAuth());
+      expect(resB.status).toBe(200);
+      expect(resB.body).toMatchObject({ company_id: companyB.companyId, tax_id: '_perm-matrix-co-b' });
+      expect(resB.body.company_id).not.toBe(companyId);
     });
   });
 });

@@ -4,8 +4,25 @@ import { Test } from '@nestjs/testing';
 import { randomInt } from 'node:crypto';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
+import { stagingKey } from '../src/modules/affiliation/document-key';
+import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { SMS_PROVIDER } from '../src/modules/assignment/ports/sms-provider.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+
+const REQUIRED_DRIVER_DOCUMENT_TYPES = ['license', 'soat', 'vehicle_inspection', 'operation_card'] as const;
+const PDF_BYTES = Buffer.from('%PDF-1.4\n%E2E test document\n');
+
+async function stageDriverDocuments(
+  storage: FileStorageProvider,
+): Promise<Array<{ type: (typeof REQUIRED_DRIVER_DOCUMENT_TYPES)[number]; storage_key: string; expires_at: string }>> {
+  const documents = [];
+  for (const type of REQUIRED_DRIVER_DOCUMENT_TYPES) {
+    const key = stagingKey('application/pdf');
+    await storage.put({ key, body: PDF_BYTES, contentType: 'application/pdf' });
+    documents.push({ type, storage_key: key, expires_at: '2030-01-01' });
+  }
+  return documents;
+}
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -45,7 +62,7 @@ function extractPin(message: string): string {
   return match[1] as string;
 }
 
-function createDto(n: number) {
+async function createDto(storage: FileStorageProvider, n: number) {
   return {
     first_name: 'Conductor',
     last_name: `E2E${n}`,
@@ -53,6 +70,7 @@ function createDto(n: number) {
     phone: phoneFor(n),
     email: emailFor(n),
     vehicle: { plate: plateFor(n), model: 'Chevrolet Spark' },
+    documents: await stageDriverDocuments(storage),
   };
 }
 
@@ -61,6 +79,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
   let prisma: PrismaService;
   let jwt: JwtService;
   let sms: { send: jest.Mock };
+  let storage: FileStorageProvider;
   let companyId: number;
   let adminAuth: string;
 
@@ -85,6 +104,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
 
     prisma = moduleRef.get(PrismaService);
     jwt = moduleRef.get(JwtService, { strict: false });
+    storage = moduleRef.get(FILE_STORAGE);
 
     const municipality = await prisma.municipality.upsert({
       where: { municipalityId: 9121 },
@@ -136,7 +156,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     const res = await request(app.getHttpServer())
       .post('/admin/drivers')
       .set('Authorization', adminAuth)
-      .send(createDto(1));
+      .send(await createDto(storage, 1));
 
     expect(res.status).toBe(201);
     expect(res.body.pin_delivery).toBe('sent');
@@ -156,7 +176,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     const res = await request(app.getHttpServer())
       .post('/admin/drivers')
       .set('Authorization', adminAuth)
-      .send(createDto(2));
+      .send(await createDto(storage, 2));
 
     expect(res.status).toBe(201);
     expect(res.body.pin_delivery).toBe('failed');
@@ -177,7 +197,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
   describe('Zod validation (400) rejects a malformed body before it touches the database', () => {
     it('an invalid plate format -> 400 INVALID_DATA, no rows written', async () => {
       const before = await prisma.runInTenant(companyId, (tx) => tx.driver.count());
-      const dto = { ...createDto(30), vehicle: { plate: 'not-a-plate', model: 'Renault Logan' } };
+      const dto = { ...(await createDto(storage, 30)), vehicle: { plate: 'not-a-plate', model: 'Renault Logan' } };
 
       const res = await request(app.getHttpServer())
         .post('/admin/drivers')
@@ -193,7 +213,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     });
 
     it('a missing vehicle -> 400 INVALID_DATA', async () => {
-      const { vehicle: _omit, ...dto } = createDto(31);
+      const { vehicle: _omit, ...dto } = await createDto(storage, 31);
 
       const res = await request(app.getHttpServer())
         .post('/admin/drivers')
@@ -207,7 +227,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
 
   describe('duplicates: the database is the referee, zero partial rows', () => {
     it('duplicate national_id -> 409 NATIONAL_ID_TAKEN', async () => {
-      const dto = { ...createDto(3), national_id: nationalIdFor(1) };
+      const dto = { ...(await createDto(storage, 3)), national_id: nationalIdFor(1) };
       const before = await prisma.runInTenant(companyId, (tx) => tx.driver.count());
 
       const res = await request(app.getHttpServer())
@@ -226,7 +246,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     });
 
     it('duplicate phone -> 409 PHONE_TAKEN', async () => {
-      const dto = { ...createDto(4), phone: phoneFor(1) };
+      const dto = { ...(await createDto(storage, 4)), phone: phoneFor(1) };
       const res = await request(app.getHttpServer())
         .post('/admin/drivers')
         .set('Authorization', adminAuth)
@@ -236,7 +256,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     });
 
     it('duplicate email -> 409 EMAIL_TAKEN', async () => {
-      const dto = { ...createDto(5), email: emailFor(1) };
+      const dto = { ...(await createDto(storage, 5)), email: emailFor(1) };
       const res = await request(app.getHttpServer())
         .post('/admin/drivers')
         .set('Authorization', adminAuth)
@@ -246,7 +266,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
     });
 
     it('duplicate plate -> 409 PLATE_TAKEN', async () => {
-      const dto = { ...createDto(6), vehicle: { plate: plateFor(1), model: 'Renault Logan' } };
+      const dto = { ...(await createDto(storage, 6)), vehicle: { plate: plateFor(1), model: 'Renault Logan' } };
       const res = await request(app.getHttpServer())
         .post('/admin/drivers')
         .set('Authorization', adminAuth)
@@ -262,7 +282,7 @@ suite('Admin console — driver onboarding and PIN delivery invariant (ADR-013)'
       const probe = await request(app.getHttpServer())
         .post('/admin/drivers')
         .set('Authorization', adminAuth)
-        .send(createDto(20));
+        .send(await createDto(storage, 20));
       expect(probe.status).toBe(201);
       const generatedPin = extractPin(sms.send.mock.calls[0][1] as string);
 

@@ -33,8 +33,10 @@ const PREFLIGHT_QUERY = `
       WHERE c.relforcerowsecurity
         AND (n.nspname, c.relname) IN
             (('fleet','driver'), ('fleet','vehicle'), ('assignment','assignment'),
-             ('trips','fare_config'), ('admin','system_parameter'))
-    ) = 5 AS "hasForcedRls"
+             ('trips','fare_config'), ('admin','system_parameter'),
+             ('tenancy','company_document'), ('tenancy','company_review'),
+             ('fleet','driver_document'))
+    ) = 8 AS "hasForcedRls"
 `;
 
 @Injectable()

@@ -170,7 +170,8 @@ export class AuthService {
 
   async adminLogin(dto: AdminLoginDTO, userAgent?: string): Promise<SessionResponse> {
     const u = await this.repo.getUserByEmail(dto.email.toLowerCase());
-    const enabled = u && u.passwordHash && (u.role === 'admin' || u.role === 'operator');
+    const enabled =
+      u && u.passwordHash && (u.role === 'admin' || u.role === 'operator' || u.role === 'platform_admin');
     if (!enabled) {
       await this.hasher.compare(dto.password, await this.dummyHash);
       throw this.invalidCredentials();
@@ -194,8 +195,23 @@ export class AuthService {
     if (u.accountStatus === 'suspended') {
       throw new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta suspendida' });
     }
+
+    if (u.role === 'platform_admin') {
+      if (u.companyId !== null) {
+        throw new InternalServerErrorException('platform_admin user unexpectedly has a company_id');
+      }
+      await this.repo.resetAdminAttempts(u.userId);
+      return this.issueSession(u, null, userAgent);
+    }
+
     if (u.companyId === null) {
       throw this.staffWithoutCompany();
+    }
+    if (u.companyStatus !== 'active') {
+      throw new ForbiddenException({
+        code: 'COMPANY_NOT_ACTIVE',
+        message: 'La empresa de este usuario no está activa',
+      });
     }
 
     await this.repo.resetAdminAttempts(u.userId);
@@ -226,6 +242,10 @@ export class AuthService {
       if (u.companyId === null) {
         await this.refreshTokens.revokeAllForUser(userId);
         throw this.staffWithoutCompany();
+      }
+      if (u.companyStatus !== 'active') {
+        await this.refreshTokens.revokeAllForUser(userId);
+        throw this.refreshRevoked();
       }
       companyId = u.companyId;
     }

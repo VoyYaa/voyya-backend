@@ -81,17 +81,55 @@ enum ConsentPurpose {
   @@schema("auth")
 }
 
+enum CompanyDocumentType {
+  chamber_of_commerce
+  tax_registry
+  transport_authorization
+  liability_insurance
+
+  @@schema("tenancy")
+}
+
+enum DocumentVerificationStatus {
+  pending
+  verified
+  rejected
+
+  @@schema("tenancy")
+}
+
+enum CompanyDecision {
+  approved
+  documents_requested
+  rejected
+  credentials_reissued
+
+  @@schema("tenancy")
+}
+
+enum DriverDocumentType {
+  license
+  soat
+  vehicle_inspection
+  operation_card
+
+  @@schema("fleet")
+}
+
 model Company {
-  companyId      Int           @id @default(autoincrement()) @map("company_id")
-  legalName      String        @map("legal_name")
-  taxId          String        @unique @map("tax_id")
-  type           String        @map("type")
-  municipalityId Int           @map("municipality_id")
-  vehicleCount   Int?          @map("vehicle_count")
-  contactEmail   String?       @map("contact_email")
-  status         CompanyStatus @default(active) @map("status")
-  membershipFee  Decimal?      @map("membership_fee") @db.Decimal(12, 2)
-  registeredAt   DateTime      @default(now()) @map("registered_at")
+  companyId        Int           @id @default(autoincrement()) @map("company_id")
+  legalName        String        @map("legal_name")
+  taxId            String        @unique @map("tax_id")
+  type             String        @map("type")
+  municipalityId   Int           @map("municipality_id")
+  vehicleCount     Int?          @map("vehicle_count")
+  contactEmail     String?       @map("contact_email")
+  contactFirstName String?       @map("contact_first_name")
+  contactLastName  String?       @map("contact_last_name")
+  contactPhone     String?       @map("contact_phone")
+  status           CompanyStatus @default(active) @map("status")
+  membershipFee    Decimal?      @map("membership_fee") @db.Decimal(12, 2)
+  registeredAt     DateTime      @default(now()) @map("registered_at")
 
   municipality     Municipality       @relation(fields: [municipalityId], references: [municipalityId])
   drivers          Driver[]
@@ -100,8 +138,12 @@ model Company {
   staff            User[]
   fareConfigs      FareConfig[]
   systemParameters SystemParameter[]
+  documents        CompanyDocument[]
+  reviews          CompanyReview[]   @relation("CompanyReviewSubject")
+  driverDocuments  DriverDocument[]
 
   @@index([municipalityId])
+  @@index([status, registeredAt])
   @@map("company")
   @@schema("tenancy")
 }
@@ -134,13 +176,15 @@ model User {
   blockedUntil   DateTime? @map("blocked_until")
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  company                Company?          @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
-  passenger              Passenger?
-  driver                 Driver?
-  refreshTokens          RefreshToken[]
-  systemParameterUpdates SystemParameter[]
-  fareConfigVersions     FareConfig[]      @relation("FareConfigAuthor")
-  consentRecords         ConsentRecord[]
+  company                  Company?          @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
+  passenger                Passenger?
+  driver                   Driver?
+  refreshTokens            RefreshToken[]
+  systemParameterUpdates   SystemParameter[]
+  fareConfigVersions       FareConfig[]      @relation("FareConfigAuthor")
+  consentRecords           ConsentRecord[]
+  verifiedCompanyDocuments CompanyDocument[] @relation("CompanyDocumentVerifier")
+  companyReviews           CompanyReview[]   @relation("CompanyReviewer")
 
   @@index([companyId, role])
   @@map("user")
@@ -223,10 +267,11 @@ model Driver {
   createdAt         DateTime     @default(now()) @map("created_at")
   updatedAt         DateTime     @updatedAt @map("updated_at")
 
-  user           User         @relation(fields: [driverId], references: [userId], onDelete: Cascade)
-  company        Company      @relation(fields: [companyId], references: [companyId])
-  currentVehicle Vehicle?     @relation("DriverCurrentVehicle", fields: [currentVehicleId], references: [vehicleId])
+  user           User             @relation(fields: [driverId], references: [userId], onDelete: Cascade)
+  company        Company          @relation(fields: [companyId], references: [companyId])
+  currentVehicle Vehicle?         @relation("DriverCurrentVehicle", fields: [currentVehicleId], references: [vehicleId])
   assignments    Assignment[]
+  documents      DriverDocument[]
 
   @@index([companyId, status])
   @@map("driver")
@@ -351,4 +396,72 @@ model SystemParameter {
   @@unique([key, companyId])
   @@map("system_parameter")
   @@schema("admin")
+}
+
+model CompanyDocument {
+  companyDocumentId Int                        @id @default(autoincrement()) @map("company_document_id")
+  companyId         Int                        @map("company_id")
+  type              CompanyDocumentType        @map("type")
+  storageKey        String                     @map("storage_key")
+  fileName          String                     @map("file_name")
+  contentType       String                     @map("content_type")
+  sizeBytes         Int                        @map("size_bytes")
+  verification      DocumentVerificationStatus @default(pending) @map("verification")
+  reviewNote        String?                    @map("review_note")
+  issuedAt          DateTime?                  @map("issued_at") @db.Date
+  expiresAt         DateTime?                  @map("expires_at") @db.Date
+  uploadedAt        DateTime                   @default(now()) @map("uploaded_at")
+  verifiedBy        Int?                       @map("verified_by")
+  verifiedAt        DateTime?                  @map("verified_at")
+
+  company        Company @relation(fields: [companyId], references: [companyId], onDelete: Cascade, onUpdate: Cascade)
+  verifiedByUser User?   @relation("CompanyDocumentVerifier", fields: [verifiedBy], references: [userId], onDelete: SetNull, onUpdate: Cascade)
+
+  @@unique([companyId, type])
+  @@index([companyId, verification])
+  @@map("company_document")
+  @@schema("tenancy")
+}
+
+model CompanyReview {
+  companyReviewId               Int                   @id @default(autoincrement()) @map("company_review_id")
+  companyId                     Int                   @map("company_id")
+  decision                      CompanyDecision       @map("decision")
+  note                          String?               @map("note")
+  acknowledgedRoutingLimitation Boolean               @default(false) @map("acknowledged_routing_limitation")
+  municipalityActiveCompanyId   Int?                  @map("municipality_active_company_id")
+  municipalityActiveCompanyName String?               @map("municipality_active_company_name")
+  requestedDocumentTypes        CompanyDocumentType[] @default([]) @map("requested_document_types")
+  reviewedBy                    Int                   @map("reviewed_by")
+  createdAt                     DateTime              @default(now()) @map("created_at")
+
+  company        Company @relation("CompanyReviewSubject", fields: [companyId], references: [companyId], onDelete: Cascade, onUpdate: Cascade)
+  reviewedByUser User    @relation("CompanyReviewer", fields: [reviewedBy], references: [userId], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([companyId, createdAt])
+  @@index([decision, createdAt])
+  @@map("company_review")
+  @@schema("tenancy")
+}
+
+model DriverDocument {
+  driverDocumentId Int                @id @default(autoincrement()) @map("driver_document_id")
+  driverId         Int                @map("driver_id")
+  companyId        Int                @map("company_id")
+  type             DriverDocumentType @map("type")
+  storageKey       String             @map("storage_key")
+  fileName         String             @map("file_name")
+  contentType      String             @map("content_type")
+  sizeBytes        Int                @map("size_bytes")
+  issuedAt         DateTime?          @map("issued_at") @db.Date
+  expiresAt        DateTime           @map("expires_at") @db.Date
+  uploadedAt       DateTime           @default(now()) @map("uploaded_at")
+
+  driver  Driver  @relation(fields: [driverId], references: [driverId], onDelete: Cascade, onUpdate: Cascade)
+  company Company @relation(fields: [companyId], references: [companyId])
+
+  @@unique([driverId, type])
+  @@index([companyId, expiresAt])
+  @@map("driver_document")
+  @@schema("fleet")
 }

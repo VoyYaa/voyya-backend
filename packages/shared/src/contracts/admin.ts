@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { DriverSuspensionReason, NationalId, Phone } from './auth';
+import { DocumentStorageKey } from './documents';
 import { DriverStatus } from './driver';
 import { AmountCop, FareBreakdown, TripStatus } from './trips';
 
@@ -23,6 +24,46 @@ export const CreateDriverVehicleDTO = z.object({
 });
 export type CreateDriverVehicleDTO = z.infer<typeof CreateDriverVehicleDTO>;
 
+export const DriverDocumentType = z.enum([
+  'license',
+  'soat',
+  'vehicle_inspection',
+  'operation_card',
+]);
+export type DriverDocumentType = z.infer<typeof DriverDocumentType>;
+
+export const REQUIRED_DRIVER_DOCUMENT_TYPES = [
+  'license',
+  'soat',
+  'vehicle_inspection',
+  'operation_card',
+] as const satisfies readonly DriverDocumentType[];
+
+export const DriverDocumentInput = z.object({
+  type: DriverDocumentType,
+  storage_key: DocumentStorageKey,
+  issued_at: IsoDate.optional(),
+  expires_at: IsoDate,
+});
+export type DriverDocumentInput = z.infer<typeof DriverDocumentInput>;
+
+export const CreatedDriverDocument = z.object({
+  driver_document_id: z.number().int().positive(),
+  type: DriverDocumentType,
+  file_name: z.string(),
+  issued_at: IsoDate.nullable(),
+  expires_at: IsoDate,
+  uploaded_at: z.string().datetime(),
+});
+export type CreatedDriverDocument = z.infer<typeof CreatedDriverDocument>;
+
+export const FleetQuota = z.object({
+  declared: z.number().int().nullable(),
+  used: z.number().int().nonnegative(),
+  available: z.number().int().nullable(),
+});
+export type FleetQuota = z.infer<typeof FleetQuota>;
+
 export const CreateDriverDTO = z.object({
   first_name: z.string().trim().min(1).max(80),
   last_name: z.string().trim().min(1).max(80),
@@ -31,6 +72,7 @@ export const CreateDriverDTO = z.object({
   email: z.string().trim().email().max(254).optional(),
   license: z.string().trim().min(3).max(30).optional(),
   vehicle: CreateDriverVehicleDTO,
+  documents: z.array(DriverDocumentInput).min(1).max(4),
 });
 export type CreateDriverDTO = z.infer<typeof CreateDriverDTO>;
 
@@ -51,6 +93,7 @@ export const CreatedDriver = z.object({
   email: z.string().nullable(),
   status: DriverStatus,
   vehicle: CreatedDriverVehicle,
+  documents: z.array(CreatedDriverDocument),
   pin_delivery: PinDeliveryStatus,
   pin_delivered_at: z.string().datetime().nullable(),
   created_at: z.string().datetime(),
@@ -271,6 +314,11 @@ export const AdminErrorCode = z.enum([
   'SETTINGS_CONFLICT',
   'SETTINGS_OUT_OF_RANGE',
   'FARE_CONFIG_NOT_FOUND',
+  'FLEET_LIMIT_REACHED',
+  'DRIVER_DOCUMENTS_INCOMPLETE',
+  'DOCUMENT_TOO_LARGE',
+  'DOCUMENT_TYPE_NOT_ALLOWED',
+  'DOCUMENT_NOT_FOUND',
 ]);
 export type AdminErrorCode = z.infer<typeof AdminErrorCode>;
 
@@ -278,5 +326,6 @@ export const AdminError = z.object({
   code: AdminErrorCode,
   message: z.string(),
   field: z.string().optional(),
+  missing_documents: z.array(DriverDocumentType).optional(),
 });
 export type AdminError = z.infer<typeof AdminError>;

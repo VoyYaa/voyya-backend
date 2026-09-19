@@ -20,7 +20,9 @@
     "prisma:sql": "prisma db execute --file prisma/sql/00_postgis_rls.sql --schema prisma/schema.prisma",
     "db:release": "prisma migrate deploy && pnpm run prisma:sql",
     "db:seed": "ts-node prisma/seed.ts",
-    "provision:company": "ts-node scripts/provision-company.ts"
+    "provision:company": "ts-node scripts/provision-company.ts",
+    "provision:platform-admin": "ts-node scripts/create-platform-admin.ts",
+    "provision:municipality": "ts-node scripts/add-municipality.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
@@ -49,6 +51,7 @@
     "@nestjs/testing": "^10.4.15",
     "@types/bcryptjs": "^2.4.6",
     "@types/express": "^4.17.21",
+    "@types/multer": "^1.4.12",
     "@types/jest": "^29.5.13",
     "@types/node": "^20.16.10",
     "@types/supertest": "^6.0.2",
