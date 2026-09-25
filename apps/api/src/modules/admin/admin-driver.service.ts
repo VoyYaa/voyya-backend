@@ -307,7 +307,8 @@ export class AdminDriverService {
       await this.storage.remove(keys);
     } catch {
       this.logger.error(
-        `Failed to roll back ${keys.length} promoted document(s) after an aborted operation`,
+        `Failed to roll back ${keys.length} promoted document(s) after an aborted operation: ` +
+          keys.join(' '),
       );
     }
   }
