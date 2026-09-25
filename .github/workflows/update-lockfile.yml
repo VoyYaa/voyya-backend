@@ -1,6 +1,6 @@
 name: Actualizar lockfile
 
-# Manual. Existe porque el entorno de desarrollo no siempre alcanza
+# Manual. Existe porque el entorno de desarrollo no alcanza
 # registry.npmjs.org, así que un `package.json` puede quedar declarando
 # dependencias que el lockfile no conoce. Cuando eso pasa, el Dockerfile
 # (`pnpm install --frozen-lockfile`) falla en el despliegue y CI no carga las
@@ -24,9 +24,6 @@ jobs:
     name: Regenerar pnpm-lock.yaml y commitearlo
     runs-on: ubuntu-latest
 
-    env:
-      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-
     steps:
       - uses: actions/checkout@v4
 
@@ -38,26 +35,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          registry-url: https://npm.pkg.github.com
-          scope: '@voyyaa'
 
-      - name: Resolver dependencias sin exigir el lockfile
-        run: pnpm install --no-frozen-lockfile
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Estado antes
+        run: |
+          echo "--- pnpm ---"; pnpm --version
+          echo "--- workspace ---"; cat pnpm-workspace.yaml 2>/dev/null || echo "(sin pnpm-workspace.yaml)"
+          echo "--- dependencias declaradas en apps/api ---"
+          node -p "JSON.stringify({...require('./apps/api/package.json').dependencies, ...require('./apps/api/package.json').devDependencies}, null, 2)"
+          echo "--- sha del lockfile ---"; git hash-object pnpm-lock.yaml
 
-      # Verifica que el lockfile regenerado sirva de verdad: `--frozen-lockfile`
-      # es lo que corre el Dockerfile, así que si esto falla el despliegue
-      # también habría fallado, y es mejor saberlo aquí que en Railway.
-      - name: Comprobar que ahora sí satisface --frozen-lockfile
-        run: pnpm install --frozen-lockfile
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # Resuelve el árbol y reescribe el lockfile. `--lockfile-only` evita bajar
+      # e instalar los paquetes: sólo interesa el lockfile, y así el paso es más
+      # rápido y con menos superficie de fallo.
+      - name: Regenerar el lockfile
+        run: pnpm install --lockfile-only --no-frozen-lockfile
 
+      - name: Estado después
+        run: |
+          echo "--- sha del lockfile ---"; git hash-object pnpm-lock.yaml
+          echo "--- ¿cambió? ---"
+          git --no-pager diff --stat -- pnpm-lock.yaml || true
+          echo "--- ¿aparecen las dependencias que faltaban? ---"
+          for p in "@types/multer" "@sentry/node" "expo-server-sdk" "pino"; do
+            printf "%-20s " "$p"
+            grep -q "$p" pnpm-lock.yaml && echo "sí" || echo "NO"
+          done
+
+      # El commit va ANTES de verificar: si el lockfile mejoró pero algo más
+      # falla, el avance no se pierde y queda diagnosticable en el repo.
       - name: Commitear si cambió
         run: |
           if git diff --quiet -- pnpm-lock.yaml; then
-            echo "El lockfile ya estaba al día; no hay nada que commitear."
+            echo "::warning::El lockfile no cambió. Revisa el paso 'Estado después'."
             exit 0
           fi
           git config user.name "github-actions[bot]"
@@ -68,3 +77,8 @@ jobs:
           Generado por el workflow Actualizar lockfile, que corre donde sí hay
           acceso a npm."
           git push
+
+      # Última comprobación, ya sin poder perder el trabajo: es el mismo comando
+      # que corre el Dockerfile, así que si falla aquí también fallaría en Railway.
+      - name: Comprobar que satisface --frozen-lockfile
+        run: pnpm install --frozen-lockfile
