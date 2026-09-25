@@ -1,10 +1,10 @@
 import { NotFoundException } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
-import type { AssignmentStatus } from '@voyyaa/shared';
+import type { AssignmentStatus, TripRequestCreatedEvent } from '@voyyaa/shared';
 import { AssignmentService } from './assignment.service';
 import type { AssignedDriverRow, AssignmentRepository, TripRequestInfo } from './assignment.repository';
-import type { CandidateRepository } from './candidate.repository';
-import type { OperationalParamsService } from './operational-params.service';
+import type { CandidateRepository, DbCandidate } from './candidate.repository';
+import type { OperationalParams, OperationalParamsService } from './operational-params.service';
 import type { PushProvider } from './ports/push-provider.port';
 import type { TripClosingService } from './trip-closing.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
@@ -418,5 +418,145 @@ describe('AssignmentService.getAcceptedAssignment (V-01: allow-list, never "canc
 
     const forwarded = getAssignmentForDriver.mock.calls[0]?.[4] as AssignmentStatus[];
     expect(forwarded).not.toContain('cancelled');
+  });
+});
+
+describe('AssignmentService.onTripRequestCreated · push never gates the assignment chain (ADR-022 §3.1)', () => {
+  const PARAMS: OperationalParams = {
+    searchRadiusKm: 5,
+    expansionRadiusKm: 10,
+    acceptanceTimeoutSec: 15,
+    maxAutoRetries: 3,
+    tiebreakWindowHours: 24,
+    locationStaleMin: 30,
+    avgSpeedKmh: 25,
+    noShowGraceMin: 5,
+  };
+
+  function build(push: PushProvider): {
+    service: AssignmentService;
+    events: unknown[];
+    setTimeoutSpy: jest.SpyInstance;
+  } {
+    const prisma = {
+      runInTenant: async <T>(_c: number, fn: (tx: unknown) => Promise<T>): Promise<T> => fn({}),
+    } as unknown as PrismaService;
+
+    const info: TripRequestInfo = {
+      tripRequestId: 500,
+      passengerId: 1,
+      municipalityId: 1,
+      pickupAddress: 'Cra 1',
+      dropoffAddress: 'Calle 2',
+      pickupLat: 6.96,
+      pickupLng: -75.41,
+      fare: 8000,
+      status: 'pending_assignment',
+    };
+
+    const candidate: DbCandidate = {
+      driverId: 7,
+      vehicleId: 3,
+      distanceM: 350,
+      tripsLast3h: 0,
+    };
+
+    const repo = {
+      getTripRequestInfo: jest.fn().mockResolvedValue(info),
+      createNotifiedAssignment: jest.fn().mockResolvedValue({ assignmentId: 999 }),
+    } as unknown as AssignmentRepository;
+
+    const candidateRepo = {
+      findCandidates: jest.fn().mockResolvedValue([candidate]),
+    } as unknown as CandidateRepository;
+
+    const params = { get: jest.fn().mockResolvedValue(PARAMS) } as unknown as OperationalParamsService;
+
+    const events: unknown[] = [];
+    const emitter = { emit: (_name: string, payload: unknown) => events.push(payload) } as unknown as EventEmitter2;
+
+    const tripClosing = {} as unknown as TripClosingService;
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+
+    const service = new AssignmentService(
+      prisma,
+      candidateRepo,
+      repo,
+      params,
+      emitter,
+      push,
+      tripClosing,
+      fakeActiveCompanyResolver(),
+    );
+
+    return { service, events, setTimeoutSpy };
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const tripEvent: TripRequestCreatedEvent = {
+    trip_request_id: 500,
+    passenger_id: 1,
+    municipality_id: 1,
+    service_type: 'taxi',
+    origin: { lat: 6.96, lng: -75.41 },
+    occurred_at: new Date().toISOString(),
+  };
+
+  it('emits ASSIGNMENT_CREATED and arms the timeout BEFORE the push promise settles, even if push is slow', async () => {
+    let releasePush: (() => void) | null = null;
+    const pushStarted = new Promise<void>((resolve) => {
+      releasePush = resolve as unknown as () => void;
+    });
+    const push: PushProvider = {
+      sendAssignment: jest.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            (releasePush as unknown as () => void)?.();
+            setTimeout(resolve, 50);
+          }),
+      ),
+    };
+
+    const { service, events, setTimeoutSpy } = build(push);
+
+    const chainPromise = service.onTripRequestCreated(tripEvent);
+    await pushStarted;
+
+    expect(events).toHaveLength(1);
+    expect(setTimeoutSpy).toHaveBeenCalled();
+
+    await chainPromise;
+    expect(push.sendAssignment).toHaveBeenCalledTimes(1);
+  });
+
+  it('a push that never resolves does not prevent the chain from completing', async () => {
+    const push: PushProvider = {
+      sendAssignment: jest.fn(() => new Promise<void>(() => {})),
+    };
+
+    const { service, events } = build(push);
+
+    await expect(
+      Promise.race([
+        service.onTripRequestCreated(tripEvent),
+        new Promise((resolve) => setTimeout(resolve, 200)),
+      ]),
+    ).resolves.toBeUndefined();
+
+    expect(events).toHaveLength(1);
+  });
+
+  it('a push that rejects synchronously does not abort onTripRequestCreated nor the chain', async () => {
+    const push: PushProvider = {
+      sendAssignment: jest.fn().mockRejectedValue(new Error('boom')),
+    };
+
+    const { service, events } = build(push);
+
+    await expect(service.onTripRequestCreated(tripEvent)).resolves.toBeUndefined();
+    expect(events).toHaveLength(1);
   });
 });
