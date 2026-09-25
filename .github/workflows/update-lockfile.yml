@@ -1,0 +1,70 @@
+name: Actualizar lockfile
+
+# Manual. Existe porque el entorno de desarrollo no siempre alcanza
+# registry.npmjs.org, así que un `package.json` puede quedar declarando
+# dependencias que el lockfile no conoce. Cuando eso pasa, el Dockerfile
+# (`pnpm install --frozen-lockfile`) falla en el despliegue y CI no carga las
+# suites afectadas. Este workflow regenera el lockfile donde sí hay red.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: update-lockfile-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '10.24.0'
+
+jobs:
+  update-lockfile:
+    name: Regenerar pnpm-lock.yaml y commitearlo
+    runs-on: ubuntu-latest
+
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: https://npm.pkg.github.com
+          scope: '@voyyaa'
+
+      - name: Resolver dependencias sin exigir el lockfile
+        run: pnpm install --no-frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Verifica que el lockfile regenerado sirva de verdad: `--frozen-lockfile`
+      # es lo que corre el Dockerfile, así que si esto falla el despliegue
+      # también habría fallado, y es mejor saberlo aquí que en Railway.
+      - name: Comprobar que ahora sí satisface --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commitear si cambió
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "El lockfile ya estaba al día; no hay nada que commitear."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pnpm-lock.yaml
+          git commit -m "chore: regenerar pnpm-lock.yaml
+
+          Generado por el workflow Actualizar lockfile, que corre donde sí hay
+          acceso a npm."
+          git push
