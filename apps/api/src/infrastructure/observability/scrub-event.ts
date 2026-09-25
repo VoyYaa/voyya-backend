@@ -1,4 +1,4 @@
-import type { Event } from '@sentry/node';
+import type { ErrorEvent, Event } from '@sentry/node';
 import { redactPiiDeep } from '@voyyaa/shared';
 import { toRoutePattern } from './route-pattern';
 
@@ -38,7 +38,7 @@ function hasDiagnosticContent(event: Event): boolean {
   return Boolean(event.exception) || Boolean(event.message);
 }
 
-export function scrubEvent(event: Event): Event | null {
+export function scrubEvent(event: ErrorEvent): ErrorEvent | null {
   scrubRequest(event);
   scrubUser(event);
 
