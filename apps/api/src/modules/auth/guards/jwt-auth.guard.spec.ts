@@ -2,6 +2,7 @@ import { type ExecutionContext, UnauthorizedException } from '@nestjs/common';
 import type { Reflector } from '@nestjs/core';
 import type { JwtService } from '@nestjs/jwt';
 import type { EnvService } from '../../../config/env.service';
+import type { RequestContextService } from '../../../infrastructure/observability/request-context.service';
 import type { RequestWithTenant } from '../../tenancy/tenant-request';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
@@ -39,7 +40,8 @@ function createGuard(o: Options): { guard: JwtAuthGuard; req: RequestWithTenant 
           : undefined,
   } as unknown as EnvService;
   const req = { headers: o.headers ?? {} } as unknown as RequestWithTenant;
-  return { guard: new JwtAuthGuard(reflector, jwt, env), req };
+  const requestContext = { set: () => undefined } as unknown as RequestContextService;
+  return { guard: new JwtAuthGuard(reflector, jwt, env, requestContext), req };
 }
 
 describe('JwtAuthGuard', () => {

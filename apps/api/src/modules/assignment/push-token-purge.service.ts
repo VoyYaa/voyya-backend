@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
+import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { PushTokenRepository } from './push-token.repository';
 
@@ -18,6 +19,10 @@ export class PushTokenPurgeService {
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async purge(): Promise<void> {
+    await runMonitoredJob('push-token-purge', () => this.run());
+  }
+
+  private async run(): Promise<void> {
     const ttlDays = this.env.get('PUSH_TOKEN_TTL_DAYS');
     if (ttlDays === 0) return;
 

@@ -95,4 +95,4 @@ COPY --from=builder /app/apps/api/prisma/schema.prisma ./apps/api/prisma/schema.
 
 EXPOSE 3000
 
-CMD ["node", "apps/api/dist/main.js"]
+CMD ["node", "--enable-source-maps", "apps/api/dist/main.js"]

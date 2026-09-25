@@ -7,6 +7,7 @@ import {
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
+import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import type { AssignmentService } from '../assignment/assignment.service';
 import type {
   CloseTripInput,
@@ -143,6 +144,7 @@ function createService(
     assignment,
     fakeTripClosing(state.tripClosingRejected ?? false),
     fakeActiveCompanyResolver(),
+    new RequestContextService(),
   );
   return { service, emitter, assignment };
 }

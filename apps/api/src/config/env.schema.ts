@@ -4,8 +4,12 @@ export const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+    .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
+
+  SENTRY_DSN: z.string().url().optional(),
+  SENTRY_ENVIRONMENT: z.string().min(1).optional(),
+  SENTRY_RELEASE: z.string().min(1).optional(),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL es obligatoria'),
   DB_CONNECT_MAX_ATTEMPTS: z.coerce.number().int().positive().default(6),

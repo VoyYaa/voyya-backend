@@ -9,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { JwtAccessPayload } from '@voyyaa/shared';
 import type { Request } from 'express';
 import { EnvService } from '../../../config/env.service';
+import { RequestContextService } from '../../../infrastructure/observability/request-context.service';
 import type { RequestWithTenant, AuthenticatedUser } from '../../tenancy/tenant-request';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 
@@ -18,6 +19,7 @@ export class JwtAuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
     private readonly env: EnvService,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   canActivate(context: ExecutionContext): boolean {
@@ -34,6 +36,7 @@ export class JwtAuthGuard implements CanActivate {
       const user = this.verify(token);
       if (!user) throw sessionRequired();
       req.user = user;
+      this.requestContext.set({ userId: user.userId, companyId: user.companyId });
       return true;
     }
 
@@ -41,6 +44,7 @@ export class JwtAuthGuard implements CanActivate {
       const user = userFromHeaders(req);
       if (user) {
         req.user = user;
+        this.requestContext.set({ userId: user.userId, companyId: user.companyId });
         return true;
       }
     }

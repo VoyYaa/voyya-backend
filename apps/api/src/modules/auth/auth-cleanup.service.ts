@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 const LOCK_KEY = 91_001;
@@ -12,6 +13,10 @@ export class AuthCleanupService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async cleanup(): Promise<void> {
+    await runMonitoredJob('auth-cleanup', () => this.run());
+  }
+
+  private async run(): Promise<void> {
     try {
       await this.prisma.$transaction(async (tx) => {
         const rows = await tx.$queryRaw<Array<{ locked: boolean }>>`

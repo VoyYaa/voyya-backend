@@ -6,6 +6,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { AppConfigModule } from './config/config.module';
 import { EnvService } from './config/env.service';
 import { HealthController } from './health.controller';
+import { ObservabilityModule } from './infrastructure/observability/observability.module';
 import { PrismaModule } from './infrastructure/prisma/prisma.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { AffiliationModule } from './modules/affiliation/affiliation.module';
@@ -19,6 +20,7 @@ import { TripsModule } from './modules/trips/trips.module';
 @Module({
   imports: [
     AppConfigModule,
+    ObservabilityModule,
     EventEmitterModule.forRoot(),
     ScheduleModule.forRoot(),
     ThrottlerModule.forRootAsync({

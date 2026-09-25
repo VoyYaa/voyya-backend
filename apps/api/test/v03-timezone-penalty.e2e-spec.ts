@@ -10,6 +10,7 @@ import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.res
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import { TripsService } from '../src/modules/trips/trips.service';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { RequestContextService } from '../src/infrastructure/observability/request-context.service';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -63,6 +64,7 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
       fakeAssignment,
       tripClosing,
       activeCompanyResolver,
+      new RequestContextService(),
     );
 
     const municipality = await raw.municipality.upsert({

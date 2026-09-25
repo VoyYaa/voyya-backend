@@ -29,6 +29,7 @@ import {
 } from '@voyyaa/shared';
 import type { TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
+import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
@@ -63,6 +64,7 @@ export class TripsService {
     private readonly assignment: AssignmentService,
     private readonly tripClosing: TripClosingService,
     private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly requestContext: RequestContextService,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
@@ -328,6 +330,7 @@ export class TripsService {
   }
 
   private emitTripRequestCreated(tripRequest: TripRequest): void {
+    this.requestContext.set({ tripRequestId: tripRequest.tripRequestId });
     const event: TripRequestCreatedEvent = {
       trip_request_id: tripRequest.tripRequestId,
       passenger_id: tripRequest.passengerId,

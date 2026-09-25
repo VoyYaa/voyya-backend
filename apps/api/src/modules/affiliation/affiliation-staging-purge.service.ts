@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
+import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { FILE_STORAGE, type FileStorageProvider } from './ports/file-storage.port';
 
@@ -18,6 +19,10 @@ export class AffiliationStagingPurgeService {
 
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async purge(): Promise<void> {
+    await runMonitoredJob('affiliation-staging-purge', () => this.run());
+  }
+
+  private async run(): Promise<void> {
     try {
       if (!(await this.acquireLock())) return;
 

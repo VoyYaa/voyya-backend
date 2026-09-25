@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
+import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { DriverRepository } from './driver.repository';
 
@@ -18,6 +19,10 @@ export class DriverLocationPurgeService {
 
   @Cron(CronExpression.EVERY_HOUR)
   async purge(): Promise<void> {
+    await runMonitoredJob('driver-location-purge', () => this.run());
+  }
+
+  private async run(): Promise<void> {
     const purgeHours = this.env.get('LOCATION_PURGE_HOURS');
     if (purgeHours === 0) return;
 
