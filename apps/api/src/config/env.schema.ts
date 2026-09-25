@@ -81,6 +81,10 @@ export const EnvSchema = z.object({
   AFFILIATION_TOKEN_TTL_DAYS: z.coerce.number().int().positive().default(14),
   AFFILIATION_PORTAL_URL: z.string().url(),
 
+  EXPO_ACCESS_TOKEN: z.string().min(1).optional(),
+  PUSH_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  PUSH_TOKEN_TTL_DAYS: z.coerce.number().int().nonnegative().default(60),
+
   PG_TEST_URL: z.string().min(1).optional(),
 });
 

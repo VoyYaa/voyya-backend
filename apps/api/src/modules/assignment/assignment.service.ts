@@ -175,8 +175,6 @@ export class AssignmentService {
       expires_at: expiresAt.toISOString(),
       seconds_to_respond: ctx.params.acceptanceTimeoutSec,
     };
-    await this.push.sendAssignment({ driverId: cand.driverId }, notification);
-
     const created: AssignmentCreatedEvent = {
       assignment_id: assignment.assignmentId,
       trip_request_id: ctx.tripRequestId,
@@ -189,6 +187,8 @@ export class AssignmentService {
     this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_CREATED, created);
 
     this.armTimeout(assignment.assignmentId, ctx.tripRequestId, ctx.params.acceptanceTimeoutSec);
+
+    await this.push.sendAssignment({ driverId: cand.driverId }, notification);
   }
 
   private finishNoDriver(ctx: ChainContext): void {

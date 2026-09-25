@@ -6,4 +6,5 @@ export * from './contracts/admin';
 export * from './contracts/consent';
 export * from './contracts/documents';
 export * from './contracts/affiliation';
+export * from './contracts/push';
 export * from './domain/trip-state-machine';

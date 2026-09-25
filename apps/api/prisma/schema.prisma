@@ -81,6 +81,13 @@ enum ConsentPurpose {
   @@schema("auth")
 }
 
+enum PushTokenPlatform {
+  android
+  ios
+
+  @@schema("auth")
+}
+
 enum CompanyDocumentType {
   chamber_of_commerce
   tax_registry
@@ -180,6 +187,7 @@ model User {
   passenger                Passenger?
   driver                   Driver?
   refreshTokens            RefreshToken[]
+  pushTokens               PushToken[]
   systemParameterUpdates   SystemParameter[]
   fareConfigVersions       FareConfig[]      @relation("FareConfigAuthor")
   consentRecords           ConsentRecord[]
@@ -233,6 +241,21 @@ model ConsentRecord {
 
   @@unique([userId, purpose, noticeVersion])
   @@map("consent_record")
+  @@schema("auth")
+}
+
+model PushToken {
+  pushTokenId Int               @id @default(autoincrement()) @map("push_token_id")
+  userId      Int               @map("user_id")
+  token       String            @unique @map("token")
+  platform    PushTokenPlatform @map("platform")
+  createdAt   DateTime          @default(now()) @map("created_at")
+  lastSeenAt  DateTime          @default(now()) @map("last_seen_at")
+
+  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_token")
   @@schema("auth")
 }
 

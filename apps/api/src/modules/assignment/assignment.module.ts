@@ -11,12 +11,15 @@ import { DriverShiftService } from './driver-shift.service';
 import { OperationalParamsService } from './operational-params.service';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
 import { SMS_PROVIDER } from './ports/sms-provider.port';
-import { NoopPushProvider } from './providers/noop-push.provider';
+import { createPushProvider } from './providers/push.factory';
 import { createSmsProvider } from './providers/sms.factory';
+import { PushTokenController } from './push-token.controller';
+import { PushTokenPurgeService } from './push-token-purge.service';
+import { PushTokenRepository } from './push-token.repository';
 import { TripClosingService } from './trip-closing.service';
 
 @Module({
-  controllers: [AssignmentController, DriverController],
+  controllers: [AssignmentController, DriverController, PushTokenController],
   providers: [
     AssignmentService,
     AssignmentRepository,
@@ -26,7 +29,9 @@ import { TripClosingService } from './trip-closing.service';
     DriverShiftService,
     DriverRepository,
     DriverLocationPurgeService,
-    { provide: PUSH_PROVIDER, useClass: NoopPushProvider },
+    PushTokenRepository,
+    PushTokenPurgeService,
+    { provide: PUSH_PROVIDER, useFactory: createPushProvider, inject: [EnvService, PushTokenRepository] },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
   exports: [AssignmentService, TripClosingService, OperationalParamsService],
