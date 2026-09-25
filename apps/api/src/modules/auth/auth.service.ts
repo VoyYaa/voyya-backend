@@ -83,7 +83,7 @@ export class AuthService {
     const hash = await this.hasher.hash(code);
     await this.repo.createOtp(phone, hash, new Date(Date.now() + ttl * 1000));
 
-    await this.sms.send(dto.phone, `Tu código VoyYa es ${code}`);
+    await this.sms.send(dto.phone, `Tu código VoyYa es ${code}`, 'otp');
 
     return { sent: true, resend_in_sec: cooldown, expires_in_sec: ttl };
   }

@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { EnvService } from '../../../config/env.service';
-import type { SmsProvider } from '../ports/sms-provider.port';
+import type { SmsKind, SmsProvider } from '../ports/sms-provider.port';
 
 @Injectable()
 export class NoopSmsProvider implements SmsProvider {
@@ -8,9 +8,11 @@ export class NoopSmsProvider implements SmsProvider {
 
   constructor(private readonly env: EnvService) {}
 
-  async send(phone: string, message: string): Promise<void> {
+  async send(phone: string, message: string, kind?: SmsKind): Promise<void> {
     if (this.env.get('NODE_ENV') !== 'production') {
-      this.logger.log(`[sms:dev] to=${mask(phone)} message="${message}"`);
+      this.logger.log(
+        `[sms:dev] to=${mask(phone)} kind=${kind ?? 'unknown'} length=${message.length}`,
+      );
     }
   }
 }

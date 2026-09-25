@@ -255,6 +255,7 @@ export class AdminDriverService {
       await this.sms.send(
         phone,
         `VoyYa · cédula ${payload.nationalId} · PIN ${payload.pin}`,
+        'driver-credentials',
       );
     } catch {
       this.logger.warn(`PIN delivery failed for driver=${driverId}`);
