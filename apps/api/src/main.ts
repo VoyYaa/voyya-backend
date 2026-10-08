@@ -5,6 +5,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { Express } from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { parseCorsOrigins } from './config/cors-origins';
 import { validateEnv } from './config/env';
 import { EnvService } from './config/env.service';
 import { buildLogger } from './infrastructure/observability/logger.factory';
@@ -24,11 +25,7 @@ export function configureApp(
   app.use(helmet());
   (app.getHttpAdapter().getInstance() as Express).disable('x-powered-by');
 
-  const origins = env
-    .get('CORS_ORIGINS')
-    .split(',')
-    .map((o) => o.trim())
-    .filter((o) => o.length > 0);
+  const origins = parseCorsOrigins(env.get('CORS_ORIGINS'));
   app.enableCors({ origin: origins.length > 0 ? origins : false, credentials: true });
 
   app.useGlobalFilters(new AllExceptionsFilter());

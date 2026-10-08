@@ -28,21 +28,32 @@ function env(vals: Record<string, unknown>): EnvService {
 
 const tokens = {} as PushTokenRepository;
 
-describe('createPushProvider (selection by environment)', () => {
-  it('with EXPO_ACCESS_TOKEN -> ExpoPushProvider (even in production)', () => {
+describe('createPushProvider (explicit selection)', () => {
+  it('PUSH_PROVIDER=expo with token -> ExpoPushProvider (even in production)', () => {
     const p = createPushProvider(
-      env({ EXPO_ACCESS_TOKEN: 'expo-token', NODE_ENV: 'production' }),
+      env({ PUSH_PROVIDER: 'expo', EXPO_ACCESS_TOKEN: 'expo-token', NODE_ENV: 'production' }),
       tokens,
     );
     expect(p).toBeInstanceOf(ExpoPushProvider);
   });
 
-  it('without token in development -> NoopPushProvider', () => {
-    const p = createPushProvider(env({ NODE_ENV: 'development' }), tokens);
+  it('a token with PUSH_PROVIDER=noop in development -> NoopPushProvider', () => {
+    const p = createPushProvider(
+      env({ PUSH_PROVIDER: 'noop', EXPO_ACCESS_TOKEN: 'expo-token', NODE_ENV: 'development' }),
+      tokens,
+    );
     expect(p).toBeInstanceOf(NoopPushProvider);
   });
 
-  it('without token in production -> fail-fast (throw)', () => {
-    expect(() => createPushProvider(env({ NODE_ENV: 'production' }), tokens)).toThrow();
+  it('PUSH_PROVIDER=expo without a token -> throws', () => {
+    expect(() =>
+      createPushProvider(env({ PUSH_PROVIDER: 'expo', NODE_ENV: 'development' }), tokens),
+    ).toThrow();
+  });
+
+  it('noop in production -> fail-fast (throw)', () => {
+    expect(() =>
+      createPushProvider(env({ PUSH_PROVIDER: 'noop', NODE_ENV: 'production' }), tokens),
+    ).toThrow();
   });
 });

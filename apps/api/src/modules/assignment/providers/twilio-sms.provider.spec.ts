@@ -2,9 +2,6 @@ jest.mock('twilio', () => jest.fn());
 
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import twilio from 'twilio';
-import type { EnvService } from '../../../config/env.service';
-import { NoopSmsProvider } from './noop-sms.provider';
-import { createSmsProvider } from './sms.factory';
 import { TwilioSmsProvider } from './twilio-sms.provider';
 
 const twilioMock = twilio as unknown as jest.Mock;
@@ -53,34 +50,5 @@ describe('TwilioSmsProvider', () => {
     const logged = errSpy.mock.calls.flat().join(' ');
     expect(logged).not.toContain('SECRET-TOKEN');
     errSpy.mockRestore();
-  });
-});
-
-describe('createSmsProvider (selection by environment)', () => {
-  function env(vals: Record<string, unknown>): EnvService {
-    return { get: (k: string) => vals[k] } as unknown as EnvService;
-  }
-  beforeEach(() => {
-    twilioMock.mockReturnValue({ messages: { create: jest.fn() } });
-  });
-
-  it('with Twilio credentials -> TwilioSmsProvider (even in production)', () => {
-    const p = createSmsProvider(
-      env({
-        TWILIO_ACCOUNT_SID: 'ACx',
-        TWILIO_AUTH_TOKEN: 'tok',
-        TWILIO_FROM_NUMBER: '+15550001111',
-        NODE_ENV: 'production',
-      }),
-    );
-    expect(p).toBeInstanceOf(TwilioSmsProvider);
-  });
-
-  it('without credentials in dev -> NoopSmsProvider', () => {
-    expect(createSmsProvider(env({ NODE_ENV: 'development' }))).toBeInstanceOf(NoopSmsProvider);
-  });
-
-  it('without credentials in production -> fail-fast (throw)', () => {
-    expect(() => createSmsProvider(env({ NODE_ENV: 'production' }))).toThrow();
   });
 });

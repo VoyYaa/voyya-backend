@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { isHttpsOrigin, parseCorsOrigins } from './cors-origins';
 
-export const EnvSchema = z.object({
+const BaseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(3000),
   LOG_LEVEL: z
@@ -40,6 +41,10 @@ export const EnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
+  SMS_PROVIDER: z.enum(['twilio', 'noop']).default('noop'),
+  EMAIL_PROVIDER: z.enum(['sendgrid', 'noop']).default('noop'),
+  PUSH_PROVIDER: z.enum(['expo', 'noop']).default('noop'),
 
   TWILIO_ACCOUNT_SID: z
     .string()
@@ -90,6 +95,47 @@ export const EnvSchema = z.object({
   PUSH_TOKEN_TTL_DAYS: z.coerce.number().int().nonnegative().default(60),
 
   PG_TEST_URL: z.string().min(1).optional(),
+});
+
+const PROVIDER_REQUIREMENTS = [
+  { selector: 'SMS_PROVIDER', real: 'twilio', required: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_NUMBER'] },
+  { selector: 'EMAIL_PROVIDER', real: 'sendgrid', required: ['SENDGRID_API_KEY', 'EMAIL_FROM'] },
+  { selector: 'PUSH_PROVIDER', real: 'expo', required: ['EXPO_ACCESS_TOKEN'] },
+] as const;
+
+export const EnvSchema = BaseEnvSchema.superRefine((env, ctx) => {
+  const isProduction = env.NODE_ENV === 'production';
+
+  for (const { selector, real, required } of PROVIDER_REQUIREMENTS) {
+    if (isProduction && env[selector] !== real) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [selector],
+        message: `${selector} debe ser "${real}" en producción (el stub está prohibido)`,
+      });
+    }
+    if (env[selector] === real) {
+      for (const key of required.filter((k) => !env[k])) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} es obligatoria con ${selector}=${real}`,
+        });
+      }
+    }
+  }
+
+  if (isProduction) {
+    const origins = parseCorsOrigins(env.CORS_ORIGINS);
+    if (origins.length === 0 || !origins.every(isHttpsOrigin)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CORS_ORIGINS'],
+        message:
+          'CORS_ORIGINS debe ser una lista separada por comas de orígenes https sin ruta ni barra final (p.ej. https://admin.voyya.co)',
+      });
+    }
+  }
 });
 
 export type Env = z.infer<typeof EnvSchema>;
