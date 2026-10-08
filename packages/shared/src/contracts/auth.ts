@@ -184,13 +184,21 @@ export const AuthErrorCode = z.enum([
   'PIN_CHANGE_REQUIRED',
   'TEMPORARY_PIN_EXPIRED',
   'PIN_TOO_WEAK',
+  'INVALID_DATA',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
+
+export const ValidationIssue = z.object({
+  field: z.string(),
+  error: z.string(),
+});
+export type ValidationIssue = z.infer<typeof ValidationIssue>;
 
 export const AuthError = z.object({
   code: AuthErrorCode,
   message: z.string(),
   retry_in_sec: z.number().int().positive().optional(),
+  details: z.array(ValidationIssue).optional(),
 });
 export type AuthError = z.infer<typeof AuthError>;
 

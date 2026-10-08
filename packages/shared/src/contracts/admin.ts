@@ -480,6 +480,7 @@ export const AdminErrorCode = z.enum([
   'SETTLEMENT_BALANCE_CHANGED',
   'REMITTANCE_NOT_FOUND',
   'REMITTANCE_NOT_REVERSIBLE',
+  'SETTLEMENT_WEEK_IN_PROGRESS',
 ]);
 export type AdminErrorCode = z.infer<typeof AdminErrorCode>;
 
