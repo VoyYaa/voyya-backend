@@ -57,8 +57,12 @@ suite('CHECK user_platform_admin_has_no_company (ADR-021 §1.1) against real Pos
 
   afterAll(async () => {
     if (prisma) {
-      if (createdUserIds.length > 0) {
-        await prisma.user.deleteMany({ where: { userId: { in: createdUserIds } } });
+      const ownerUrl = process.env.PG_TEST_OWNER_URL;
+      if (createdUserIds.length > 0 && ownerUrl) {
+        const { PrismaClient: Client } = await import('@prisma/client');
+        const owner = new Client({ datasources: { db: { url: ownerUrl } } });
+        await owner.user.deleteMany({ where: { userId: { in: createdUserIds } } });
+        await owner.$disconnect();
       }
       await prisma.$disconnect();
     }

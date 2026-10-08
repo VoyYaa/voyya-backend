@@ -8,10 +8,12 @@ interface ReferencingKey {
 
 const SAFE_PREFIX = /^[A-Za-z0-9_-]+$/;
 const NO_TENANT = '0';
+const USER_TABLE = 'auth."user"';
 const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'admin.settlement_remittance',
   'admin.settlement_export',
   'auth.consent_record',
+  USER_TABLE,
 ]);
 const REVERSALS_FIRST = "kind = 'reversal'";
 
@@ -53,6 +55,7 @@ async function deleteWhere(
   where: string,
   path: ReadonlySet<string>,
   ownerDelete: OwnerDelete,
+  keepRoot = false,
 ): Promise<void> {
   const nextPath = new Set([...path, table]);
   for (const key of await referencingKeys(tx, table)) {
@@ -67,6 +70,7 @@ async function deleteWhere(
       ownerDelete,
     );
   }
+  if (keepRoot) return;
   if (APPEND_ONLY_TABLES.has(table)) {
     await ownerDelete(table, where);
     return;
@@ -138,8 +142,13 @@ async function purgeWith(
      WHERE m.name LIKE ${pattern}
   `;
   for (const { company_id: companyId } of companies) {
+    const userScope = `company_id = ${Number(companyId)}`;
     await withTenant(prisma, String(companyId), (tx) =>
-      deleteWhere(tx, 'tenancy.company', `company_id = ${Number(companyId)}`, new Set(), ownerDelete),
+      deleteWhere(tx, USER_TABLE, userScope, new Set(), ownerDelete, true),
+    );
+    await ownerDelete(USER_TABLE, userScope);
+    await withTenant(prisma, String(companyId), (tx) =>
+      deleteWhere(tx, 'tenancy.company', userScope, new Set(), ownerDelete),
     );
   }
 
