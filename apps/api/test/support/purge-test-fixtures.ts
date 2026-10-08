@@ -13,8 +13,12 @@ const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'admin.settlement_remittance',
   'admin.settlement_export',
   'auth.consent_record',
+  'trips.municipality_fare',
+  'admin.municipality_operational_params',
+  'tenancy.company_commission',
   USER_TABLE,
 ]);
+const SAFE_DANE_PREFIX = /^00[0-9]*$/;
 const REVERSALS_FIRST = "kind = 'reversal'";
 
 type OwnerDelete = (table: string, where: string) => Promise<void>;
@@ -114,17 +118,26 @@ function createOwnerSession(): OwnerSession {
   };
 }
 
+export interface PurgeOptions {
+  daneCodePrefix?: string;
+}
+
 export async function purgeMunicipalitiesByNamePrefix(
   prisma: PrismaClient,
   namePrefix: string,
+  options: PurgeOptions = {},
 ): Promise<void> {
   if (!SAFE_PREFIX.test(namePrefix) || !namePrefix.startsWith('_')) {
     throw new Error(`Unsafe fixture prefix: ${namePrefix}`);
   }
+  if (options.daneCodePrefix !== undefined && !SAFE_DANE_PREFIX.test(options.daneCodePrefix)) {
+    throw new Error(`Unsafe DANE code prefix (it must start with the reserved 00): ${options.daneCodePrefix}`);
+  }
   const pattern = `${namePrefix}%`;
+  const danePattern = options.daneCodePrefix === undefined ? null : `${options.daneCodePrefix}%`;
   const owner = createOwnerSession();
   try {
-    await purgeWith(prisma, pattern, owner.delete);
+    await purgeWith(prisma, pattern, danePattern, owner.delete);
   } finally {
     await owner.close();
   }
@@ -133,13 +146,26 @@ export async function purgeMunicipalitiesByNamePrefix(
 async function purgeWith(
   prisma: PrismaClient,
   pattern: string,
+  danePattern: string | null,
   ownerDelete: OwnerDelete,
 ): Promise<void> {
+  const municipalityScope =
+    danePattern === null
+      ? `name LIKE '${pattern}'`
+      : `name LIKE '${pattern}' OR dane_code LIKE '${danePattern}'`;
+  const municipalityIds = `SELECT municipality_id FROM tenancy.municipality WHERE ${municipalityScope}`;
+  await ownerDelete(
+    'assignment.assignment',
+    `trip_request_id IN (SELECT trip_request_id FROM trips.trip_request WHERE municipality_id IN (${municipalityIds}))`,
+  );
+  await ownerDelete('trips.trip_request', `municipality_id IN (${municipalityIds})`);
+
   const companies = await prisma.$queryRaw<Array<{ company_id: number }>>`
     SELECT c.company_id
       FROM tenancy.company c
       JOIN tenancy.municipality m ON m.municipality_id = c.municipality_id
      WHERE m.name LIKE ${pattern}
+        OR (${danePattern}::text IS NOT NULL AND m.dane_code LIKE ${danePattern})
   `;
   for (const { company_id: companyId } of companies) {
     const userScope = `company_id = ${Number(companyId)}`;
@@ -153,6 +179,6 @@ async function purgeWith(
   }
 
   await withTenant(prisma, NO_TENANT, (tx) =>
-    deleteWhere(tx, 'tenancy.municipality', `name LIKE '${pattern}'`, new Set(), ownerDelete),
+    deleteWhere(tx, 'tenancy.municipality', municipalityScope, new Set(), ownerDelete),
   );
 }

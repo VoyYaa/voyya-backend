@@ -6,27 +6,13 @@ import { resolveSeedDriverPin } from '../src/shared/seed-target';
 
 const prisma = new PrismaClient();
 
-const YARUMAL_ID = 1;
-const SANTA_ROSA_ID = 2;
+const YARUMAL_DANE_CODE = '05887';
 const BCRYPT_ROUNDS = 12;
 const DRIVER_PIN = resolveSeedDriverPin(process.env);
 const ADMIN_EMAIL = 'admin@voyya.co';
 const ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
 const PLATFORM_ADMIN_EMAIL = 'plataforma@voyya.co';
 const PLATFORM_ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
-
-const SANTA_ROSA_COVERAGE = {
-  type: 'Polygon',
-  coordinates: [
-    [
-      [-75.63, 6.63],
-      [-75.6, 6.63],
-      [-75.6, 6.66],
-      [-75.63, 6.66],
-      [-75.63, 6.63],
-    ],
-  ],
-};
 
 const YARUMAL_COVERAGE = {
   type: 'Polygon',
@@ -41,17 +27,21 @@ const YARUMAL_COVERAGE = {
   ],
 };
 
-const PARAMETERS: Array<[string, string]> = [
-  ['search_radius_km', '2'],
-  ['expansion_radius_km', '6'],
-  ['acceptance_timeout_sec', '15'],
-  ['max_auto_retries', '3'],
-  ['tiebreak_window_hours', '3'],
-  ['cancellation_window_min', '2'],
-  ['avg_speed_kmh', '20'],
-  ['no_show_grace_min', '5'],
-  ['location_stale_min', '15'],
-];
+const MUNICIPALITY_PARAMETERS = {
+  searchRadiusKm: 2,
+  expansionRadiusKm: 6,
+  acceptanceTimeoutSec: 15,
+  maxAutoRetries: 3,
+  tiebreakWindowHours: 3,
+  cancellationWindowMin: 2,
+  avgSpeedKmh: 20,
+  noShowGraceMin: 5,
+  locationStaleMin: 15,
+};
+const SEED_BASE_FARE = 8000;
+const SEED_NIGHT_SURCHARGE_PCT = 20;
+const SEED_HOLIDAY_SURCHARGE_PCT = 15;
+const SEED_COMMISSION_PCT = 8;
 
 async function countRows(table: 'auth."user"' | 'tenancy.company'): Promise<number> {
   const rows = await prisma.$queryRawUnsafe<Array<{ total: number }>>(
@@ -67,44 +57,78 @@ async function assertEmptyDestination(): Promise<void> {
   });
 }
 
+async function seedMunicipalityConfig(
+  municipalityId: number,
+  companyId: number,
+  authorId: number,
+): Promise<void> {
+  await prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.platform_session', 'on', true)`;
+
+    const openFare = await tx.municipalityFare.findFirst({
+      where: { municipalityId, serviceType: 'taxi', validTo: null },
+    });
+    if (!openFare) {
+      await tx.municipalityFare.create({
+        data: {
+          municipalityId,
+          serviceType: 'taxi',
+          baseFare: SEED_BASE_FARE,
+          nightSurchargePct: SEED_NIGHT_SURCHARGE_PCT,
+          holidaySurchargePct: SEED_HOLIDAY_SURCHARGE_PCT,
+          origin: 'platform_edit',
+          createdBy: authorId,
+        },
+      });
+    }
+
+    const openParams = await tx.municipalityOperationalParams.findFirst({
+      where: { municipalityId, serviceType: 'taxi', validTo: null },
+    });
+    if (!openParams) {
+      await tx.municipalityOperationalParams.create({
+        data: {
+          municipalityId,
+          serviceType: 'taxi',
+          ...MUNICIPALITY_PARAMETERS,
+          origin: 'platform_edit',
+          createdBy: authorId,
+        },
+      });
+    }
+
+    const openCommission = await tx.companyCommission.findFirst({
+      where: { companyId, validTo: null },
+    });
+    if (!openCommission) {
+      await tx.companyCommission.create({
+        data: {
+          companyId,
+          commissionPct: SEED_COMMISSION_PCT,
+          origin: 'platform_edit',
+          createdBy: authorId,
+        },
+      });
+    }
+  });
+}
+
 async function main(): Promise<void> {
   await assertEmptyDestination();
   const pinHash = await bcrypt.hash(DRIVER_PIN, BCRYPT_ROUNDS);
   const adminHash = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS);
   const platformAdminHash = await bcrypt.hash(PLATFORM_ADMIN_PASSWORD, BCRYPT_ROUNDS);
 
-  await prisma.municipality.upsert({
-    where: { municipalityId: YARUMAL_ID },
-    update: { coveragePolygon: YARUMAL_COVERAGE },
-    create: {
-      municipalityId: YARUMAL_ID,
-      name: 'Yarumal',
-      department: 'Antioquia',
-      coveragePolygon: YARUMAL_COVERAGE,
-      status: 'active',
-    },
+  const yarumal = await prisma.municipality.findUnique({ where: { daneCode: YARUMAL_DANE_CODE } });
+  if (!yarumal) {
+    throw new Error('The DIVIPOLA catalog is not loaded (no municipality 05887): run db:release first');
+  }
+  await prisma.municipality.update({
+    where: { municipalityId: yarumal.municipalityId },
+    data: { status: 'active', coveragePolygon: YARUMAL_COVERAGE },
   });
 
-  await prisma.municipality.upsert({
-    where: { municipalityId: SANTA_ROSA_ID },
-    update: { coveragePolygon: SANTA_ROSA_COVERAGE },
-    create: {
-      municipalityId: SANTA_ROSA_ID,
-      name: 'Santa Rosa de Osos',
-      department: 'Antioquia',
-      coveragePolygon: SANTA_ROSA_COVERAGE,
-      status: 'active',
-    },
-  });
-
-  await prisma.$executeRaw`
-    SELECT setval(
-      pg_get_serial_sequence('tenancy.municipality', 'municipality_id'),
-      (SELECT GREATEST(COALESCE(MAX(municipality_id), 0), 1) FROM tenancy.municipality)
-    )
-  `;
-
-  await prisma.user.upsert({
+  const platformAdmin = await prisma.user.upsert({
     where: { email: PLATFORM_ADMIN_EMAIL },
     update: { passwordHash: platformAdminHash, role: 'platform_admin', accountStatus: 'active' },
     create: {
@@ -125,27 +149,12 @@ async function main(): Promise<void> {
       legalName: 'Cootrayal',
       taxId: '900123456-1',
       type: 'cooperative',
-      municipalityId: YARUMAL_ID,
+      municipalityId: yarumal.municipalityId,
       status: 'active',
     },
   });
 
-  const fareConfig = await prisma.fareConfig.findFirst({
-    where: { companyId: company.companyId, serviceType: 'taxi' },
-  });
-  if (!fareConfig) {
-    await prisma.fareConfig.create({
-      data: { companyId: company.companyId, serviceType: 'taxi', baseFare: 8000 },
-    });
-  }
-
-  for (const [key, value] of PARAMETERS) {
-    await prisma.systemParameter.upsert({
-      where: { key_companyId: { key, companyId: company.companyId } },
-      update: { value },
-      create: { key, value, companyId: company.companyId },
-    });
-  }
+  await seedMunicipalityConfig(yarumal.municipalityId, company.companyId, platformAdmin.userId);
 
   const passengerUser = await prisma.user.upsert({
     where: { phone: '3001112233' },
@@ -240,7 +249,7 @@ async function main(): Promise<void> {
   }
 
   // eslint-disable-next-line no-console
-  console.log('Seed completed: Yarumal + Cootrayal + 3 available drivers.');
+  console.log('Seed completed: Yarumal (05887) + Cootrayal + municipality fare, parameters and commission + 3 available drivers.');
 }
 
 main()

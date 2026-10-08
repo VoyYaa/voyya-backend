@@ -22,7 +22,8 @@
     "db:seed": "ts-node prisma/seed.ts",
     "provision:company": "ts-node scripts/provision-company.ts",
     "provision:platform-admin": "ts-node scripts/create-platform-admin.ts",
-    "provision:municipality": "ts-node scripts/add-municipality.ts",
+    "provision:coverage": "ts-node scripts/activate-coverage.ts",
+    "catalog:build": "ts-node scripts/divipola/build-catalog-migration.ts",
     "ops:rotate-staff-password": "ts-node scripts/rotate-staff-password.ts"
   },
   "prisma": {
