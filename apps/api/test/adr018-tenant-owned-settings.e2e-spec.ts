@@ -237,6 +237,9 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
       });
 
       expect(companyX.companyId).not.toBe(companyY.companyId);
+      for (const companyId of [companyX.companyId, companyY.companyId]) {
+        if ((await commissionsOf(prisma, companyId)).length === 0) await seedCommission(prisma, companyId, 8);
+      }
       await ensureOpenFare(prisma, municipality.municipalityId, 'taxi', 8800);
       const [openFare] = await openFares(prisma, municipality.municipalityId);
 
@@ -310,6 +313,9 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
           status: 'active',
         },
       });
+      for (const companyId of [companyX.companyId, companyY.companyId]) {
+        if ((await commissionsOf(prisma, companyId)).length === 0) await seedCommission(prisma, companyId, 8);
+      }
       const lowerCompanyId = Math.max(companyX.companyId, companyY.companyId);
 
       const driverPhone = uniquePhone();

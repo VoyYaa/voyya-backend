@@ -17,6 +17,15 @@
 -- opened with app_voyya's runtime DATABASE_URL.
 -- =============================================================================
 
+\echo '== owner check: this file must run as a superuser or a BYPASSRLS role =='
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = current_user AND (rolsuper OR rolbypassrls)) THEN
+    RAISE EXCEPTION 'ADR-032: este archivo debe correr con el propietario de la base (superusuario o rol con BYPASSRLS); el rol conectado % no lo es y las lecturas bajo RLS darian un resultado falso', current_user;
+  END IF;
+END
+$$;
+
 \echo '== roles (the owner is noted; app_voyya must be rolsuper=f, rolbypassrls=f) =='
 SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname IN (current_user, 'app_voyya') ORDER BY rolname;
 
@@ -30,9 +39,67 @@ SELECT base_fare, night_surcharge_pct, holiday_surcharge_pct, commission_pct
   FROM trips.fare_config WHERE service_type = 'taxi' AND valid_to IS NULL;
 ROLLBACK;
 
-\echo '== open taxi commissions outside 0-50 (must be 0 rows) =='
-SELECT company_id, commission_pct FROM trips.fare_config
- WHERE service_type = 'taxi' AND valid_to IS NULL AND commission_pct NOT BETWEEN 0 AND 50;
+\echo '== open taxi commissions outside 0-50 (must raise nothing) =='
+DO $$
+DECLARE
+  c record;
+  out_of_range text;
+BEGIN
+  FOR c IN SELECT co.company_id FROM tenancy.company co ORDER BY co.company_id LOOP
+    PERFORM set_config('app.current_company', c.company_id::text, true);
+    IF EXISTS (SELECT 1 FROM trips.fare_config f
+                WHERE f.company_id = c.company_id
+                  AND f.service_type = 'taxi'
+                  AND f.valid_to IS NULL
+                  AND f.commission_pct NOT BETWEEN 0 AND 50) THEN
+      out_of_range := concat_ws(',', out_of_range, c.company_id::text);
+    END IF;
+  END LOOP;
+  IF out_of_range IS NOT NULL THEN
+    RAISE EXCEPTION 'ADR-032: companies with an open taxi commission outside 0-50: %; review before release', out_of_range;
+  END IF;
+END
+$$;
+
+\echo '== active companies without an open taxi fare_config (the migration would stop: must raise nothing) =='
+DO $$
+DECLARE
+  c record;
+  missing text;
+BEGIN
+  FOR c IN SELECT co.company_id FROM tenancy.company co WHERE co.status = 'active' ORDER BY co.company_id LOOP
+    PERFORM set_config('app.current_company', c.company_id::text, true);
+    IF NOT EXISTS (SELECT 1 FROM trips.fare_config f
+                    WHERE f.company_id = c.company_id AND f.service_type = 'taxi' AND f.valid_to IS NULL) THEN
+      missing := concat_ws(',', missing, c.company_id::text);
+    END IF;
+  END LOOP;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'ADR-032: active companies without an open commission: %; review before release', missing;
+  END IF;
+END
+$$;
+
+\echo '== municipalities with an active company but no open taxi fare (must raise nothing) =='
+DO $$
+DECLARE
+  c record;
+  missing text;
+BEGIN
+  FOR c IN SELECT DISTINCT ON (co.municipality_id) co.municipality_id, co.company_id
+             FROM tenancy.company co WHERE co.status = 'active'
+            ORDER BY co.municipality_id, co.company_id LOOP
+    PERFORM set_config('app.current_company', c.company_id::text, true);
+    IF NOT EXISTS (SELECT 1 FROM trips.fare_config f
+                    WHERE f.company_id = c.company_id AND f.service_type = 'taxi' AND f.valid_to IS NULL) THEN
+      missing := concat_ws(',', missing, c.municipality_id::text);
+    END IF;
+  END LOOP;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'ADR-032: municipalities with an active company but no open taxi fare: %; review before release', missing;
+  END IF;
+END
+$$;
 
 \echo '== B-2: fingerprint of the completed trips of Cootrayal, seen by app_voyya =='
 BEGIN READ ONLY;

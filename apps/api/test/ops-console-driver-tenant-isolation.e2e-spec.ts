@@ -286,7 +286,7 @@ suite('Ops/Admin console — driver reads and writes never cross company_id, eve
       expect(res.status).toBe(200);
       expect(res.body.trip_request_id).toBe(trip.tripRequestId);
       expect(res.body.pickup_address).toBe('_TenantDetail pickup');
-      expect(res.body.fare).toMatchObject({ total: 12000, commission: 960, currency: 'COP' });
+      expect(res.body.fare).toMatchObject({ total: 12000, commission: 0, currency: 'COP' });
       expect(res.body.driver).toBeNull();
       expect(res.body.timeline.requested_at).toEqual(expect.any(String));
       expect(res.body.passenger_phone_masked).toBe(`***${passengerPhone.slice(-4)}`);

@@ -365,9 +365,9 @@ suite('HU-MS-08 and HU-MS-09: the ops console is scoped by the trip company, wit
     }
   });
 
-  it('the detail shows the commission recorded on the trip: real for an accepted trip, 0 before the acceptance', async () => {
+  it('the detail shows commission 0 while the trip is not completed, accepted or not', async () => {
     const accepted = await detailOf(companyAId, 'a-accepted');
-    expect(accepted.body.fare.commission).toBe(800);
+    expect(accepted.body.fare.commission).toBe(0);
     const directed = await detailOf(companyAId, 'a-directed-pending');
     expect(directed.body.fare.commission).toBe(0);
   });

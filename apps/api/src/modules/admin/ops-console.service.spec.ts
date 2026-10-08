@@ -139,6 +139,38 @@ describe('OpsConsoleService.getTripRequest', () => {
     expect(JSON.stringify(result)).not.toContain('3001234567');
   });
 
+  it.each([
+    ['completed', 800],
+    ['cancelled_by_passenger', 0],
+    ['cancelled_by_driver', 0],
+    ['no_show', 0],
+    ['in_progress', 0],
+  ] as const)('shows fare.commission of a %s trip as %i', async (status, expected) => {
+    const { service, repo } = create();
+    repo.getTripRequest.mockResolvedValue({
+      tripRequestId: 1,
+      status,
+      statusSince: new Date(),
+      pickupAddress: 'A',
+      dropoffAddress: 'B',
+      fareTotal: 10000,
+      commission: 800,
+      passengerName: 'Ana Pérez',
+      passengerPhone: null,
+      driver: null,
+      requestedAt: new Date(),
+      assignedAt: null,
+      arrivedAt: null,
+      finishedAt: null,
+      cashCollectedAt: null,
+    });
+
+    const result = await service.getTripRequest(COMPANY_ID, 1);
+
+    expect(result.fare.commission).toBe(expected);
+    expect(result.fare.total).toBe(10000);
+  });
+
   it('trip request not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {
     const { service } = create();
     await expect(service.getTripRequest(COMPANY_ID, 999)).rejects.toBeInstanceOf(NotFoundException);

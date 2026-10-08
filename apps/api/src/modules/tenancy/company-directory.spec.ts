@@ -7,12 +7,21 @@ interface Row {
   legalName: string;
 }
 
-function buildDirectory(rows: Row[]): { directory: CompanyDirectory; findMany: jest.Mock; findUnique: jest.Mock } {
+function buildDirectory(rows: Row[]): {
+  directory: CompanyDirectory;
+  findMany: jest.Mock;
+  findUnique: jest.Mock;
+} {
   const findMany = jest.fn(async () => rows);
-  const findUnique = jest.fn(async ({ where }: { where: { companyId: number } }) =>
-    rows.find((row) => row.companyId === where.companyId) ?? null,
+  const findUnique = jest.fn(
+    async ({ where }: { where: { companyId: number } }) =>
+      rows.find((row) => row.companyId === where.companyId) ?? null,
   );
-  const prisma = { company: { findMany, findUnique } } as unknown as PrismaService;
+  const tx = { company: { findMany, findUnique } };
+  const prisma = {
+    ...tx,
+    runAsPlatform: async (fn: (t: typeof tx) => unknown) => fn(tx),
+  } as unknown as PrismaService;
   return { directory: new CompanyDirectory(prisma), findMany, findUnique };
 }
 
@@ -30,6 +39,7 @@ describe('CompanyDirectory', () => {
       municipalityId: 7,
       status: 'active',
       serviceTypes: { has: 'taxi' },
+      commissions: { some: { validTo: null } },
     });
   });
 
@@ -57,9 +67,14 @@ describe('CompanyDirectory', () => {
   });
 
   it('getRef names one company and returns null when it does not exist', async () => {
-    const { directory } = buildDirectory([{ companyId: 4, publicName: null, legalName: 'Legal SAS' }]);
+    const { directory } = buildDirectory([
+      { companyId: 4, publicName: null, legalName: 'Legal SAS' },
+    ]);
 
-    await expect(directory.getRef(4)).resolves.toEqual({ company_id: 4, display_name: 'Legal SAS' });
+    await expect(directory.getRef(4)).resolves.toEqual({
+      company_id: 4,
+      display_name: 'Legal SAS',
+    });
     await expect(directory.getRef(99)).resolves.toBeNull();
   });
 });

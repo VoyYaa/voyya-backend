@@ -27,6 +27,41 @@ BEGIN
 END
 $$;
 
+DO $$
+DECLARE
+  c record;
+  missing text;
+BEGIN
+  FOR c IN SELECT co.company_id FROM tenancy.company co WHERE co.status = 'active' ORDER BY co.company_id LOOP
+    PERFORM set_config('app.current_company', c.company_id::text, true);
+    IF NOT EXISTS (SELECT 1 FROM trips.fare_config f
+                    WHERE f.company_id = c.company_id AND f.service_type = 'taxi' AND f.valid_to IS NULL) THEN
+      missing := concat_ws(',', missing, c.company_id::text);
+    END IF;
+  END LOOP;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'ADR-032: active companies without an open commission: %', missing;
+  END IF;
+
+  missing := NULL;
+  FOR c IN
+    SELECT DISTINCT ON (co.municipality_id) co.municipality_id, co.company_id
+      FROM tenancy.company co
+     WHERE co.status = 'active'
+     ORDER BY co.municipality_id, co.company_id
+  LOOP
+    PERFORM set_config('app.current_company', c.company_id::text, true);
+    IF NOT EXISTS (SELECT 1 FROM trips.fare_config f
+                    WHERE f.company_id = c.company_id AND f.service_type = 'taxi' AND f.valid_to IS NULL) THEN
+      missing := concat_ws(',', missing, c.municipality_id::text);
+    END IF;
+  END LOOP;
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'ADR-032: municipalities with an active company but no open taxi fare: %', missing;
+  END IF;
+END
+$$;
+
 ALTER TABLE tenancy.company
   ADD COLUMN service_types trips."ServiceType"[] NOT NULL DEFAULT ARRAY['taxi']::trips."ServiceType"[],
   ADD COLUMN public_name TEXT,
@@ -158,29 +193,5 @@ BEGIN
      WHERE f.company_id = c.company_id AND f.service_type = 'taxi' AND f.valid_to IS NULL
     ON CONFLICT (source_fare_config_id) DO NOTHING;
   END LOOP;
-END
-$$;
-
-DO $$
-DECLARE
-  missing text;
-BEGIN
-  SELECT string_agg(co.company_id::text, ',') INTO missing
-    FROM tenancy.company co
-   WHERE co.status = 'active'
-     AND NOT EXISTS (SELECT 1 FROM tenancy.company_commission k
-                      WHERE k.company_id = co.company_id AND k.valid_to IS NULL);
-  IF missing IS NOT NULL THEN
-    RAISE EXCEPTION 'ADR-032: active companies without an open commission: %', missing;
-  END IF;
-
-  SELECT string_agg(DISTINCT co.municipality_id::text, ',') INTO missing
-    FROM tenancy.company co
-   WHERE co.status = 'active'
-     AND NOT EXISTS (SELECT 1 FROM trips.municipality_fare f
-                      WHERE f.municipality_id = co.municipality_id AND f.service_type = 'taxi' AND f.valid_to IS NULL);
-  IF missing IS NOT NULL THEN
-    RAISE EXCEPTION 'ADR-032: municipalities with an active company but no open taxi fare: %', missing;
-  END IF;
 END
 $$;

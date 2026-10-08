@@ -6,7 +6,10 @@ function fakePrisma(companies: Array<{ companyId: number }>): {
   findMany: jest.Mock;
 } {
   const findMany = jest.fn().mockResolvedValue(companies);
-  const prisma = { company: { findMany } } as unknown as PrismaService;
+  const tx = { company: { findMany } };
+  const prisma = {
+    runAsPlatform: async (fn: (t: typeof tx) => unknown) => fn(tx),
+  } as unknown as PrismaService;
   return { prisma, findMany };
 }
 
@@ -32,7 +35,12 @@ describe('DispatchCompaniesResolver.resolve', () => {
     await resolver.resolve(42);
 
     expect(findMany).toHaveBeenCalledWith({
-      where: { municipalityId: 42, status: 'active', AND: [] },
+      where: {
+        municipalityId: 42,
+        status: 'active',
+        commissions: { some: { validTo: null } },
+        AND: [],
+      },
       orderBy: { companyId: 'asc' },
       select: { companyId: true },
     });
@@ -53,7 +61,10 @@ describe('DispatchCompaniesResolver.resolve', () => {
 
     await resolver.resolve(1, { requestedCompanyId: 7, excludeCompanyId: 8 });
 
-    expect(findMany.mock.calls[0]?.[0].where.AND).toEqual([{ companyId: 7 }, { companyId: { not: 8 } }]);
+    expect(findMany.mock.calls[0]?.[0].where.AND).toEqual([
+      { companyId: 7 },
+      { companyId: { not: 8 } },
+    ]);
   });
 
   it('a null requested company means "any company"', async () => {
@@ -63,16 +74,5 @@ describe('DispatchCompaniesResolver.resolve', () => {
     await resolver.resolve(1, { requestedCompanyId: null });
 
     expect(findMany.mock.calls[0]?.[0].where.AND).toEqual([]);
-  });
-
-  it('uses the transaction client when one is given', async () => {
-    const outer = fakePrisma([]);
-    const inner = fakePrisma([{ companyId: 2 }]);
-    const resolver = new DispatchCompaniesResolver(outer.prisma);
-
-    await resolver.resolve(1, { tx: inner.prisma as never });
-
-    expect(inner.findMany).toHaveBeenCalledTimes(1);
-    expect(outer.findMany).not.toHaveBeenCalled();
   });
 });

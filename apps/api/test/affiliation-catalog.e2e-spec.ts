@@ -320,6 +320,7 @@ suite('Affiliation: DANE catalog, application with service types and public name
       ['a repeated service', { service_types: ['taxi', 'taxi'] }],
       ['a public name of one character', { public_name: 'A' }],
       ['a public name over 60 characters', { public_name: 'N'.repeat(61) }],
+      ['a public name with a bidirectional override', { public_name: `Taxis ${String.fromCodePoint(0x202e)}Norte` }],
     ])('%s answers 400 and creates nothing', async (_label, override) => {
       const municipalityId = await createMunicipality(prisma, PREFIX, { status: 'catalog' });
       const body = await applicationBody(municipalityId, override);

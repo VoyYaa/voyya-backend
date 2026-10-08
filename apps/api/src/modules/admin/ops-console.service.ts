@@ -77,7 +77,7 @@ export class OpsConsoleService {
       status_since: row.statusSince.toISOString(),
       pickup_address: row.pickupAddress,
       dropoff_address: row.dropoffAddress,
-      fare: toFareBreakdown(row.fareTotal, row.commission),
+      fare: toFareBreakdown(row.fareTotal, row.status === 'completed' ? row.commission : 0),
       passenger_name: row.passengerName,
       passenger_phone_masked: row.passengerPhone ? maskPhone(row.passengerPhone) : null,
       driver: row.driver

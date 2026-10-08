@@ -9,7 +9,19 @@ export type ActivatableServiceType = z.infer<typeof ActivatableServiceType>;
 export const ActiveServiceTypes = z.array(ActivatableServiceType).min(1);
 export type ActiveServiceTypes = z.infer<typeof ActiveServiceTypes>;
 
-export const CompanyPublicName = z.string().trim().min(2).max(60);
+const FORBIDDEN_NAME_CHARACTERS = /[\p{C}\u180E\u200B-\u200D\u2060\uFEFF]/u;
+
+export const CompanyPublicName = z
+  .string()
+  .trim()
+  .transform((value) => value.normalize('NFC'))
+  .pipe(
+    z
+      .string()
+      .min(2)
+      .max(60)
+      .refine((value) => !FORBIDDEN_NAME_CHARACTERS.test(value)),
+  );
 export type CompanyPublicName = z.infer<typeof CompanyPublicName>;
 
 export const CompanyRef = z.object({
