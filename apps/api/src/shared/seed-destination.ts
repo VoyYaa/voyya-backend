@@ -1,19 +1,19 @@
 export interface SeedDestinationCounts {
-  tripRequestCount: number;
+  userCount: number;
   companyCount: number;
 }
 
-export function findRealDataSignals(counts: SeedDestinationCounts): string[] {
+export function findNonEmptySignals(counts: SeedDestinationCounts): string[] {
   const signals: string[] = [];
-  if (counts.tripRequestCount > 0) signals.push('trips.trip_request has rows');
-  if (counts.companyCount > 1) signals.push('tenancy.company has more than one company');
+  if (counts.userCount > 0) signals.push('auth.user has rows');
+  if (counts.companyCount > 0) signals.push('tenancy.company has rows');
   return signals;
 }
 
-export function assertSeedDestinationLooksDisposable(counts: SeedDestinationCounts): void {
-  const signals = findRealDataSignals(counts);
+export function assertSeedDestinationIsEmpty(counts: SeedDestinationCounts): void {
+  const signals = findNonEmptySignals(counts);
   if (signals.length === 0) return;
   throw new Error(
-    `El seed se niega: el destino parece contener datos reales (${signals.join('; ')}). Si es una base local de pruebas, recréala con infra/scripts/bootstrap-db.sh`,
+    `El seed solo escribe en una base vacía y esta ya tiene datos (${signals.join('; ')}). Para volver a sembrar en local, borra el volumen de la base local (podman-compose down -v) y vuelve a correr infra/scripts/bootstrap-db.sh`,
   );
 }

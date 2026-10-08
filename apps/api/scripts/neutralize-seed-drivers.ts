@@ -42,6 +42,7 @@ export async function neutralizeSeedDrivers(
         FROM fleet.driver
        WHERE company_id = ${company.companyId}
          AND national_id = ANY(${input.nationalIds}::text[])
+       FOR UPDATE
     `;
     const driverIds = matched.map((row) => row.driver_id);
 

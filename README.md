@@ -102,8 +102,8 @@ del **rol dueño**.
    Es idempotente: se puede correr en cada release sin efectos secundarios.
 4. (Opcional, datos de prueba, **solo contra una base local**) `DATABASE_URL="$LOCAL_OWNER_URL" pnpm --filter @voyya/api run db:seed`
    — crea municipio Yarumal, empresa Cootrayal, admin y conductores. El seed se niega siempre si `DATABASE_URL`
-   no apunta a localhost/127.0.0.1/[::1], si `NODE_ENV=production` o si la base ya tiene viajes o más de una
-   empresa; no hay variable que lo habilite. Nunca contra el piloto: allí se usa `scripts/provision-company.ts`.
+   no apunta a localhost/127.0.0.1/[::1], si `NODE_ENV=production` o si la base ya tiene algún usuario o empresa (solo escribe en una base vacía; para resembrar en
+   local, borra el volumen y corre `infra/scripts/bootstrap-db.sh`); no hay variable que lo habilite. Nunca contra el piloto: allí se usa `scripts/provision-company.ts`.
    El seed inserta a través de varios tenants, así que corre con la credencial de dueño local, fuera del
    runtime de la aplicación.
 5. Apunta `DATABASE_URL` (variable de la aplicación, en Railway o en `.env`) al rol **`app_voyya`**.
