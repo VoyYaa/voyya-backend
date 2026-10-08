@@ -18,3 +18,12 @@ Requisitos:
 Limites conocidos del entorno: el PIN temporal y la contrasena temporal salen redactados o solo por correo, asi que los
 scripts los reemplazan por SQL como superusuario; los limites de frecuencia de la API (3 OTP por minuto, 3 solicitudes de
 afiliacion por hora) se absorben con reintentos y reiniciando la API entre corridas.
+
+## Migracion desde el estado del piloto (HU-MS-16)
+
+`migration-upgrade-pilot-data.sql` siembra, sobre una base con solo las migraciones y el SQL de `main`, el estado de Cootrayal en Yarumal
+(tarifa 8.500 con 25/15 %, comision 7,5 %, ocho parametros propios, un viaje completado con cobro, uno cancelado y uno pendiente).
+Procedimiento: copiar `prisma/` a un directorio temporal sin las tres migraciones nuevas, `prisma migrate deploy --schema <copia>`,
+aplicar el `00_postgis_rls.sql` y el `01_provision_app_role.sql` de `main`, sembrar este archivo, ejecutar `verify-adr-032-baseline.sql`,
+correr `db:release` y el `01_provision_app_role.sql` de la rama, y ejecutar `verify-adr-032.sql`. La huella de los viajes completados y
+los tres valores de tarifa deben coincidir antes y despues.
