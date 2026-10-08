@@ -1,11 +1,13 @@
 import { Module } from '@nestjs/common';
 import { EnvService } from '../../config/env.service';
+import { AuthModule } from '../auth/auth.module';
 import { AssignmentController } from './assignment.controller';
 import { AssignmentRepository } from './assignment.repository';
 import { AssignmentService } from './assignment.service';
 import { CandidateRepository } from './candidate.repository';
 import { DriverController } from './driver.controller';
 import { DriverRepository } from './driver.repository';
+import { ConsentRevokedListener } from './consent-revoked.listener';
 import { DriverLocationPurgeService } from './driver-location-purge.service';
 import { DriverShiftService } from './driver-shift.service';
 import { OperationalParamsService } from './operational-params.service';
@@ -19,6 +21,7 @@ import { PushTokenRepository } from './push-token.repository';
 import { TripClosingService } from './trip-closing.service';
 
 @Module({
+  imports: [AuthModule],
   controllers: [AssignmentController, DriverController, PushTokenController],
   providers: [
     AssignmentService,
@@ -29,6 +32,7 @@ import { TripClosingService } from './trip-closing.service';
     DriverShiftService,
     DriverRepository,
     DriverLocationPurgeService,
+    ConsentRevokedListener,
     PushTokenRepository,
     PushTokenPurgeService,
     { provide: PUSH_PROVIDER, useFactory: createPushProvider, inject: [EnvService, PushTokenRepository] },

@@ -81,6 +81,27 @@ enum ConsentPurpose {
   @@schema("auth")
 }
 
+enum ConsentAction {
+  granted
+  revoked
+
+  @@schema("auth")
+}
+
+enum NoticeAudience {
+  driver
+  passenger
+
+  @@schema("auth")
+}
+
+enum RemittanceEntryKind {
+  remittance
+  reversal
+
+  @@schema("admin")
+}
+
 enum PushTokenPlatform {
   android
   ios
@@ -138,16 +159,18 @@ model Company {
   membershipFee    Decimal?      @map("membership_fee") @db.Decimal(12, 2)
   registeredAt     DateTime      @default(now()) @map("registered_at")
 
-  municipality     Municipality       @relation(fields: [municipalityId], references: [municipalityId])
-  drivers          Driver[]
-  vehicles         Vehicle[]
-  assignments      Assignment[]
-  staff            User[]
-  fareConfigs      FareConfig[]
-  systemParameters SystemParameter[]
-  documents        CompanyDocument[]
-  reviews          CompanyReview[]   @relation("CompanyReviewSubject")
-  driverDocuments  DriverDocument[]
+  municipality      Municipality           @relation(fields: [municipalityId], references: [municipalityId])
+  drivers           Driver[]
+  vehicles          Vehicle[]
+  assignments       Assignment[]
+  staff             User[]
+  fareConfigs       FareConfig[]
+  systemParameters  SystemParameter[]
+  documents         CompanyDocument[]
+  reviews           CompanyReview[]        @relation("CompanyReviewSubject")
+  driverDocuments   DriverDocument[]
+  remittances       SettlementRemittance[]
+  settlementExports SettlementExport[]
 
   @@index([municipalityId])
   @@index([status, registeredAt])
@@ -183,16 +206,18 @@ model User {
   blockedUntil   DateTime? @map("blocked_until")
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  company                  Company?          @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
+  company                  Company?               @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
   passenger                Passenger?
   driver                   Driver?
   refreshTokens            RefreshToken[]
   pushTokens               PushToken[]
   systemParameterUpdates   SystemParameter[]
-  fareConfigVersions       FareConfig[]      @relation("FareConfigAuthor")
+  fareConfigVersions       FareConfig[]           @relation("FareConfigAuthor")
   consentRecords           ConsentRecord[]
-  verifiedCompanyDocuments CompanyDocument[] @relation("CompanyDocumentVerifier")
-  companyReviews           CompanyReview[]   @relation("CompanyReviewer")
+  remittancesRecorded      SettlementRemittance[] @relation("SettlementRemittanceRecorder")
+  settlementExports        SettlementExport[]     @relation("SettlementExporter")
+  verifiedCompanyDocuments CompanyDocument[]      @relation("CompanyDocumentVerifier")
+  companyReviews           CompanyReview[]        @relation("CompanyReviewer")
 
   @@index([companyId, role])
   @@map("user")
@@ -230,16 +255,34 @@ model OtpCode {
   @@schema("auth")
 }
 
+model ConsentNotice {
+  purpose       ConsentPurpose @map("purpose")
+  noticeVersion String         @map("notice_version")
+  audience      NoticeAudience @map("audience")
+  sha256        String         @unique @map("sha256") @db.Char(64)
+  body          String         @map("body")
+  registeredAt  DateTime       @default(dbgenerated("timezone('utc', now())")) @map("registered_at")
+
+  records ConsentRecord[]
+
+  @@id([purpose, noticeVersion, audience])
+  @@map("consent_notice")
+  @@schema("auth")
+}
+
 model ConsentRecord {
-  consentRecordId Int            @id @default(autoincrement()) @map("consent_record_id")
-  userId          Int            @map("user_id")
-  purpose         ConsentPurpose @map("purpose")
-  noticeVersion   String         @map("notice_version")
-  grantedAt       DateTime       @default(now()) @map("granted_at")
+  consentRecordId Int             @id @default(autoincrement()) @map("consent_record_id")
+  userId          Int             @map("user_id")
+  purpose         ConsentPurpose  @map("purpose")
+  noticeVersion   String          @map("notice_version")
+  audience        NoticeAudience? @map("audience")
+  action          ConsentAction   @default(granted) @map("action")
+  recordedAt      DateTime        @default(dbgenerated("timezone('utc', now())")) @map("recorded_at")
 
-  user User @relation(fields: [userId], references: [userId], onDelete: Cascade)
+  user   User           @relation(fields: [userId], references: [userId], onDelete: Restrict)
+  notice ConsentNotice? @relation(fields: [purpose, noticeVersion, audience], references: [purpose, noticeVersion, audience], onDelete: Restrict, onUpdate: Restrict)
 
-  @@unique([userId, purpose, noticeVersion])
+  @@index([userId, purpose, recordedAt(sort: Desc), consentRecordId(sort: Desc)])
   @@map("consent_record")
   @@schema("auth")
 }
@@ -273,28 +316,32 @@ model Passenger {
 }
 
 model Driver {
-  driverId          Int          @id @map("driver_id")
-  companyId         Int          @map("company_id")
-  nationalId        String       @unique @map("national_id")
-  pin               String       @map("pin")
-  license           String?      @map("license")
-  averageRating     Float?       @map("average_rating")
-  status            DriverStatus @default(off_shift) @map("status")
-  failedAttempts    Int          @default(0) @map("failed_attempts")
-  blockedUntil      DateTime?    @map("blocked_until")
-  currentLat        Float?       @map("current_lat")
-  currentLng        Float?       @map("current_lng")
-  locationUpdatedAt DateTime?    @map("location_updated_at")
-  currentVehicleId  Int?         @map("current_vehicle_id")
-  pinDeliveredAt    DateTime?    @map("pin_delivered_at")
-  createdAt         DateTime     @default(now()) @map("created_at")
-  updatedAt         DateTime     @updatedAt @map("updated_at")
+  driverId              Int          @id @map("driver_id")
+  companyId             Int          @map("company_id")
+  nationalId            String       @unique @map("national_id")
+  pin                   String       @map("pin")
+  license               String?      @map("license")
+  averageRating         Float?       @map("average_rating")
+  status                DriverStatus @default(off_shift) @map("status")
+  failedAttempts        Int          @default(0) @map("failed_attempts")
+  blockedUntil          DateTime?    @map("blocked_until")
+  currentLat            Float?       @map("current_lat")
+  currentLng            Float?       @map("current_lng")
+  locationUpdatedAt     DateTime?    @map("location_updated_at")
+  currentVehicleId      Int?         @map("current_vehicle_id")
+  pinDeliveredAt        DateTime?    @map("pin_delivered_at")
+  pinMustChange         Boolean      @default(true) @map("pin_must_change")
+  temporaryPinExpiresAt DateTime?    @map("temporary_pin_expires_at")
+  pinChangedAt          DateTime?    @map("pin_changed_at")
+  createdAt             DateTime     @default(now()) @map("created_at")
+  updatedAt             DateTime     @updatedAt @map("updated_at")
 
-  user           User             @relation(fields: [driverId], references: [userId], onDelete: Cascade)
-  company        Company          @relation(fields: [companyId], references: [companyId])
-  currentVehicle Vehicle?         @relation("DriverCurrentVehicle", fields: [currentVehicleId], references: [vehicleId])
+  user           User                   @relation(fields: [driverId], references: [userId], onDelete: Cascade)
+  company        Company                @relation(fields: [companyId], references: [companyId])
+  currentVehicle Vehicle?               @relation("DriverCurrentVehicle", fields: [currentVehicleId], references: [vehicleId])
   assignments    Assignment[]
   documents      DriverDocument[]
+  remittances    SettlementRemittance[]
 
   @@index([companyId, status])
   @@map("driver")
@@ -325,12 +372,12 @@ model TripRequest {
   municipalityId    Int           @map("municipality_id")
   serviceType       ServiceType   @default(taxi) @map("service_type")
   paymentMethod     PaymentMethod @default(cash) @map("payment_method")
-  pickupAddress     String        @map("pickup_address")
-  dropoffAddress    String        @map("dropoff_address")
-  pickupLat         Float         @map("pickup_lat")
-  pickupLng         Float         @map("pickup_lng")
-  dropoffLat        Float         @map("dropoff_lat")
-  dropoffLng        Float         @map("dropoff_lng")
+  pickupAddress     String?       @map("pickup_address")
+  dropoffAddress    String?       @map("dropoff_address")
+  pickupLat         Float?        @map("pickup_lat")
+  pickupLng         Float?        @map("pickup_lng")
+  dropoffLat        Float?        @map("dropoff_lat")
+  dropoffLng        Float?        @map("dropoff_lng")
   requestedAt       DateTime      @default(now()) @map("requested_at")
   status            TripStatus    @default(pending_assignment) @map("status")
   assignedAt        DateTime?     @map("assigned_at")
@@ -344,6 +391,7 @@ model TripRequest {
   netEarnings       Decimal?      @map("net_earnings") @db.Decimal(12, 2)
   cashCollectedAt   DateTime?     @map("cash_collected_at")
   penaltyRecorded   Boolean       @default(false) @map("penalty_recorded")
+  locationPurgedAt  DateTime?     @map("location_purged_at")
   updatedAt         DateTime      @updatedAt @map("updated_at")
 
   passenger    Passenger    @relation(fields: [passengerId], references: [passengerId])
@@ -487,4 +535,44 @@ model DriverDocument {
   @@index([companyId, expiresAt])
   @@map("driver_document")
   @@schema("fleet")
+}
+
+model SettlementRemittance {
+  remittanceId         Int                 @id @default(autoincrement()) @map("remittance_id")
+  companyId            Int                 @map("company_id")
+  driverId             Int                 @map("driver_id")
+  weekStart            DateTime            @map("week_start") @db.Date
+  kind                 RemittanceEntryKind @map("kind")
+  amount               Decimal             @map("amount") @db.Decimal(12, 2)
+  reversesRemittanceId Int?                @unique @map("reverses_remittance_id")
+  recordedBy           Int                 @map("recorded_by")
+  recordedAt           DateTime            @default(dbgenerated("timezone('utc', now())")) @map("recorded_at")
+
+  company        Company               @relation(fields: [companyId], references: [companyId])
+  driver         Driver                @relation(fields: [driverId], references: [driverId])
+  recordedByUser User                  @relation("SettlementRemittanceRecorder", fields: [recordedBy], references: [userId], onDelete: Restrict)
+  reverses       SettlementRemittance? @relation("RemittanceReversal", fields: [reversesRemittanceId], references: [remittanceId], onDelete: Restrict)
+  reversedBy     SettlementRemittance? @relation("RemittanceReversal")
+
+  @@index([companyId, driverId, weekStart])
+  @@map("settlement_remittance")
+  @@schema("admin")
+}
+
+model SettlementExport {
+  exportId   Int      @id @default(autoincrement()) @map("export_id")
+  companyId  Int      @map("company_id")
+  exportedBy Int      @map("exported_by")
+  fromDate   DateTime @map("from_date") @db.Date
+  toDate     DateTime @map("to_date") @db.Date
+  driverId   Int?     @map("driver_id")
+  rowCount   Int      @map("row_count")
+  exportedAt DateTime @default(dbgenerated("timezone('utc', now())")) @map("exported_at")
+
+  company        Company @relation(fields: [companyId], references: [companyId])
+  exportedByUser User    @relation("SettlementExporter", fields: [exportedBy], references: [userId], onDelete: Restrict)
+
+  @@index([companyId, exportedAt])
+  @@map("settlement_export")
+  @@schema("admin")
 }

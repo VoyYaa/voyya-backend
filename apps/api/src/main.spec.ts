@@ -1,5 +1,6 @@
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { configureApp } from './main';
+import { configureApp, runBootstrap } from './main';
+import * as sentry from './infrastructure/observability/sentry';
 import type { EnvService } from './config/env.service';
 import type { RequestContextService } from './infrastructure/observability/request-context.service';
 
@@ -45,7 +46,7 @@ describe('configureApp', () => {
   it('no CORS_ORIGINS configured -> origin: false (blocks all cross-origin browsers)', () => {
     const { app, raw } = fakeApp();
     configureApp(app, fakeEnv(''), fakeRequestContext());
-    expect(raw.enableCors).toHaveBeenCalledWith({ origin: false, credentials: true });
+    expect(raw.enableCors).toHaveBeenCalledWith({ origin: false, credentials: true, exposedHeaders: ['Content-Disposition'] });
   });
 
   it('CORS_ORIGINS with entries -> trims and forwards them as the allow-list', () => {
@@ -54,6 +55,54 @@ describe('configureApp', () => {
     expect(raw.enableCors).toHaveBeenCalledWith({
       origin: ['https://a.test', 'https://b.test'],
       credentials: true,
+      exposedHeaders: ['Content-Disposition'],
     });
+  });
+});
+
+describe('runBootstrap (CM-16)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it('a fatal startup error exits with code 1 after reporting and flushing', async () => {
+    const capture = jest.spyOn(sentry, 'captureError').mockImplementation(() => undefined);
+    const flush = jest.spyOn(sentry.Sentry, 'flush').mockResolvedValue(true);
+    const exit = jest.fn();
+    const failure = new Error('footprint mismatch');
+
+    await runBootstrap(() => Promise.reject(failure), exit);
+
+    expect(capture).toHaveBeenCalledWith(failure);
+    expect(flush).toHaveBeenCalledWith(2000);
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('still exits with code 1 when the Sentry flush itself fails', async () => {
+    jest.spyOn(sentry, 'captureError').mockImplementation(() => undefined);
+    jest.spyOn(sentry.Sentry, 'flush').mockRejectedValue(new Error('flush down'));
+    const exit = jest.fn();
+
+    await runBootstrap(() => Promise.reject(new Error('db down')), exit);
+
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('a non-Error rejection is wrapped and still exits with code 1', async () => {
+    const capture = jest.spyOn(sentry, 'captureError').mockImplementation(() => undefined);
+    jest.spyOn(sentry.Sentry, 'flush').mockResolvedValue(true);
+    const exit = jest.fn();
+
+    await runBootstrap(() => Promise.reject('boom'), exit);
+
+    expect(capture).toHaveBeenCalledWith(expect.objectContaining({ message: 'boom' }));
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('a successful startup never exits', async () => {
+    const exit = jest.fn();
+
+    await runBootstrap(() => Promise.resolve(), exit);
+
+    expect(exit).not.toHaveBeenCalled();
   });
 });

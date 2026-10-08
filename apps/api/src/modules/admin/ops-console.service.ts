@@ -14,8 +14,10 @@ import {
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { OperationalParamsService } from '../assignment/operational-params.service';
+import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
-import { OpsConsoleRepository, type OpsDriverDbRow } from './ops-console.repository';
+import { driverPinStatus } from './driver-pin-status';
+import { OpsConsoleRepository, type OpsDriverDbRow, type OpsTripScope } from './ops-console.repository';
 
 @Injectable()
 export class OpsConsoleService {
@@ -23,18 +25,19 @@ export class OpsConsoleService {
     private readonly prisma: PrismaService,
     private readonly repo: OpsConsoleRepository,
     private readonly companyMunicipality: CompanyMunicipalityResolver,
+    private readonly activeCompany: ActiveCompanyResolver,
     private readonly params: OperationalParamsService,
   ) {}
 
   async listTripRequests(companyId: number, query: OpsQueueQuery): Promise<OpsQueueResponse> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
+    const scope = await this.resolveScope(companyId);
     const statuses: readonly TripStatus[] | null =
       query.status === 'all' ? null : OPS_QUEUE_FILTER_STATUSES[query.status];
 
     const rows = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.listTripRequests(
         tx,
-        municipalityId,
+        scope,
         statuses,
         query.limit,
         OPS_QUEUE_TERMINAL_WINDOW_SEC,
@@ -60,9 +63,9 @@ export class OpsConsoleService {
   }
 
   async getTripRequest(companyId: number, tripRequestId: number): Promise<OpsTripDetail> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
+    const scope = await this.resolveScope(companyId);
     const row = await this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.getTripRequest(tx, municipalityId, tripRequestId),
+      this.repo.getTripRequest(tx, scope, tripRequestId),
     );
     if (!row) {
       throw new NotFoundException({
@@ -92,6 +95,12 @@ export class OpsConsoleService {
       },
       cash_collected_at: row.cashCollectedAt ? row.cashCollectedAt.toISOString() : null,
     };
+  }
+
+  private async resolveScope(companyId: number): Promise<OpsTripScope> {
+    const municipalityId = await this.companyMunicipality.resolve(companyId);
+    const dispatchTarget = await this.activeCompany.resolve(municipalityId);
+    return { companyId, municipalityId, receivesUnassigned: dispatchTarget === companyId };
   }
 
   async listDrivers(companyId: number, query: OpsDriverQuery): Promise<OpsDriverListResponse> {
@@ -142,6 +151,9 @@ function toOpsDriverRow(row: OpsDriverDbRow, staleMin: number, now: number): Ops
     location_updated_at: row.locationUpdatedAt ? row.locationUpdatedAt.toISOString() : null,
     location_stale: isLocationStale(row.locationUpdatedAt, staleMin, now),
     pin_delivered_at: row.pinDeliveredAt ? row.pinDeliveredAt.toISOString() : null,
+    pin_status: driverPinStatus(row, now),
+    temporary_pin_expires_at:
+      row.pinMustChange && row.temporaryPinExpiresAt ? row.temporaryPinExpiresAt.toISOString() : null,
     created_at: row.createdAt.toISOString(),
   };
 }

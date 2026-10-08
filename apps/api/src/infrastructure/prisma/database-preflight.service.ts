@@ -9,6 +9,7 @@ export interface DatabasePreflightResult {
   hasGeoColumns: boolean;
   hasSingleTakeIndex: boolean;
   hasForcedRls: boolean;
+  hasSafeTripProbe: boolean;
 }
 
 const PREFLIGHT_QUERY = `
@@ -35,8 +36,18 @@ const PREFLIGHT_QUERY = `
             (('fleet','driver'), ('fleet','vehicle'), ('assignment','assignment'),
              ('trips','fare_config'), ('admin','system_parameter'),
              ('tenancy','company_document'), ('tenancy','company_review'),
-             ('fleet','driver_document'))
-    ) = 8 AS "hasForcedRls"
+             ('fleet','driver_document'),
+             ('admin','settlement_remittance'), ('admin','settlement_export'))
+    ) = 10 AS "hasForcedRls",
+    EXISTS (
+      SELECT 1 FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      JOIN pg_roles r ON r.oid = p.proowner
+      WHERE n.nspname = 'assignment' AND p.proname = 'trip_has_assignment'
+        AND p.prosecdef
+        AND (r.rolsuper OR r.rolbypassrls)
+        AND COALESCE(p.proconfig, ARRAY[]::text[]) @> ARRAY['row_security=off']
+    ) AS "hasSafeTripProbe"
 `;
 
 @Injectable()
@@ -95,6 +106,7 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
     if (!result.hasGeoColumns) failed.push('has_geo_columns');
     if (!result.hasSingleTakeIndex) failed.push('has_single_take_index');
     if (!result.hasForcedRls) failed.push('has_forced_rls');
+    if (!result.hasSafeTripProbe) failed.push('has_safe_trip_probe');
     return failed;
   }
 }

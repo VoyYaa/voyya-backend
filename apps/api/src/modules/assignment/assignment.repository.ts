@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Assignment, Prisma } from '@prisma/client';
 import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { requireTripLocation } from '../../shared/require-trip-location';
 
 export interface TripRequestInfo {
   tripRequestId: number;
@@ -70,7 +71,14 @@ export class AssignmentRepository {
       },
     });
     if (!t) return null;
-    return { ...t, fare: Number(t.fare) };
+    return {
+      ...t,
+      pickupAddress: requireTripLocation(t.pickupAddress),
+      dropoffAddress: requireTripLocation(t.dropoffAddress),
+      pickupLat: requireTripLocation(t.pickupLat),
+      pickupLng: requireTripLocation(t.pickupLng),
+      fare: Number(t.fare),
+    };
   }
 
   async getPassengerData(tripRequestId: number): Promise<PassengerData | null> {
@@ -88,7 +96,7 @@ export class AssignmentRepository {
     return {
       name: `${u.firstName} ${u.lastName}`.trim(),
       phone: u.phone,
-      pickupAddress: t.pickupAddress,
+      pickupAddress: requireTripLocation(t.pickupAddress),
     };
   }
 
@@ -205,10 +213,10 @@ export class AssignmentRepository {
         assignmentId: r.assignmentId,
         tripRequestId: r.tripRequestId,
         expiresAt: r.expiresAt,
-        pickupAddress: r.tripRequest.pickupAddress,
-        dropoffAddress: r.tripRequest.dropoffAddress,
-        pickupLat: r.tripRequest.pickupLat,
-        pickupLng: r.tripRequest.pickupLng,
+        pickupAddress: requireTripLocation(r.tripRequest.pickupAddress),
+        dropoffAddress: requireTripLocation(r.tripRequest.dropoffAddress),
+        pickupLat: requireTripLocation(r.tripRequest.pickupLat),
+        pickupLng: requireTripLocation(r.tripRequest.pickupLng),
         fare: Number(r.tripRequest.fare),
       }));
   }
@@ -249,7 +257,10 @@ export class AssignmentRepository {
   ): Promise<void> {
     await tx.$executeRaw`
       UPDATE fleet.driver
-         SET status = 'available', updated_at = (now() AT TIME ZONE 'UTC')
+         SET status = CASE WHEN current_lat IS NULL OR current_lng IS NULL
+                           THEN 'off_shift'::fleet."DriverStatus"
+                           ELSE 'available'::fleet."DriverStatus" END,
+             updated_at = (now() AT TIME ZONE 'UTC')
        WHERE driver_id = ${driverId}
          AND status = 'on_trip'
          AND company_id = ${companyId}

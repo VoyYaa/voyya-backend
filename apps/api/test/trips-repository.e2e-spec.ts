@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient, TripRequest } from '@prisma/client';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createFreshPassenger } from './support/fresh-passenger';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -97,7 +98,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
   async function makeTrip(status: FixtureStatus): Promise<TripRequest> {
     return raw.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(raw),
         municipalityId,
         serviceType: 'taxi',
         paymentMethod: 'cash',

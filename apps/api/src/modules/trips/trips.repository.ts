@@ -1,6 +1,11 @@
 import { Injectable } from '@nestjs/common';
-import type { FareConfig, TripRequest } from '@prisma/client';
-import { type TripStatus, ACTIVE_TRIP_STATUSES, type ServiceType } from '@voyyaa/shared';
+import type { FareConfig, Prisma, TripRequest } from '@prisma/client';
+import {
+  type TripStatus,
+  ACTIVE_TRIP_STATUSES,
+  type ServiceType,
+  TERMINAL_TRIP_STATUSES,
+} from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
 export type TripTransitionOutcome<T> =
@@ -27,6 +32,35 @@ export interface CreateTripRequestData {
 @Injectable()
 export class TripsRepository {
   constructor(private readonly prisma: PrismaService) {}
+
+  async purgeCoordinatesBatch(
+    tx: Prisma.TransactionClient,
+    retentionDays: number,
+    batchSize: number,
+  ): Promise<number> {
+    const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
+      WITH batch AS (
+        SELECT trip_request_id
+          FROM trips.trip_request
+         WHERE location_purged_at IS NULL
+           AND status = ANY(${[...TERMINAL_TRIP_STATUSES]}::trips."TripStatus"[])
+           AND COALESCE(finished_at, requested_at)
+               < (now() AT TIME ZONE 'UTC') - make_interval(days => ${retentionDays}::int)
+         ORDER BY trip_request_id
+         LIMIT ${batchSize}
+         FOR UPDATE SKIP LOCKED
+      )
+      UPDATE trips.trip_request t
+         SET pickup_lat = NULL, pickup_lng = NULL,
+             dropoff_lat = NULL, dropoff_lng = NULL,
+             pickup_address = NULL, dropoff_address = NULL,
+             location_purged_at = (now() AT TIME ZONE 'UTC')
+        FROM batch
+       WHERE t.trip_request_id = batch.trip_request_id
+      RETURNING t.trip_request_id
+    `;
+    return rows.length;
+  }
 
   async getActiveFareConfig(
     companyId: number,
@@ -59,14 +93,14 @@ export class TripsRepository {
     return rows.length > 0 && rows[0]?.covered === true;
   }
 
-  async hasActiveTripRequest(passengerId: number): Promise<boolean> {
-    const n = await this.prisma.tripRequest.count({
+  async findActiveTripRequest(passengerId: number): Promise<TripRequest | null> {
+    return this.prisma.tripRequest.findFirst({
       where: {
         passengerId,
         status: { in: [...ACTIVE_TRIP_STATUSES] },
       },
+      orderBy: [{ requestedAt: 'desc' }, { tripRequestId: 'desc' }],
     });
-    return n > 0;
   }
 
   async createTripRequest(data: CreateTripRequestData): Promise<TripRequest> {

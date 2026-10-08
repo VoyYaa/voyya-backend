@@ -148,3 +148,68 @@ DROP POLICY IF EXISTS tenant_isolation_driver_document ON fleet.driver_document;
 CREATE POLICY tenant_isolation_driver_document ON fleet.driver_document
   USING (company_id = current_setting('app.current_company', true)::int)
   WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+-- (k) RLS by company_id — settlement remittances and export audit (ADR-027) — append-only ---
+ALTER TABLE admin.settlement_remittance ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin.settlement_remittance FORCE  ROW LEVEL SECURITY;
+ALTER TABLE admin.settlement_export     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin.settlement_export     FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS tenant_select_settlement_remittance ON admin.settlement_remittance;
+CREATE POLICY tenant_select_settlement_remittance ON admin.settlement_remittance
+  FOR SELECT USING (company_id = current_setting('app.current_company', true)::int);
+DROP POLICY IF EXISTS tenant_insert_settlement_remittance ON admin.settlement_remittance;
+CREATE POLICY tenant_insert_settlement_remittance ON admin.settlement_remittance
+  FOR INSERT WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+DROP POLICY IF EXISTS tenant_select_settlement_export ON admin.settlement_export;
+CREATE POLICY tenant_select_settlement_export ON admin.settlement_export
+  FOR SELECT USING (company_id = current_setting('app.current_company', true)::int);
+DROP POLICY IF EXISTS tenant_insert_settlement_export ON admin.settlement_export;
+CREATE POLICY tenant_insert_settlement_export ON admin.settlement_export
+  FOR INSERT WITH CHECK (company_id = current_setting('app.current_company', true)::int);
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+    REVOKE UPDATE, DELETE ON admin.settlement_remittance, admin.settlement_export FROM app_voyya;
+    REVOKE UPDATE, DELETE ON auth.consent_record, auth.consent_notice FROM app_voyya;
+    REVOKE DELETE ON auth."user" FROM app_voyya;
+  END IF;
+END
+$$;
+
+-- (l) Uniqueness and purge support (ADR-027, ADR-029, ADR-030) ----------------------
+CREATE UNIQUE INDEX IF NOT EXISTS uq_assignment_completed_per_trip_request
+  ON assignment.assignment (trip_request_id) WHERE status = 'completed';
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT passenger_id FROM trips.trip_request
+     WHERE status IN ('pending_assignment', 'assigned', 'driver_en_route', 'in_progress')
+     GROUP BY passenger_id HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'ADR-030: some passengers have more than one active trip request; expire the older ones before release';
+  END IF;
+END
+$$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_trip_request_active_per_passenger
+  ON trips.trip_request (passenger_id)
+  WHERE status IN ('pending_assignment', 'assigned', 'driver_en_route', 'in_progress');
+
+CREATE INDEX IF NOT EXISTS idx_trip_request_coordinates_purge
+  ON trips.trip_request (COALESCE(finished_at, requested_at))
+  WHERE location_purged_at IS NULL;
+
+-- (m) Unassigned-trip probe: bypass RLS only through its owner, callable only by the runtime role (CM-14) ---
+ALTER FUNCTION assignment.trip_has_assignment(integer) SET row_security = off;
+REVOKE EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) FROM PUBLIC;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+    GRANT EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) TO app_voyya;
+  END IF;
+END
+$$;

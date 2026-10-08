@@ -1,7 +1,7 @@
 import { ConflictException, HttpException, NotFoundException } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import { DRIVER_SUSPENDED_EVENT, type CreateDriverDTO } from '@voyyaa/shared';
+import { DRIVER_CREDENTIALS_RESET_EVENT, DRIVER_SUSPENDED_EVENT, type CreateDriverDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { FileStorageProvider } from '../affiliation/ports/file-storage.port';
@@ -104,7 +104,7 @@ function create() {
     listOlderThan: jest.fn(),
     freeBytes: jest.fn().mockResolvedValue(Number.MAX_SAFE_INTEGER),
   };
-  const emitter = { emit: jest.fn() };
+  const emitter = { emit: jest.fn(), emitAsync: jest.fn().mockResolvedValue([]) };
   const prisma = fakePrisma();
   const service = new AdminDriverService(
     prisma,
@@ -142,6 +142,15 @@ describe('AdminDriverService.create', () => {
     expect(message).toMatch(/PIN \d+/);
     expect(message).not.toContain(dto.national_id);
     expect(message).not.toMatch(/c.dula\s*\d/i);
+  });
+
+  it('CM-13: the credentials SMS states the temporary PIN validity from the configured TTL', async () => {
+    const { service, sms } = create();
+
+    await service.create(COMPANY_ID, dto);
+
+    const [, message] = (sms.send as jest.Mock).mock.calls[0] as [string, string];
+    expect(message).toContain('Vence en 6 horas');
   });
 
   it('SMS fails -> 201-equivalent result with pin_delivery=failed and pin_delivered_at=null', async () => {
@@ -317,6 +326,35 @@ describe('AdminDriverService.resendPin', () => {
     repo.rotatePin.mockResolvedValue(null);
 
     await expect(service.resendPin(COMPANY_ID, 999)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('emits fleet.driver_credentials_reset after rotating, even if the SMS then fails', async () => {
+    const { service, repo, emitter, sms } = create();
+    repo.rotatePin.mockResolvedValue({ driverId: 42, nationalId: '71000099', phone: '3009998877' });
+    (sms.send as jest.Mock).mockRejectedValue(new Error('sms down'));
+
+    await service.resendPin(COMPANY_ID, 42);
+
+    expect(emitter.emitAsync).toHaveBeenCalledWith(
+      DRIVER_CREDENTIALS_RESET_EVENT,
+      expect.objectContaining({ driver_id: 42, company_id: COMPANY_ID }),
+    );
+  });
+
+  it('waits for the session revocation before answering, and surfaces a failed revocation', async () => {
+    const { service, repo, emitter } = create();
+    repo.rotatePin.mockResolvedValue({ driverId: 42, nationalId: '71000099', phone: '3009998877' });
+    emitter.emitAsync.mockRejectedValue(new Error('revocation failed'));
+
+    await expect(service.resendPin(COMPANY_ID, 42)).rejects.toThrow('revocation failed');
+  });
+
+  it('does not emit the reset event when the driver does not exist', async () => {
+    const { service, repo, emitter } = create();
+    repo.rotatePin.mockResolvedValue(null);
+
+    await expect(service.resendPin(COMPANY_ID, 999)).rejects.toBeInstanceOf(NotFoundException);
+    expect(emitter.emitAsync).not.toHaveBeenCalled();
   });
 });
 

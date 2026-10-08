@@ -16,6 +16,8 @@ import { TripClosingService } from '../assignment/trip-closing.service';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
 
+const CLOSED_ASSIGNMENT_STATUSES: readonly AssignmentStatus[] = ['completed'];
+
 @Injectable()
 export class TripLifecycleService {
   constructor(
@@ -163,6 +165,18 @@ export class TripLifecycleService {
       allow,
     );
     if (!owned) {
+      const closed = await this.assignment.getAcceptedAssignment(
+        tripRequestId,
+        driverId,
+        companyId,
+        CLOSED_ASSIGNMENT_STATUSES,
+      );
+      if (closed) {
+        throw new ConflictException({
+          code: 'INVALID_TRIP_TRANSITION',
+          message: 'No puedes hacer esta transición: el viaje ya está cerrado',
+        });
+      }
       throw new ForbiddenException({
         code: 'NOT_THE_DRIVER',
         message: 'No eres el conductor asignado a este viaje',

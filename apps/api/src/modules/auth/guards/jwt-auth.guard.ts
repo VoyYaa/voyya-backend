@@ -65,6 +65,7 @@ export class JwtAuthGuard implements CanActivate {
       userId: parsed.data.sub,
       role: parsed.data.role,
       companyId: parsed.data.company_id,
+      pinChangeRequired: parsed.data.pin_change_required,
     };
   }
 

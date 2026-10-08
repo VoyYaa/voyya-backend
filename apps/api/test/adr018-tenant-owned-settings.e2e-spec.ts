@@ -418,6 +418,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
           update: {
             companyId: lowerCompanyId,
             status: 'available',
+            pinMustChange: false,
             currentVehicleId: vehicle.vehicleId,
             currentLat: 0.1,
             currentLng: 0.1,
@@ -429,6 +430,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
             nationalId: `_ADR18-DRV-${driverPhone}`,
             pin: 'x',
             status: 'available',
+            pinMustChange: false,
             currentVehicleId: vehicle.vehicleId,
             currentLat: 0.1,
             currentLng: 0.1,
