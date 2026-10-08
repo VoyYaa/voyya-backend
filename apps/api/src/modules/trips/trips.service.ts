@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import {
+  type ActiveTripResponse,
   type AssignmentCancelledByDriverEvent,
   type CancelTripRequestDTO,
   type CreateTripRequestDTO,
@@ -27,7 +28,7 @@ import {
   TRIPS_EVENTS,
   TripStateMachine,
 } from '@voyyaa/shared';
-import type { TripRequest } from '@prisma/client';
+import { Prisma, type TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
@@ -144,28 +145,10 @@ export class TripsService {
 
     await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    if (await this.repo.hasActiveTripRequest(passengerId)) {
-      throw new ConflictException({
-        code: 'ACTIVE_TRIP_REQUEST_EXISTS',
-        message: 'Ya tienes una solicitud en curso',
-      });
-    }
+    const active = await this.repo.findActiveTripRequest(passengerId);
+    if (active) throw activeTripConflict(active);
 
-    const tripRequest = await this.repo.createTripRequest({
-      passengerId,
-      municipalityId: dto.municipality_id,
-      serviceType: dto.service_type,
-      paymentMethod: 'cash',
-      pickupAddress: dto.origin.address,
-      dropoffAddress: dto.destination.address,
-      pickupLat: dto.origin.lat,
-      pickupLng: dto.origin.lng,
-      dropoffLat: dto.destination.lat,
-      dropoffLng: dto.destination.lng,
-      distanceKm: payload.distanceKm,
-      fareTotal: payload.fare.total,
-      commission: payload.fare.commission,
-    });
+    const tripRequest = await this.insertTripRequest(passengerId, dto, payload);
 
     this.emitTripRequestCreated(tripRequest);
 
@@ -177,6 +160,35 @@ export class TripsService {
       fare: payload.fare,
       requested_at: tripRequest.requestedAt.toISOString(),
     };
+  }
+
+  private async insertTripRequest(
+    passengerId: number,
+    dto: CreateTripRequestDTO,
+    payload: QuotePayload,
+  ): Promise<TripRequest> {
+    try {
+      return await this.repo.createTripRequest({
+        passengerId,
+        municipalityId: dto.municipality_id,
+        serviceType: dto.service_type,
+        paymentMethod: 'cash',
+        pickupAddress: dto.origin.address,
+        dropoffAddress: dto.destination.address,
+        pickupLat: dto.origin.lat,
+        pickupLng: dto.origin.lng,
+        dropoffLat: dto.destination.lat,
+        dropoffLng: dto.destination.lng,
+        distanceKm: payload.distanceKm,
+        fareTotal: payload.fare.total,
+        commission: payload.fare.commission,
+      });
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const winner = await this.repo.findActiveTripRequest(passengerId);
+      if (!winner) throw error;
+      throw activeTripConflict(winner);
+    }
   }
 
   async cancel(
@@ -254,7 +266,16 @@ export class TripsService {
     if (t.passengerId !== passengerId) {
       throw new ForbiddenException({ code: 'NOT_OWNER', message: 'No eres el dueño' });
     }
+    return this.toStatusResponse(t);
+  }
 
+  async getActive(passengerId: number): Promise<ActiveTripResponse> {
+    const active = await this.repo.findActiveTripRequest(passengerId);
+    return { active_trip: active ? await this.toStatusResponse(active) : null };
+  }
+
+  private async toStatusResponse(t: TripRequest): Promise<TripRequestStatus> {
+    const tripRequestId = t.tripRequestId;
     const driver = STATUSES_WITH_DRIVER.includes(t.status)
       ? await this.assignment.getAssignedDriverSummary(
           tripRequestId,
@@ -375,6 +396,16 @@ export class TripsService {
   }
 }
 
+function activeTripConflict(active: Pick<TripRequest, 'tripRequestId' | 'status'>): ConflictException {
+  return new ConflictException({
+    code: 'ACTIVE_TRIP_REQUEST_EXISTS',
+    message: 'Ya tienes un viaje en curso',
+    active_trip: { trip_request_id: active.tripRequestId, status: active.status },
+  });
+}
+function isUniqueViolation(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+}
 function almostEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < EPS;
 }

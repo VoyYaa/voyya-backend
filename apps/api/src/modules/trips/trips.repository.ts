@@ -59,14 +59,14 @@ export class TripsRepository {
     return rows.length > 0 && rows[0]?.covered === true;
   }
 
-  async hasActiveTripRequest(passengerId: number): Promise<boolean> {
-    const n = await this.prisma.tripRequest.count({
+  async findActiveTripRequest(passengerId: number): Promise<TripRequest | null> {
+    return this.prisma.tripRequest.findFirst({
       where: {
         passengerId,
         status: { in: [...ACTIVE_TRIP_STATUSES] },
       },
+      orderBy: [{ requestedAt: 'desc' }, { tripRequestId: 'desc' }],
     });
-    return n > 0;
   }
 
   async createTripRequest(data: CreateTripRequestData): Promise<TripRequest> {

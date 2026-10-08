@@ -304,6 +304,113 @@ describe('AuthService.driverLogin', () => {
   });
 });
 
+describe('AuthService.driverLogin — temporary PIN (ADR-028)', () => {
+  const pending = {
+    ...driverBase,
+    pinMustChange: true,
+    temporaryPinExpiresAt: new Date(Date.now() + 3_600_000),
+  };
+
+  it('pending change -> JWT and session user carry pin_change_required', async () => {
+    const { service, repo, jwt } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...pending });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
+    const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
+    expect(r.user.pin_change_required).toBe(true);
+    expect((jwt.sign as jest.Mock).mock.calls[0]?.[0]).toMatchObject({ pin_change_required: true });
+  });
+
+  it('personal PIN -> no claim in the JWT and pin_change_required=false', async () => {
+    const { service, repo, jwt } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      pinMustChange: false,
+      temporaryPinExpiresAt: null,
+    });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
+    const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
+    expect(r.user.pin_change_required).toBe(false);
+    expect((jwt.sign as jest.Mock).mock.calls[0]?.[0]).not.toHaveProperty('pin_change_required');
+  });
+
+  it('inherited temporary PIN without expiry still logs in with the claim', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      pinMustChange: true,
+      temporaryPinExpiresAt: null,
+    });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
+    const r = await service.driverLogin({ national_id: '71000001', pin: '1234' });
+    expect(r.user.pin_change_required).toBe(true);
+  });
+
+  it('expired temporary PIN with the right PIN -> 401 TEMPORARY_PIN_EXPIRED, not counted as a failure', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...pending,
+      temporaryPinExpiresAt: new Date(Date.now() - 1000),
+    });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
+    expect(e).toBeInstanceOf(UnauthorizedException);
+    expect(code(e)).toBe('TEMPORARY_PIN_EXPIRED');
+    expect((repo as RepoMock).registerDriverFailure).not.toHaveBeenCalled();
+  });
+
+  it('expired temporary PIN with a wrong PIN -> 401 INVALID_CREDENTIALS and counts', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...pending,
+      temporaryPinExpiresAt: new Date(Date.now() - 1000),
+    });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
+    expect(code(e)).toBe('INVALID_CREDENTIALS');
+    expect((repo as RepoMock).registerDriverFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('PIN not delivered is checked before the expiry', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...pending,
+      pinDeliveredAt: null,
+      temporaryPinExpiresAt: new Date(Date.now() - 1000),
+    });
+    const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
+    expect(code(e)).toBe('PIN_NOT_DELIVERED');
+  });
+
+  it('refresh while pending re-emits the claim', async () => {
+    const { service, repo, refreshTokens, jwt } = create();
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 5, refreshToken: 'new' });
+    (repo as RepoMock).getUser.mockResolvedValue({
+      ...driverBase,
+      userId: 5,
+      role: 'driver',
+      accountStatus: 'active',
+    });
+    (repo as RepoMock).getDriverCompany.mockResolvedValue({
+      companyId: 2,
+      status: 'available',
+      pinMustChange: true,
+    });
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(2));
+    const r = await service.refresh({ refresh_token: 'old' });
+    expect(r.user.pin_change_required).toBe(true);
+    expect((jwt.sign as jest.Mock).mock.calls[0]?.[0]).toMatchObject({ pin_change_required: true });
+  });
+
+  it('credentials reset event -> revokes all the driver sessions', async () => {
+    const { service, refreshTokens } = create();
+    (refreshTokens as RefreshMock).revokeAllForUser.mockResolvedValue(3);
+    await service.onDriverCredentialsReset({
+      driver_id: 5,
+      company_id: 2,
+      occurred_at: new Date().toISOString(),
+    });
+    expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(5);
+  });
+});
+
 describe('AuthService.adminLogin', () => {
   const admin = {
     userId: 1,

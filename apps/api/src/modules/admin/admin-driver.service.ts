@@ -13,7 +13,9 @@ import { Prisma } from '@prisma/client';
 import {
   type CreatedDriver,
   type CreateDriverDTO,
+  DRIVER_CREDENTIALS_RESET_EVENT,
   DRIVER_PIN_LENGTH,
+  type DriverCredentialsResetEvent,
   DRIVER_SUSPENDED_EVENT,
   type DriverSuspendedEvent,
   type DriverSuspensionReason,
@@ -214,6 +216,13 @@ export class AdminDriverService {
     if (!rotated) {
       throw new NotFoundException({ code: 'DRIVER_NOT_FOUND', message: 'El conductor no existe' });
     }
+
+    const reset: DriverCredentialsResetEvent = {
+      driver_id: rotated.driverId,
+      company_id: companyId,
+      occurred_at: new Date().toISOString(),
+    };
+    await this.emitter.emitAsync(DRIVER_CREDENTIALS_RESET_EVENT, reset);
 
     const { delivery, deliveredAt } = await this.deliverPin(companyId, rotated.driverId, rotated.phone, pin);
 

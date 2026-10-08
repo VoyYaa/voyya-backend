@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
+import { Prisma } from '@prisma/client';
 import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
@@ -52,12 +53,15 @@ interface FakeTripRequest {
 interface FakeState {
   covered?: boolean;
   active?: boolean;
+  activeRow?: FakeTripRequest | null;
+  createRaces?: boolean;
   tripRequest?: FakeTripRequest | null;
   summary?: AssignedDriverSummary | null;
   tripClosingRejected?: boolean;
 }
 
 function fakeRepo(state: FakeState): TripsRepository {
+  let activeLookups = 0;
   return {
     async isPointInCoverage(): Promise<boolean> {
       return state.covered ?? true;
@@ -70,10 +74,19 @@ function fakeRepo(state: FakeState): TripsRepository {
         commissionPct: 8,
       };
     },
-    async hasActiveTripRequest(): Promise<boolean> {
-      return state.active ?? false;
+    async findActiveTripRequest(): Promise<unknown> {
+      activeLookups += 1;
+      if (state.createRaces && activeLookups === 1) return null;
+      if (state.activeRow) return state.activeRow;
+      return state.active ? { tripRequestId: 77, status: 'driver_en_route' } : null;
     },
     async createTripRequest(): Promise<unknown> {
+      if (state.createRaces) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002',
+          clientVersion: 'test',
+        });
+      }
       return {
         tripRequestId: 123,
         passengerId: 1,
@@ -207,10 +220,48 @@ describe('TripsService.create', () => {
     expect(emitter.emit).toHaveBeenCalledWith('trip_request.created', expect.anything());
   });
 
-  it('idempotency: active trip request already exists -> 409 ACTIVE_TRIP_REQUEST_EXISTS', async () => {
+  it('idempotency: active trip request already exists -> 409 ACTIVE_TRIP_REQUEST_EXISTS with the active_trip reference', async () => {
     const { service } = createService({ covered: true, active: true });
-    await expect(service.create(dtoWith(await validToken(service)), 1)).rejects.toBeInstanceOf(
-      ConflictException,
+    const error = await service
+      .create(dtoWith(await validToken(service)), 1)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toEqual({
+      code: 'ACTIVE_TRIP_REQUEST_EXISTS',
+      message: 'Ya tienes un viaje en curso',
+      active_trip: { trip_request_id: 77, status: 'driver_en_route' },
+    });
+  });
+
+  it('race: the unique index rejects the insert -> same 409 with the winner reference, never a 500', async () => {
+    const { service, emitter } = createService({
+      covered: true,
+      createRaces: true,
+      activeRow: {
+        tripRequestId: 88,
+        passengerId: 1,
+        status: 'pending_assignment',
+        assignedAt: null,
+        updatedAt: new Date(),
+      },
+    });
+    const error = await service
+      .create(dtoWith(await validToken(service)), 1)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConflictException);
+    expect((error as ConflictException).getResponse()).toMatchObject({
+      code: 'ACTIVE_TRIP_REQUEST_EXISTS',
+      active_trip: { trip_request_id: 88, status: 'pending_assignment' },
+    });
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('a unique violation with no visible winner is rethrown, not disguised as a conflict', async () => {
+    const { service } = createService({ covered: true });
+    const token = await validToken(service);
+    const failing = createService({ covered: true, createRaces: true, activeRow: null });
+    await expect(failing.service.create(dtoWith(token), 1)).rejects.toBeInstanceOf(
+      Prisma.PrismaClientKnownRequestError,
     );
   });
 
@@ -341,6 +392,56 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
   it('not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {
     const { service } = createService({ tripRequest: null });
     await expect(service.getStatus(9, 1)).rejects.toBeInstanceOf(NotFoundException);
+  });
+});
+
+describe('TripsService.getActive (GET /trips/active)', () => {
+  const activeRow = (over: Partial<FakeTripRequest> = {}): FakeTripRequest => ({
+    tripRequestId: 9,
+    passengerId: 1,
+    status: 'driver_en_route',
+    assignedAt: new Date(),
+    arrivedAt: null,
+    updatedAt: new Date(),
+    municipalityId: 1,
+    serviceType: 'taxi',
+    fare: 8000,
+    commission: 640,
+    requestedAt: new Date(),
+    ...over,
+  });
+  const SUMMARY: AssignedDriverSummary = {
+    name: 'Carlos Ruiz',
+    plate: 'ABC123',
+    model: 'Logan',
+    contact_phone: '3001234567',
+    eta: null,
+  };
+
+  it('no active trip -> { active_trip: null }', async () => {
+    const { service } = createService({});
+    await expect(service.getActive(1)).resolves.toEqual({ active_trip: null });
+  });
+
+  it('active trip -> the same TripRequestStatus as GET /trips/:id', async () => {
+    const { service, assignment } = createService({ activeRow: activeRow(), summary: SUMMARY });
+    const r = await service.getActive(1);
+    expect(r.active_trip).toMatchObject({
+      trip_request_id: 9,
+      status: 'driver_en_route',
+      ui: 'driver_en_route',
+      driver: SUMMARY,
+    });
+    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
+  });
+
+  it('pending trip -> ui searching and no driver lookup', async () => {
+    const { service, assignment } = createService({
+      activeRow: activeRow({ status: 'pending_assignment', assignedAt: null }),
+    });
+    const r = await service.getActive(1);
+    expect(r.active_trip?.ui).toBe('searching');
+    expect(assignment.getAssignedDriverSummary).not.toHaveBeenCalled();
   });
 });
 

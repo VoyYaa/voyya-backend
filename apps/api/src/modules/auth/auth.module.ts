@@ -9,6 +9,9 @@ import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { ConsentController } from './consent.controller';
 import { ConsentRepository } from './consent.repository';
+import { DriverCredentialsController } from './driver-credentials.controller';
+import { DriverPinRepository } from './driver-pin.repository';
+import { DriverPinService } from './driver-pin.service';
 import { BcryptHasher, HASHER } from './hasher.service';
 import { RefreshTokenService } from './refresh-token.service';
 
@@ -23,11 +26,13 @@ import { RefreshTokenService } from './refresh-token.service';
       }),
     }),
   ],
-  controllers: [AuthController, ConsentController],
+  controllers: [AuthController, DriverCredentialsController, ConsentController],
   providers: [
     AuthService,
     AuthRepository,
     RefreshTokenService,
+    DriverPinRepository,
+    DriverPinService,
     AuthCleanupService,
     ConsentRepository,
     { provide: HASHER, useClass: BcryptHasher },

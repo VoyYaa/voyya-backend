@@ -15,6 +15,8 @@ import {
   type AdminLoginDTO,
   AUTH_EVENTS,
   type DriverLoginDTO,
+  DRIVER_CREDENTIALS_RESET_EVENT,
+  type DriverCredentialsResetEvent,
   DRIVER_SUSPENDED_EVENT,
   type DriverSuspendedEvent,
   type LogoutDTO,
@@ -32,11 +34,13 @@ import {
 import { EnvService } from '../../config/env.service';
 import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
+import { accountBlocked, invalidCredentials, temporaryPinExpired } from './auth-errors';
 import { AuthRepository } from './auth.repository';
 import { HASHER, type Hasher } from './hasher.service';
+import { lockoutAfterFailure } from './login-lockout';
 import { RefreshTokenService } from './refresh-token.service';
 
-interface SessionProfile {
+export interface SessionProfile {
   userId: number;
   firstName: string;
   lastName: string;
@@ -127,22 +131,18 @@ export class AuthService {
     const d = await this.repo.getDriverByNationalId(dto.national_id);
     if (!d) {
       await this.hasher.compare(dto.pin, await this.dummyHash);
-      throw this.invalidCredentials();
+      throw invalidCredentials();
     }
     if (d.blockedUntil && d.blockedUntil.getTime() > Date.now()) {
-      throw this.accountBlocked(Math.ceil((d.blockedUntil.getTime() - Date.now()) / 1000));
+      throw accountBlocked(Math.ceil((d.blockedUntil.getTime() - Date.now()) / 1000));
     }
 
     const ok = await this.hasher.compare(dto.pin, d.pin);
     if (!ok) {
-      const attempts = d.failedAttempts + 1;
-      const blocked =
-        attempts >= this.env.get('LOGIN_MAX_ATTEMPTS')
-          ? new Date(Date.now() + this.env.get('LOGIN_BLOCK_MINUTES') * 60_000)
-          : null;
+      const blocked = lockoutAfterFailure(this.env, d.failedAttempts);
       await this.repo.registerDriverFailure(d.driverId, d.companyId, blocked);
-      if (blocked) throw this.accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
-      throw this.invalidCredentials();
+      if (blocked) throw accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
+      throw invalidCredentials();
     }
 
     if (d.pinDeliveredAt === null) {
@@ -150,6 +150,10 @@ export class AuthService {
         code: 'PIN_NOT_DELIVERED',
         message: 'Tu PIN aún no fue entregado. Pídele a tu empresa que lo reenvíe.',
       });
+    }
+
+    if (d.pinMustChange && isExpired(d.temporaryPinExpiresAt)) {
+      throw temporaryPinExpired();
     }
 
     if (
@@ -165,6 +169,7 @@ export class AuthService {
       { userId: d.driverId, firstName: d.firstName, lastName: d.lastName, role: 'driver' },
       d.companyId,
       userAgent,
+      d.pinMustChange,
     );
   }
 
@@ -174,22 +179,18 @@ export class AuthService {
       u && u.passwordHash && (u.role === 'admin' || u.role === 'operator' || u.role === 'platform_admin');
     if (!enabled) {
       await this.hasher.compare(dto.password, await this.dummyHash);
-      throw this.invalidCredentials();
+      throw invalidCredentials();
     }
     if (u.blockedUntil && u.blockedUntil.getTime() > Date.now()) {
-      throw this.accountBlocked(Math.ceil((u.blockedUntil.getTime() - Date.now()) / 1000));
+      throw accountBlocked(Math.ceil((u.blockedUntil.getTime() - Date.now()) / 1000));
     }
 
     const ok = await this.hasher.compare(dto.password, u.passwordHash as string);
     if (!ok) {
-      const attempts = u.failedAttempts + 1;
-      const blocked =
-        attempts >= this.env.get('LOGIN_MAX_ATTEMPTS')
-          ? new Date(Date.now() + this.env.get('LOGIN_BLOCK_MINUTES') * 60_000)
-          : null;
+      const blocked = lockoutAfterFailure(this.env, u.failedAttempts);
       await this.repo.registerAdminFailure(u.userId, blocked);
-      if (blocked) throw this.accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
-      throw this.invalidCredentials();
+      if (blocked) throw accountBlocked(this.env.get('LOGIN_BLOCK_MINUTES') * 60);
+      throw invalidCredentials();
     }
 
     if (u.accountStatus === 'suspended') {
@@ -231,6 +232,7 @@ export class AuthService {
     }
 
     let companyId: number | undefined;
+    let pinChangeRequired = false;
     if (u.role === 'driver') {
       const d = await this.repo.getDriverCompany(userId);
       if (!d || d.status === 'suspended' || d.status === 'documents_blocked' || d.status === 'inactive') {
@@ -238,6 +240,7 @@ export class AuthService {
         throw this.refreshRevoked();
       }
       companyId = d.companyId;
+      pinChangeRequired = d.pinMustChange;
     } else if (u.role === 'admin' || u.role === 'operator') {
       if (u.companyId === null) {
         await this.refreshTokens.revokeAllForUser(userId);
@@ -251,13 +254,14 @@ export class AuthService {
     }
 
     return {
-      access_token: this.signAccess(u.userId, u.role, companyId),
+      access_token: this.signAccess(u.userId, u.role, companyId, pinChangeRequired),
       refresh_token: refreshToken,
       token_type: 'Bearer',
       expires_in: this.env.get('JWT_ACCESS_TTL_SECONDS'),
       user: await this.buildSessionUser(
         { userId: u.userId, firstName: u.firstName, lastName: u.lastName, role: u.role },
         companyId ?? null,
+        pinChangeRequired,
       ),
     };
   }
@@ -277,13 +281,20 @@ export class AuthService {
     this.logger.log(`Sessions revoked=${n} driver=${ev.driver_id} reason=${ev.reason}`);
   }
 
-  private async issueSession(
+  @OnEvent(DRIVER_CREDENTIALS_RESET_EVENT)
+  async onDriverCredentialsReset(ev: DriverCredentialsResetEvent): Promise<void> {
+    const n = await this.refreshTokens.revokeAllForUser(ev.driver_id);
+    this.logger.log(`Sessions revoked=${n} driver=${ev.driver_id} reason=credentials_reset`);
+  }
+
+  async issueSession(
     user: SessionProfile,
     companyId: number | null,
     userAgent?: string,
+    pinChangeRequired = false,
   ): Promise<SessionResponse> {
     const role = Role.parse(user.role);
-    const access = this.signAccess(user.userId, role, companyId ?? undefined);
+    const access = this.signAccess(user.userId, role, companyId ?? undefined, pinChangeRequired);
     const refresh = await this.refreshTokens.issue(user.userId, userAgent);
 
     const event: SessionStartedEvent = {
@@ -300,13 +311,14 @@ export class AuthService {
         token_type: 'Bearer',
         expires_in: this.env.get('JWT_ACCESS_TTL_SECONDS'),
       },
-      user: await this.buildSessionUser(user, companyId),
+      user: await this.buildSessionUser(user, companyId, pinChangeRequired),
     };
   }
 
   private async buildSessionUser(
     profile: SessionProfile,
     companyId: number | null,
+    pinChangeRequired: boolean,
   ): Promise<SessionUser> {
     const role = Role.parse(profile.role);
     let tenant: SessionUser['tenant'] = null;
@@ -329,25 +341,24 @@ export class AuthService {
       role,
       tenant,
       profile_complete: role !== 'passenger' || profile.firstName.trim().length > 0,
-      pin_change_required: false,
+      pin_change_required: pinChangeRequired,
     };
   }
 
-  private signAccess(sub: number, role: string, companyId?: number): string {
+  private signAccess(
+    sub: number,
+    role: string,
+    companyId?: number,
+    pinChangeRequired = false,
+  ): string {
     const payload = {
       sub,
       role,
       type: 'access' as const,
       ...(companyId !== undefined ? { company_id: companyId } : {}),
+      ...(pinChangeRequired ? { pin_change_required: true as const } : {}),
     };
     return this.jwt.sign(payload);
-  }
-
-  private invalidCredentials(): UnauthorizedException {
-    return new UnauthorizedException({
-      code: 'INVALID_CREDENTIALS',
-      message: 'Credenciales inválidas',
-    });
   }
 
   private staffWithoutCompany(): ForbiddenException {
@@ -355,17 +366,6 @@ export class AuthService {
       code: 'STAFF_WITHOUT_COMPANY',
       message: 'Tu usuario no está vinculado a ninguna empresa',
     });
-  }
-
-  private accountBlocked(retryInSec: number): HttpException {
-    return new HttpException(
-      {
-        code: 'ACCOUNT_TEMPORARILY_BLOCKED',
-        message: 'Cuenta bloqueada temporalmente por intentos fallidos',
-        retry_in_sec: retryInSec,
-      },
-      HttpStatus.TOO_MANY_REQUESTS,
-    );
   }
 
   private otpRateLimit(retryInSec: number): HttpException {
@@ -378,6 +378,10 @@ export class AuthService {
       HttpStatus.TOO_MANY_REQUESTS,
     );
   }
+}
+
+function isExpired(expiresAt: Date | null): boolean {
+  return expiresAt !== null && expiresAt.getTime() <= Date.now();
 }
 
 function normalizePhone(phone: string): string {
