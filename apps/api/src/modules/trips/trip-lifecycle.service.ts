@@ -2,6 +2,7 @@ import { ConflictException, ForbiddenException, Injectable, NotFoundException } 
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type {
   AssignmentStatus,
+  ServiceType,
   CompleteTripDTO,
   TripRequestCompletedEvent,
   TripRequestNoShowEvent,
@@ -11,7 +12,7 @@ import type {
 import { TRIPS_EVENTS } from '@voyyaa/shared';
 import type { CloseTripOutcome } from '../assignment/trip-closing.service';
 import { AssignmentService } from '../assignment/assignment.service';
-import { OperationalParamsService } from '../assignment/operational-params.service';
+import { OperationalParamsService } from '../service-config/operational-params.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
@@ -51,7 +52,7 @@ export class TripLifecycleService {
         message: `No puedes marcar la llegada: el viaje está en ${outcome.status}`,
       });
     }
-    const graceMin = (await this.params.get(companyId)).noShowGraceMin;
+    const graceMin = await this.noShowGraceMinFor(tripRequestId);
     const arrivedAt = outcome.row.arrivedAt;
     return {
       trip_request_id: tripRequestId,
@@ -130,7 +131,7 @@ export class TripLifecycleService {
   ): Promise<TripTransitionResult> {
     await this.assertOwnership(tripRequestId, driverId, companyId);
     const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    const graceMin = (await this.params.get(companyId)).noShowGraceMin;
+    const graceMin = (await this.params.get(tripRequest.municipalityId, tripRequest.serviceType)).noShowGraceMin;
     const outcome = await this.tripClosing.closeTrip({
       tripRequestId,
       to: 'no_show',
@@ -184,9 +185,14 @@ export class TripLifecycleService {
     }
   }
 
+  private async noShowGraceMinFor(tripRequestId: number): Promise<number> {
+    const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
+    return (await this.params.get(tripRequest.municipalityId, tripRequest.serviceType)).noShowGraceMin;
+  }
+
   private async getTripRequestOrThrow(
     tripRequestId: number,
-  ): Promise<{ passengerId: number }> {
+  ): Promise<{ passengerId: number; municipalityId: number; serviceType: ServiceType }> {
     const tripRequest = await this.repo.getTripRequest(tripRequestId);
     if (!tripRequest) {
       throw new NotFoundException({

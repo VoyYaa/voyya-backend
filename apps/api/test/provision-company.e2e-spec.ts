@@ -1,9 +1,12 @@
 import type { PrismaClient } from '@prisma/client';
 import { randomInt } from 'node:crypto';
 import { provisionCompany, type ProvisionCompanyInput } from '../scripts/provision-company';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
+
+const PREFIX = '_ProvisionMuni';
 
 const poly = {
   type: 'Polygon',
@@ -22,7 +25,7 @@ function uniqueSuffix(): string {
   return `${Date.now()}-${randomInt(100_000, 999_999)}`;
 }
 
-suite('provisionCompany (ADR-018 §9) against real Postgres', () => {
+suite('provisionCompany (ADR-018 §9, ADR-032 §10.2, ADR-031 §1.4) against real Postgres', () => {
   let raw: PrismaClient;
 
   beforeAll(async () => {
@@ -32,19 +35,29 @@ suite('provisionCompany (ADR-018 §9) against real Postgres', () => {
   });
 
   afterAll(async () => {
-    if (raw) await raw.$disconnect();
-  });
+    if (raw) {
+      await purgeMunicipalitiesByNamePrefix(raw, PREFIX);
+      await raw.$disconnect();
+    }
+  }, 60_000);
 
-  function baseInput(suffix: string, overrides: Partial<ProvisionCompanyInput> = {}): ProvisionCompanyInput {
+  async function municipalityFixture(suffix: string): Promise<number> {
+    const municipality = await raw.municipality.create({
+      data: { name: `${PREFIX}-${suffix}`, department: 'Test', coveragePolygon: poly, status: 'active' },
+    });
+    return municipality.municipalityId;
+  }
+
+  function baseInput(
+    suffix: string,
+    municipalityId: number,
+    overrides: Partial<ProvisionCompanyInput> = {},
+  ): ProvisionCompanyInput {
     return {
-      municipality: {
-        name: `_ProvisionMuni-${suffix}`,
-        department: 'Test',
-        coveragePolygon: poly,
-      },
+      municipality: { municipalityId },
       company: { legalName: '_ProvisionCo', taxId: `_provision-co-${suffix}`, type: 'cooperative' },
       initialFare: { baseFare: 8200 },
-      initialParams: { searchRadiusKm: 2, expansionRadiusKm: 6, acceptanceTimeoutSec: 15 },
+      commissionPct: 8,
       admin: {
         firstName: '_Provision',
         lastName: 'Admin',
@@ -56,63 +69,87 @@ suite('provisionCompany (ADR-018 §9) against real Postgres', () => {
     };
   }
 
-  it('provisions municipality + company + fare_config + system_parameter + admin, all in one transaction', async () => {
+  it('provisions company + municipality fare + commission + admin, all in one transaction', async () => {
     const suffix = uniqueSuffix();
-    const result = await provisionCompany(raw, baseInput(suffix));
+    const municipalityId = await municipalityFixture(suffix);
+
+    const result = await provisionCompany(raw, baseInput(suffix, municipalityId));
 
     expect(result.companyId).toEqual(expect.any(Number));
-    expect(result.fareConfigId).toEqual(expect.any(Number));
     expect(result.adminUserId).toEqual(expect.any(Number));
+    expect(result.municipalityId).toBe(municipalityId);
+    expect(result.municipalityFares).toEqual([
+      expect.objectContaining({ serviceType: 'taxi', created: true }),
+    ]);
 
-    const fareConfig = await raw.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(result.companyId)}, true)`;
-      return tx.fareConfig.findFirst({ where: { companyId: result.companyId, serviceType: 'taxi' } });
-    });
-    expect(fareConfig?.validTo).toBeNull();
-    expect(Number(fareConfig?.baseFare)).toBe(8200);
-    expect(fareConfig?.createdBy).toBeNull();
+    const fares = await raw.municipalityFare.findMany({ where: { municipalityId, validTo: null } });
+    expect(fares).toHaveLength(1);
+    expect(Number(fares[0]?.baseFare)).toBe(8200);
+    expect(Number(fares[0]?.nightSurchargePct)).toBe(20);
+    expect(fares[0]?.origin).toBe('company_approval');
+    expect(fares[0]?.createdBy).toBeNull();
 
-    const parameters = await raw.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(result.companyId)}, true)`;
-      return tx.systemParameter.findMany({ where: { companyId: result.companyId } });
+    const params = await raw.municipalityOperationalParams.findMany({
+      where: { municipalityId, validTo: null },
     });
-    const keys = parameters.map((p) => p.key).sort();
-    expect(keys).toEqual(['acceptance_timeout_sec', 'expansion_radius_km', 'search_radius_km']);
+    expect(params).toHaveLength(1);
+    expect(params[0]?.searchRadiusKm).toBeNull();
+
+    const commissions = await raw.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(result.companyId)}, true)`;
+      return tx.companyCommission.findMany({ where: { companyId: result.companyId } });
+    });
+    expect(commissions).toHaveLength(1);
+    expect(Number(commissions[0]?.commissionPct)).toBe(8);
+
+    const legacy = await raw.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(result.companyId)}, true)`;
+      return {
+        fareConfigs: await tx.fareConfig.count({ where: { companyId: result.companyId } }),
+        parameters: await tx.systemParameter.count({ where: { companyId: result.companyId } }),
+      };
+    });
+    expect(legacy).toEqual({ fareConfigs: 0, parameters: 0 });
 
     const admin = await raw.user.findUnique({ where: { userId: result.adminUserId } });
     expect(admin?.role).toBe('admin');
     expect(admin?.companyId).toBe(result.companyId);
   });
 
-  it('an existing municipalityId is reused, not recreated', async () => {
+  it('a second company in the same municipality reuses the fare instead of creating another', async () => {
     const suffix = uniqueSuffix();
-    const existing = await raw.municipality.upsert({
-      where: { municipalityId: 9191 },
-      update: { coveragePolygon: poly, status: 'active' },
-      create: {
-        municipalityId: 9191,
-        name: '_ProvisionExistingMuni',
-        department: 'Test',
-        coveragePolygon: poly,
-        status: 'active',
-      },
+    const municipalityId = await municipalityFixture(suffix);
+    await provisionCompany(raw, baseInput(suffix, municipalityId));
+
+    const secondSuffix = uniqueSuffix();
+    const second = await provisionCompany(raw, {
+      ...baseInput(secondSuffix, municipalityId),
+      initialFare: { baseFare: 99_000 },
+      commissionPct: 3,
     });
 
-    const result = await provisionCompany(
-      raw,
-      baseInput(suffix, { municipality: { municipalityId: existing.municipalityId } }),
-    );
-
-    expect(result.municipalityId).toBe(existing.municipalityId);
-    const municipalityCount = await raw.municipality.count({
-      where: { name: '_ProvisionExistingMuni' },
-    });
-    expect(municipalityCount).toBe(1);
+    expect(second.municipalityFares).toEqual([expect.objectContaining({ created: false })]);
+    const fares = await raw.municipalityFare.findMany({ where: { municipalityId, validTo: null } });
+    expect(fares).toHaveLength(1);
+    expect(Number(fares[0]?.baseFare)).toBe(8200);
   });
 
-  it('a nonexistent municipalityId aborts the whole transaction, nothing is created', async () => {
+  it('resolves the municipality by DANE code and never creates one', async () => {
     const suffix = uniqueSuffix();
-    const input = baseInput(suffix, { municipality: { municipalityId: 999_999_999 } });
+    const municipalityId = await municipalityFixture(suffix);
+    const daneCode = `00${randomInt(994, 999)}`;
+    await raw.municipality.update({ where: { municipalityId }, data: { daneCode, daneType: 'municipality' } });
+    const before = await raw.municipality.count();
+
+    const result = await provisionCompany(raw, baseInput(suffix, municipalityId, { municipality: { daneCode } }));
+
+    expect(result.municipalityId).toBe(municipalityId);
+    expect(await raw.municipality.count()).toBe(before);
+  });
+
+  it('a nonexistent municipality aborts the whole transaction, nothing is created', async () => {
+    const suffix = uniqueSuffix();
+    const input = baseInput(suffix, 999_999_999);
 
     await expect(provisionCompany(raw, input)).rejects.toThrow();
 
@@ -120,25 +157,32 @@ suite('provisionCompany (ADR-018 §9) against real Postgres', () => {
     expect(company).toBeNull();
   });
 
-  it('a duplicate taxId aborts the whole transaction: no municipality, no company, no admin leftover', async () => {
+  it('an unknown DANE code aborts without creating a municipality', async () => {
     const suffix = uniqueSuffix();
-    await provisionCompany(raw, baseInput(suffix));
+    const before = await raw.municipality.count();
 
-    const duplicateSuffix = uniqueSuffix();
-    const secondAttempt = baseInput(duplicateSuffix, {
+    await expect(
+      provisionCompany(raw, baseInput(suffix, 0, { municipality: { daneCode: '00000' } })),
+    ).rejects.toThrow();
+
+    expect(await raw.municipality.count()).toBe(before);
+  });
+
+  it('a duplicate taxId aborts the whole transaction: no fare, no commission, no admin leftover', async () => {
+    const suffix = uniqueSuffix();
+    const municipalityId = await municipalityFixture(suffix);
+    await provisionCompany(raw, baseInput(suffix, municipalityId));
+
+    const otherSuffix = uniqueSuffix();
+    const otherMunicipalityId = await municipalityFixture(otherSuffix);
+    const secondAttempt = baseInput(otherSuffix, otherMunicipalityId, {
       company: { legalName: '_ProvisionDuplicateCo', taxId: `_provision-co-${suffix}`, type: 'cooperative' },
     });
 
     await expect(provisionCompany(raw, secondAttempt)).rejects.toThrow();
 
-    const leakedMunicipality = await raw.municipality.count({
-      where: { name: `_ProvisionMuni-${duplicateSuffix}` },
-    });
-    expect(leakedMunicipality).toBe(0);
-
-    const leakedAdmin = await raw.user.findUnique({
-      where: { phone: `_provision-admin-${duplicateSuffix}` },
-    });
+    expect(await raw.municipalityFare.count({ where: { municipalityId: otherMunicipalityId } })).toBe(0);
+    const leakedAdmin = await raw.user.findUnique({ where: { phone: `_provision-admin-${otherSuffix}` } });
     expect(leakedAdmin).toBeNull();
   });
 });

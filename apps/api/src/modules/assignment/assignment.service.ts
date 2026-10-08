@@ -35,7 +35,7 @@ import { CandidateRepository } from './candidate.repository';
 import {
   OperationalParamsService,
   type OperationalParams,
-} from './operational-params.service';
+} from '../service-config/operational-params.service';
 import { PUSH_PROVIDER, type PushProvider } from './ports/push-provider.port';
 import { TripClosingService } from './trip-closing.service';
 
@@ -100,7 +100,7 @@ export class AssignmentService {
       return;
     }
 
-    const params = await this.paramsService.get(companyId);
+    const params = await this.paramsService.get(municipalityId, 'taxi');
     const ctx: ChainContext = {
       tripRequestId,
       companyId,
@@ -379,7 +379,7 @@ export class AssignmentService {
       };
     }
 
-    const params = await this.paramsService.get(companyId);
+    const params = await this.paramsService.get(info.municipalityId, 'taxi');
     const eta =
       row.lat !== null && row.lng !== null
         ? calculateEta(

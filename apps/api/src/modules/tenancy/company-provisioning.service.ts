@@ -1,33 +1,18 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import type { ServiceType } from '@voyyaa/shared';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { setTenantSession } from '../../shared/tenant-session';
+import {
+  type InitialMunicipalityFare,
+  type ProvisionedMunicipalityFare,
+  ServiceConfigProvisioner,
+} from '../service-config/service-config-provisioner';
 
 const BCRYPT_ROUNDS = 12;
 
-export interface ProvisionCompanyMunicipality {
-  municipalityId: number;
-}
-
-export interface ProvisionCompanyMunicipalityToCreate {
-  name: string;
-  department: string;
-  coveragePolygon: Prisma.InputJsonValue;
-}
-
-export interface ProvisionInitialFare {
-  baseFare: number;
-  nightSurchargePct?: number;
-  holidaySurchargePct?: number;
-  commissionPct?: number;
-}
-
-export interface ProvisionInitialParams {
-  searchRadiusKm: number;
-  expansionRadiusKm: number;
-  acceptanceTimeoutSec: number;
-}
+export type ProvisionCompanyMunicipality = { municipalityId: number } | { daneCode: string };
 
 export interface ProvisionAdmin {
   firstName: string;
@@ -38,39 +23,51 @@ export interface ProvisionAdmin {
 }
 
 export interface ProvisionCompanyInput {
-  municipality: ProvisionCompanyMunicipality | ProvisionCompanyMunicipalityToCreate;
-  company: { legalName: string; taxId: string; type: string };
-  initialFare: ProvisionInitialFare;
-  initialParams: ProvisionInitialParams;
+  municipality: ProvisionCompanyMunicipality;
+  company: {
+    legalName: string;
+    taxId: string;
+    type: string;
+    publicName?: string;
+    serviceTypes?: ServiceType[];
+  };
+  initialFare: InitialMunicipalityFare;
+  commissionPct: number;
   admin: ProvisionAdmin;
 }
 
 export interface ProvisionedCompany {
   companyId: number;
   municipalityId: number;
-  fareConfigId: number;
+  municipalityFares: ProvisionedMunicipalityFare[];
+  companyCommissionId: number;
   adminUserId: number;
 }
 
 export interface FinishedProvisioning {
-  fareConfigId: number;
   adminUserId: number;
   adminEmail: string;
 }
 
 @Injectable()
 export class CompanyProvisioningService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly serviceConfig: ServiceConfigProvisioner,
+  ) {}
 
   async provisionNew(input: ProvisionCompanyInput): Promise<ProvisionedCompany> {
-    return this.prisma.$transaction(async (tx) => {
+    return this.prisma.runAsPlatform(async (tx) => {
       const municipalityId = await resolveMunicipality(tx, input.municipality);
+      const serviceTypes = input.company.serviceTypes ?? ['taxi'];
 
       const company = await tx.company.create({
         data: {
           legalName: input.company.legalName,
           taxId: input.company.taxId,
           type: input.company.type,
+          publicName: input.company.publicName ?? null,
+          serviceTypes,
           municipalityId,
           status: 'active',
         },
@@ -78,19 +75,21 @@ export class CompanyProvisioningService {
 
       await setTenantSession(tx, company.companyId);
 
-      const finished = await this.finishProvisioning(
-        tx,
-        company.companyId,
-        input.initialFare,
-        input.initialParams,
-        input.admin,
-        null,
-      );
+      const config = await this.serviceConfig.ensureForApproval(tx, {
+        companyId: company.companyId,
+        municipalityId,
+        serviceTypes,
+        initialFare: input.initialFare,
+        commissionPct: input.commissionPct,
+        createdBy: null,
+      });
+      const finished = await this.finishProvisioning(tx, company.companyId, input.admin);
 
       return {
         companyId: company.companyId,
         municipalityId,
-        fareConfigId: finished.fareConfigId,
+        municipalityFares: config.municipalityFares,
+        companyCommissionId: config.companyCommissionId,
         adminUserId: finished.adminUserId,
       };
     });
@@ -99,36 +98,8 @@ export class CompanyProvisioningService {
   async finishProvisioning(
     tx: Prisma.TransactionClient,
     companyId: number,
-    initialFare: ProvisionInitialFare,
-    initialParams: ProvisionInitialParams,
     admin: ProvisionAdmin,
-    attributedTo: number | null,
   ): Promise<FinishedProvisioning> {
-    const fareConfig = await tx.fareConfig.create({
-      data: {
-        companyId,
-        serviceType: 'taxi',
-        baseFare: initialFare.baseFare,
-        nightSurchargePct: initialFare.nightSurchargePct,
-        holidaySurchargePct: initialFare.holidaySurchargePct,
-        commissionPct: initialFare.commissionPct,
-        validFrom: new Date(),
-        validTo: null,
-        createdBy: attributedTo,
-      },
-    });
-
-    const parameters: Array<[string, string]> = [
-      ['search_radius_km', String(initialParams.searchRadiusKm)],
-      ['expansion_radius_km', String(initialParams.expansionRadiusKm)],
-      ['acceptance_timeout_sec', String(initialParams.acceptanceTimeoutSec)],
-    ];
-    for (const [key, value] of parameters) {
-      await tx.systemParameter.create({
-        data: { key, value, companyId, updatedBy: attributedTo },
-      });
-    }
-
     const passwordHash = await bcrypt.hash(admin.password, BCRYPT_ROUNDS);
     const adminUser = await tx.user.create({
       data: {
@@ -142,35 +113,22 @@ export class CompanyProvisioningService {
       },
     });
 
-    return {
-      fareConfigId: fareConfig.fareConfigId,
-      adminUserId: adminUser.userId,
-      adminEmail: adminUser.email as string,
-    };
+    return { adminUserId: adminUser.userId, adminEmail: adminUser.email as string };
   }
 }
 
 async function resolveMunicipality(
   tx: Prisma.TransactionClient,
-  municipality: ProvisionCompanyInput['municipality'],
+  municipality: ProvisionCompanyMunicipality,
 ): Promise<number> {
-  if ('municipalityId' in municipality) {
-    const existing = await tx.municipality.findUnique({
-      where: { municipalityId: municipality.municipalityId },
-      select: { municipalityId: true },
-    });
-    if (!existing) {
-      throw new Error(`Municipality ${municipality.municipalityId} does not exist`);
-    }
-    return existing.municipalityId;
-  }
-  const created = await tx.municipality.create({
-    data: {
-      name: municipality.name,
-      department: municipality.department,
-      coveragePolygon: municipality.coveragePolygon,
-      status: 'active',
-    },
+  const existing = await tx.municipality.findUnique({
+    where: 'municipalityId' in municipality
+      ? { municipalityId: municipality.municipalityId }
+      : { daneCode: municipality.daneCode },
+    select: { municipalityId: true },
   });
-  return created.municipalityId;
+  if (!existing) {
+    throw new Error(`Municipality ${JSON.stringify(municipality)} does not exist in the catalog`);
+  }
+  return existing.municipalityId;
 }

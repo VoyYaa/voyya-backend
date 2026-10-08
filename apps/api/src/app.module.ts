@@ -15,6 +15,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { PinChangeGuard } from './modules/auth/guards/pin-change.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
+import { ServiceConfigModule } from './modules/service-config/service-config.module';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
 import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from './shared/throttlers';
@@ -35,6 +36,7 @@ import { skipUnlessOptedIn } from './shared/opt-in-throttle';
     }),
     PrismaModule,
     TenancyModule,
+    ServiceConfigModule,
     AuthModule,
     TripsModule,
     AssignmentModule,

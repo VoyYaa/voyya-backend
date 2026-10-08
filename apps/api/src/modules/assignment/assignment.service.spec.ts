@@ -4,7 +4,7 @@ import type { AssignmentStatus, TripRequestCreatedEvent } from '@voyyaa/shared';
 import { AssignmentService } from './assignment.service';
 import type { AssignedDriverRow, AssignmentRepository, TripRequestInfo } from './assignment.repository';
 import type { CandidateRepository, DbCandidate } from './candidate.repository';
-import type { OperationalParams, OperationalParamsService } from './operational-params.service';
+import type { OperationalParams, OperationalParamsService } from '../service-config/operational-params.service';
 import type { PushProvider } from './ports/push-provider.port';
 import type { TripClosingService } from './trip-closing.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
@@ -431,6 +431,7 @@ describe('AssignmentService.onTripRequestCreated · push never gates the assignm
     locationStaleMin: 30,
     avgSpeedKmh: 25,
     noShowGraceMin: 5,
+    cancellationWindowMin: 2,
   };
 
   function build(push: PushProvider): {

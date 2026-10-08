@@ -5,7 +5,7 @@ import { TripLifecycleService } from './trip-lifecycle.service';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
 import type { AssignmentService } from '../assignment/assignment.service';
-import type { OperationalParamsService } from '../assignment/operational-params.service';
+import type { OperationalParamsService } from '../service-config/operational-params.service';
 import type { CloseTripOutcome } from '../assignment/trip-closing.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 
