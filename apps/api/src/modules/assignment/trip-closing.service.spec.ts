@@ -7,7 +7,6 @@ import type {
   TripClosingRow,
 } from './assignment.repository';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 
 interface FakeTripRow {
   status: TripStatus;
@@ -104,8 +103,7 @@ function buildRepo(db: FakeDb): AssignmentRepository {
 
 function buildService(db: FakeDb): TripClosingService {
   const prisma = {} as unknown as PrismaService;
-  const dispatchCompanies = {} as unknown as DispatchCompaniesResolver;
-  return new TripClosingService(prisma, buildRepo(db), dispatchCompanies);
+  return new TripClosingService(prisma, buildRepo(db));
 }
 
 describe('TripClosingService.closeTripInTx', () => {
@@ -305,5 +303,102 @@ describe('TripClosingService.closeTripInTx', () => {
     expect(outcome.kind).toBe('applied');
     expect(db.assignment.status).toBe('completed');
     expect(db.driver.status).toBe('available');
+  });
+});
+
+describe('TripClosingService.closePassengerTrip (MD-05)', () => {
+  interface PassengerHarness {
+    service: TripClosingService;
+    tenantSessions: unknown[];
+    closeParams: CloseTripRequestParams[];
+    closeAssignments: jest.Mock;
+    releaseDriver: jest.Mock;
+  }
+
+  function harness(locked: { companyId: number | null; status: TripStatus } | null): PassengerHarness {
+    const tenantSessions: unknown[] = [];
+    const closeParams: CloseTripRequestParams[] = [];
+    const closeAssignments = jest.fn(async () => ({ assignmentId: 1, driverId: 7 }));
+    const releaseDriver = jest.fn(async () => undefined);
+    const tx = {
+      $executeRaw: async (...args: unknown[]) => {
+        tenantSessions.push(args);
+        return 1;
+      },
+    };
+    const prisma = {
+      $transaction: async (fn: (client: unknown) => Promise<unknown>) => fn(tx),
+    } as unknown as PrismaService;
+    const repo = {
+      lockTripForPassenger: async () => locked,
+      closeTripRequest: async (_tx: unknown, params: CloseTripRequestParams) => {
+        closeParams.push(params);
+        return {
+          status: params.to,
+          arrivedAt: null,
+          finishedAt: new Date(),
+          netEarnings: null,
+          cashCollectedAt: null,
+          penaltyRecorded: params.penaltyRecorded,
+        } satisfies TripClosingRow;
+      },
+      closeAssignmentsForTrip: closeAssignments,
+      releaseDriver,
+    } as unknown as AssignmentRepository;
+    return {
+      service: new TripClosingService(prisma, repo),
+      tenantSessions,
+      closeParams,
+      closeAssignments,
+      releaseDriver,
+    };
+  }
+
+  it('a trip with no company closes only the trip: no tenant session, no assignment, no driver', async () => {
+    const h = harness({ companyId: null, status: 'pending_assignment' });
+
+    const outcome = await h.service.closePassengerTrip({
+      tripRequestId: 1,
+      passengerId: 5,
+      penaltyRecorded: false,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(h.tenantSessions).toHaveLength(0);
+    expect(h.closeParams[0]?.unownedOnly).toBe(true);
+    expect(h.closeAssignments).not.toHaveBeenCalled();
+    expect(h.releaseDriver).not.toHaveBeenCalled();
+  });
+
+  it('a trip owned by a company sets that tenant inside the same transaction and releases the driver', async () => {
+    const h = harness({ companyId: 9, status: 'assigned' });
+
+    const outcome = await h.service.closePassengerTrip({
+      tripRequestId: 1,
+      passengerId: 5,
+      penaltyRecorded: true,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect(h.tenantSessions).toHaveLength(1);
+    expect(h.closeParams[0]?.unownedOnly).toBe(false);
+    expect(h.closeAssignments).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ tripRequestId: 1, companyId: 9, status: 'cancelled' }),
+    );
+    expect(h.releaseDriver).toHaveBeenCalledWith(expect.anything(), 7, 9);
+  });
+
+  it('a trip that is not the passenger is rejected without writing', async () => {
+    const h = harness(null);
+
+    const outcome = await h.service.closePassengerTrip({
+      tripRequestId: 1,
+      passengerId: 5,
+      penaltyRecorded: false,
+    });
+
+    expect(outcome.kind).toBe('rejected');
+    expect(h.closeParams).toHaveLength(0);
   });
 });

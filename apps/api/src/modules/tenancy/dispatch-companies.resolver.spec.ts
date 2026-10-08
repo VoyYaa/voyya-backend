@@ -76,26 +76,3 @@ describe('DispatchCompaniesResolver.resolve', () => {
     expect(outer.findMany).not.toHaveBeenCalled();
   });
 });
-
-describe('DispatchCompaniesResolver.resolveFirst', () => {
-  it('one active company -> its companyId (the pilot behaviour is unchanged)', async () => {
-    const { prisma } = fakePrisma([{ companyId: 7 }]);
-    const resolver = new DispatchCompaniesResolver(prisma);
-
-    await expect(resolver.resolveFirst(1)).resolves.toBe(7);
-  });
-
-  it('no active company -> null', async () => {
-    const { prisma } = fakePrisma([]);
-    const resolver = new DispatchCompaniesResolver(prisma);
-
-    await expect(resolver.resolveFirst(1)).resolves.toBeNull();
-  });
-
-  it('several active companies -> the lowest companyId, as ActiveCompanyResolver did', async () => {
-    const { prisma } = fakePrisma([{ companyId: 3 }, { companyId: 9 }]);
-    const resolver = new DispatchCompaniesResolver(prisma);
-
-    await expect(resolver.resolveFirst(1)).resolves.toBe(3);
-  });
-});
