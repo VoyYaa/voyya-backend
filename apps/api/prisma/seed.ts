@@ -1,13 +1,15 @@
 import { PrismaClient } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { resolveSeedAdminPassword } from '../src/shared/seed-admin-password';
+import { assertSeedDestinationLooksDisposable } from '../src/shared/seed-destination';
+import { resolveSeedDriverPin } from '../src/shared/seed-target';
 
 const prisma = new PrismaClient();
 
 const YARUMAL_ID = 1;
 const SANTA_ROSA_ID = 2;
 const BCRYPT_ROUNDS = 12;
-const DEV_PIN = '1234';
+const DRIVER_PIN = resolveSeedDriverPin(process.env);
 const ADMIN_EMAIL = 'admin@voyya.co';
 const ADMIN_PASSWORD = resolveSeedAdminPassword(process.env);
 const PLATFORM_ADMIN_EMAIL = 'plataforma@voyya.co';
@@ -51,8 +53,23 @@ const PARAMETERS: Array<[string, string]> = [
   ['location_stale_min', '15'],
 ];
 
+async function countRows(table: 'trips.trip_request' | 'tenancy.company'): Promise<number> {
+  const rows = await prisma.$queryRawUnsafe<Array<{ total: number }>>(
+    `SELECT count(*)::int AS total FROM ${table}`,
+  );
+  return rows.reduce((sum, row) => sum + row.total, 0);
+}
+
+async function assertDisposableDestination(): Promise<void> {
+  assertSeedDestinationLooksDisposable({
+    tripRequestCount: await countRows('trips.trip_request'),
+    companyCount: await countRows('tenancy.company'),
+  });
+}
+
 async function main(): Promise<void> {
-  const pinHash = await bcrypt.hash(DEV_PIN, BCRYPT_ROUNDS);
+  await assertDisposableDestination();
+  const pinHash = await bcrypt.hash(DRIVER_PIN, BCRYPT_ROUNDS);
   const adminHash = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS);
   const platformAdminHash = await bcrypt.hash(PLATFORM_ADMIN_PASSWORD, BCRYPT_ROUNDS);
 

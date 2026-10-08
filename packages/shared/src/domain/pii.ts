@@ -22,7 +22,10 @@ export function redactPiiDeep(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) return value.map((v) => redactPiiDeep(v, depth + 1));
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redactPiiDeep(v, depth + 1)]),
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        redactPiiDeep(v, depth + 1),
+      ]),
     );
   }
   return value;

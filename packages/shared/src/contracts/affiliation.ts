@@ -7,11 +7,7 @@ import {
   SurchargePct,
 } from './admin';
 import { Phone } from './auth';
-import {
-  DocumentStorageKey,
-  DocumentVerificationStatus,
-  NotificationDelivery,
-} from './documents';
+import { DocumentStorageKey, DocumentVerificationStatus, NotificationDelivery } from './documents';
 
 export const TaxId = z
   .string()
@@ -131,12 +127,7 @@ export type PlatformCompanyStatusFilter = z.infer<typeof PlatformCompanyStatusFi
 
 export const PlatformCompanyQuery = z.object({
   status: PlatformCompanyStatusFilter.default('pending'),
-  limit: z.coerce
-    .number()
-    .int()
-    .positive()
-    .max(OPS_LIST_MAX_LIMIT)
-    .default(OPS_LIST_DEFAULT_LIMIT),
+  limit: z.coerce.number().int().positive().max(OPS_LIST_MAX_LIMIT).default(OPS_LIST_DEFAULT_LIMIT),
 });
 export type PlatformCompanyQuery = z.infer<typeof PlatformCompanyQuery>;
 
@@ -248,9 +239,7 @@ export const ResendCompanyNotificationResponse = z.object({
   decision: CompanyDecision,
   notification: CompanyNotificationResult,
 });
-export type ResendCompanyNotificationResponse = z.infer<
-  typeof ResendCompanyNotificationResponse
->;
+export type ResendCompanyNotificationResponse = z.infer<typeof ResendCompanyNotificationResponse>;
 
 export const AffiliationErrorCode = z.enum([
   'TAX_ID_TAKEN',
