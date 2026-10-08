@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { ConsentNoticeRegistry } from '../src/modules/auth/consent-notice.registry';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 
 const prismaStub = {
@@ -19,6 +20,8 @@ describe('Throttler scope (BUG-1: the hourly documents limit must not leak to th
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PrismaService)
       .useValue(prismaStub)
+      .overrideProvider(ConsentNoticeRegistry)
+      .useValue({ onModuleInit: async () => undefined })
       .compile();
     app = moduleRef.createNestApplication();
     app.useGlobalFilters(new AllExceptionsFilter());

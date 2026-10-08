@@ -37,10 +37,10 @@ suite('Ops console — live queue polling and driver roster (ADR-015)', () => {
     jwt = moduleRef.get(JwtService, { strict: false });
 
     const municipality = await prisma.municipality.upsert({
-      where: { municipalityId: 9141 },
+      where: { municipalityId: 9214 },
       update: {},
       create: {
-        municipalityId: 9141,
+        municipalityId: 9214,
         name: '_OpsMuni',
         department: 'Test',
         coveragePolygon: {

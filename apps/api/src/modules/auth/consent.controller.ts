@@ -1,36 +1,44 @@
 import { Body, Controller, Get, HttpCode, Post } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { type ConsentListResponse, type ConsentRecord, GrantConsentDTO } from '@voyyaa/shared';
+import {
+  type ConsentStatus,
+  type ConsentStatusListResponse,
+  GrantConsentDTO,
+  RevokeConsentDTO,
+} from '@voyyaa/shared';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
-import { CurrentUserId } from '../tenancy/identity.decorators';
-import { ConsentRepository, type ConsentRecordRow } from './consent.repository';
+import { CurrentUser } from '../tenancy/identity.decorators';
+import type { AuthenticatedUser } from '../tenancy/tenant-request';
+import { ConsentService } from './consent.service';
 
-function toConsentRecord(row: ConsentRecordRow): ConsentRecord {
-  return {
-    purpose: row.purpose,
-    notice_version: row.noticeVersion,
-    granted_at: row.grantedAt.toISOString(),
-  };
-}
+const WRITE_THROTTLE = { default: { limit: 10, ttl: 60_000 } };
 
 @Controller('consents')
 export class ConsentController {
-  constructor(private readonly consents: ConsentRepository) {}
+  constructor(private readonly consents: ConsentService) {}
 
   @Post()
   @HttpCode(200)
-  @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  async grant(
+  @Throttle(WRITE_THROTTLE)
+  grant(
     @Body(new ZodValidationPipe(GrantConsentDTO)) dto: GrantConsentDTO,
-    @CurrentUserId() userId: number,
-  ): Promise<ConsentRecord> {
-    const row = await this.consents.grant(userId, dto.purpose, dto.notice_version);
-    return toConsentRecord(row);
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<ConsentStatus> {
+    return this.consents.grant(user, dto);
+  }
+
+  @Post('revoke')
+  @HttpCode(200)
+  @Throttle(WRITE_THROTTLE)
+  revoke(
+    @Body(new ZodValidationPipe(RevokeConsentDTO)) dto: RevokeConsentDTO,
+    @CurrentUser() user: AuthenticatedUser,
+  ): Promise<ConsentStatus> {
+    return this.consents.revoke(user, dto);
   }
 
   @Get()
-  async list(@CurrentUserId() userId: number): Promise<ConsentListResponse> {
-    const rows = await this.consents.list(userId);
-    return rows.map(toConsentRecord);
+  list(@CurrentUser() user: AuthenticatedUser): Promise<ConsentStatusListResponse> {
+    return this.consents.list(user);
   }
 }

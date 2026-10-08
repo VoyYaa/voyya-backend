@@ -221,6 +221,7 @@ async function main(): Promise<void> {
         locationUpdatedAt: new Date(),
         currentVehicleId: vehicle.vehicleId,
         pinDeliveredAt: new Date(),
+        pinMustChange: false,
       },
       create: {
         driverId: u.userId,
@@ -233,6 +234,7 @@ async function main(): Promise<void> {
         locationUpdatedAt: new Date(),
         currentVehicleId: vehicle.vehicleId,
         pinDeliveredAt: new Date(),
+        pinMustChange: false,
       },
     });
   }

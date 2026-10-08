@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createFreshPassenger } from './support/fresh-passenger';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -110,7 +111,7 @@ suite('trips.trip_request has no RLS: municipality isolation is a bare WHERE (AD
 
     await prisma.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(prisma),
         municipalityId: municipalityAId,
         serviceType: 'taxi',
         paymentMethod: 'cash',
@@ -128,7 +129,7 @@ suite('trips.trip_request has no RLS: municipality isolation is a bare WHERE (AD
 
     await prisma.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(prisma),
         municipalityId: municipalityBId,
         serviceType: 'taxi',
         paymentMethod: 'cash',

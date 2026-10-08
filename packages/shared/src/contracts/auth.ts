@@ -25,12 +25,59 @@ export const NationalId = z
 
 export const Pin = z.string().regex(/^\d{4,6}$/, 'PIN inválido (4 a 6 dígitos)');
 
+export const DRIVER_PIN_LENGTH = 6;
+
+function isRepeatedPattern(pin: string): boolean {
+  for (let size = 1; size <= pin.length / 2; size += 1) {
+    if (pin.length % size === 0 && pin.slice(0, size).repeat(pin.length / size) === pin) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isSequential(pin: string): boolean {
+  const digits = Array.from(pin, Number);
+  const steps = digits.slice(1).map((digit, index) => (digit - (digits[index] ?? 0) + 10) % 10);
+  return steps.length > 0 && (steps.every((s) => s === 1) || steps.every((s) => s === 9));
+}
+
+export function isWeakDriverPin(pin: string): boolean {
+  return isRepeatedPattern(pin) || isSequential(pin);
+}
+
+export function isPinFromPersonalData(pin: string, personalValues: readonly string[]): boolean {
+  return personalValues.some((value) => {
+    const digits = value.replace(/\D/g, '');
+    return digits.length >= pin.length && digits.endsWith(pin);
+  });
+}
+
+export const NewDriverPin = z
+  .string()
+  .regex(/^\d*$/, 'El PIN solo lleva números')
+  .length(DRIVER_PIN_LENGTH, `El PIN debe tener ${DRIVER_PIN_LENGTH} dígitos`)
+  .refine((pin) => !isWeakDriverPin(pin), 'Elige un PIN menos fácil de adivinar');
+export type NewDriverPin = z.infer<typeof NewDriverPin>;
+
+export const ChangeDriverPinDTO = z
+  .object({
+    current_pin: Pin,
+    new_pin: NewDriverPin,
+  })
+  .refine((dto) => dto.current_pin !== dto.new_pin, {
+    message: 'El PIN nuevo debe ser distinto del que recibiste',
+    path: ['new_pin'],
+  });
+export type ChangeDriverPinDTO = z.infer<typeof ChangeDriverPinDTO>;
+
 export const OtpCode = z.string().regex(/^\d{4,8}$/, 'Código OTP inválido');
 
 export const JwtAccessPayload = z.object({
   sub: z.number().int().positive(),
   role: Role,
   company_id: z.number().int().positive().optional(),
+  pin_change_required: z.literal(true).optional(),
   type: z.literal('access'),
   iat: z.number().int().optional(),
   exp: z.number().int().optional(),
@@ -60,6 +107,7 @@ export const SessionUser = z.object({
   role: Role,
   tenant: SessionTenant.nullable(),
   profile_complete: z.boolean(),
+  pin_change_required: z.boolean().default(false),
 });
 export type SessionUser = z.infer<typeof SessionUser>;
 
@@ -133,6 +181,9 @@ export const AuthErrorCode = z.enum([
   'STAFF_WITHOUT_COMPANY',
   'COMPANY_NOT_ACTIVE',
   'PIN_NOT_DELIVERED',
+  'PIN_CHANGE_REQUIRED',
+  'TEMPORARY_PIN_EXPIRED',
+  'PIN_TOO_WEAK',
 ]);
 export type AuthErrorCode = z.infer<typeof AuthErrorCode>;
 
@@ -168,3 +219,12 @@ export const DriverSuspendedEvent = z.object({
   occurred_at: z.string().datetime(),
 });
 export type DriverSuspendedEvent = z.infer<typeof DriverSuspendedEvent>;
+
+export const DRIVER_CREDENTIALS_RESET_EVENT = 'fleet.driver_credentials_reset';
+
+export const DriverCredentialsResetEvent = z.object({
+  driver_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  occurred_at: z.string().datetime(),
+});
+export type DriverCredentialsResetEvent = z.infer<typeof DriverCredentialsResetEvent>;

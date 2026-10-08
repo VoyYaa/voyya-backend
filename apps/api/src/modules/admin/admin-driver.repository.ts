@@ -10,6 +10,7 @@ export interface CreateDriverWithVehicleData {
   email: string | null;
   license: string | null;
   pinHash: string;
+  temporaryPinExpiresAt: Date;
   vehicle: {
     plate: string;
     model: string;
@@ -149,6 +150,8 @@ export class AdminDriverRepository {
         companyId,
         nationalId: data.nationalId,
         pin: data.pinHash,
+        pinMustChange: true,
+        temporaryPinExpiresAt: data.temporaryPinExpiresAt,
         license: data.license,
         status: 'off_shift',
         currentVehicleId: vehicle.vehicleId,
@@ -213,12 +216,18 @@ export class AdminDriverRepository {
     driverId: number,
     companyId: number,
     pinHash: string,
+    temporaryPinExpiresAt: Date,
   ): Promise<RotatedPinRow | null> {
     const rows = await tx.$queryRaw<
       Array<{ driver_id: number; national_id: string; phone: string }>
     >`
       UPDATE fleet.driver d
          SET pin = ${pinHash},
+             status = CASE WHEN d.status = 'available'
+                           THEN 'off_shift'::fleet."DriverStatus"
+                           ELSE d.status END,
+             pin_must_change = true,
+             temporary_pin_expires_at = ${temporaryPinExpiresAt},
              pin_delivered_at = NULL,
              failed_attempts = 0,
              blocked_until = NULL,

@@ -4,7 +4,7 @@ const JWT = /\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}/g;
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi;
 const EXPO_PUSH_TOKEN = /ExponentPushToken\[[^\]]{1,64}\]/g;
 const LABELLED_ID =
-  /\b(c[eé]dula|cedula|documento|nit|pin|otp|licencia|placa)\b([\s:=#]{0,3})(\S{3,20})/gi;
+  /(?<![/.])\b(c[eé]dula|documento|nit|pin|otp|licencia|placa)\b(["']?\s*[:=#]\s*["']?|\s+)(?=[A-Za-z0-9.-]{0,19}\d)([A-Za-z0-9.-]{3,20})/gi;
 
 export function redactPii(input: string): string {
   return input

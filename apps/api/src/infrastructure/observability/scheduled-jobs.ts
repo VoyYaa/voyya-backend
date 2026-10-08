@@ -34,6 +34,12 @@ export const SCHEDULED_JOBS = {
     checkinMarginMin: 30,
     maxRuntimeMin: 30,
   },
+  tripCoordinatesPurge: {
+    slug: 'trip-coordinates-purge',
+    cron: CronExpression.EVERY_DAY_AT_4AM,
+    checkinMarginMin: 30,
+    maxRuntimeMin: 30,
+  },
 } as const satisfies Record<string, ScheduledJob>;
 
 export function cronOptions(job: ScheduledJob): { name: string; timeZone: string } {

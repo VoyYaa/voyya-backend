@@ -7,6 +7,37 @@ import { AmountCop, FareBreakdown, TripStatus } from './trips';
 export const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (YYYY-MM-DD)');
 export type IsoDate = z.infer<typeof IsoDate>;
 
+const DAY_MS = 86_400_000;
+
+function isoDateToUtcMs(date: string): number {
+  return Date.parse(`${date}T00:00:00Z`);
+}
+
+export function isCalendarDate(date: string): boolean {
+  const ms = isoDateToUtcMs(date);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === date;
+}
+
+export const CalendarDate = IsoDate.refine(isCalendarDate, 'Esa fecha no existe');
+export type CalendarDate = z.infer<typeof CalendarDate>;
+
+export function addDays(date: IsoDate, days: number): IsoDate {
+  return new Date(isoDateToUtcMs(date) + days * DAY_MS).toISOString().slice(0, 10);
+}
+
+export function daysBetween(from: IsoDate, to: IsoDate): number {
+  return Math.round((isoDateToUtcMs(to) - isoDateToUtcMs(from)) / DAY_MS);
+}
+
+export function isMonday(date: IsoDate): boolean {
+  return new Date(isoDateToUtcMs(date)).getUTCDay() === 1;
+}
+
+export function weekStartOf(date: IsoDate): IsoDate {
+  const dayOfWeek = new Date(isoDateToUtcMs(date)).getUTCDay();
+  return addDays(date, -((dayOfWeek + 6) % 7));
+}
+
 export const VehiclePlate = z
   .string()
   .trim()
@@ -96,6 +127,7 @@ export const CreatedDriver = z.object({
   documents: z.array(CreatedDriverDocument),
   pin_delivery: PinDeliveryStatus,
   pin_delivered_at: z.string().datetime().nullable(),
+  temporary_pin_expires_at: z.string().datetime(),
   created_at: z.string().datetime(),
 });
 export type CreatedDriver = z.infer<typeof CreatedDriver>;
@@ -104,6 +136,7 @@ export const ResendDriverPinResponse = z.object({
   driver_id: z.number().int().positive(),
   pin_delivery: PinDeliveryStatus,
   pin_delivered_at: z.string().datetime().nullable(),
+  temporary_pin_expires_at: z.string().datetime(),
 });
 export type ResendDriverPinResponse = z.infer<typeof ResendDriverPinResponse>;
 
@@ -217,8 +250,8 @@ export const OpsTripDetail = z.object({
   trip_request_id: z.number().int().positive(),
   status: TripStatus,
   status_since: z.string().datetime(),
-  pickup_address: z.string(),
-  dropoff_address: z.string(),
+  pickup_address: z.string().nullable(),
+  dropoff_address: z.string().nullable(),
   fare: FareBreakdown,
   passenger_name: z.string(),
   passenger_phone_masked: z.string().nullable(),
@@ -242,6 +275,14 @@ export const OpsDriverQuery = z.object({
 });
 export type OpsDriverQuery = z.infer<typeof OpsDriverQuery>;
 
+export const DriverPinStatus = z.enum([
+  'not_delivered',
+  'temporary',
+  'temporary_expired',
+  'personal',
+]);
+export type DriverPinStatus = z.infer<typeof DriverPinStatus>;
+
 export const OpsDriverRow = z.object({
   driver_id: z.number().int().positive(),
   first_name: z.string(),
@@ -253,6 +294,8 @@ export const OpsDriverRow = z.object({
   location_updated_at: z.string().datetime().nullable(),
   location_stale: z.boolean(),
   pin_delivered_at: z.string().datetime().nullable(),
+  pin_status: DriverPinStatus,
+  temporary_pin_expires_at: z.string().datetime().nullable(),
   created_at: z.string().datetime(),
 });
 export type OpsDriverRow = z.infer<typeof OpsDriverRow>;
@@ -270,13 +313,45 @@ export const OpsDriverDetail = OpsDriverRow.extend({
 });
 export type OpsDriverDetail = z.infer<typeof OpsDriverDetail>;
 
-export const SettlementReportQuery = z.object({
-  from: IsoDate,
-  to: IsoDate,
-  driver_id: z.coerce.number().int().positive().optional(),
-  status: z.enum(['completed', 'cancelled']).optional(),
-});
+export const SETTLEMENT_TIME_ZONE = 'America/Bogota';
+export const SETTLEMENT_MAX_RANGE_DAYS = 31;
+
+export function settlementToday(now: Date): IsoDate {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SETTLEMENT_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(now);
+}
+
+export function settlementWeekOf(date: IsoDate): { from: IsoDate; to: IsoDate } {
+  const from = weekStartOf(date);
+  return { from, to: addDays(from, 6) };
+}
+
+export const SettlementReportQuery = z
+  .object({
+    from: CalendarDate,
+    to: CalendarDate,
+    driver_id: z.coerce.number().int().positive().optional(),
+  })
+  .refine((q) => q.from <= q.to, {
+    message: 'La fecha inicial no puede ser posterior a la final',
+    path: ['from'],
+  })
+  .refine((q) => daysBetween(q.from, q.to) < SETTLEMENT_MAX_RANGE_DAYS, {
+    message: `El rango no puede superar ${SETTLEMENT_MAX_RANGE_DAYS} días`,
+    path: ['to'],
+  });
 export type SettlementReportQuery = z.infer<typeof SettlementReportQuery>;
+
+export const SettlementRemittanceSummary = z.object({
+  remitted_amount: AmountCop,
+  balance: z.number().int(),
+  last_remitted_at: z.string().datetime().nullable(),
+});
+export type SettlementRemittanceSummary = z.infer<typeof SettlementRemittanceSummary>;
 
 export const SettlementReportRow = z.object({
   driver_id: z.number().int().positive(),
@@ -284,25 +359,105 @@ export const SettlementReportRow = z.object({
   national_id: z.string(),
   plate: z.string().nullable(),
   trip_count: z.number().int().nonnegative(),
-  total_cash_income: AmountCop,
-  membership_fee_due: AmountCop.nullable(),
+  cash_collected: AmountCop,
+  commission: AmountCop,
+  driver_net: AmountCop,
+  amount_to_remit: AmountCop,
+  pending_cash_trip_count: z.number().int().nonnegative(),
+  pending_cash_amount: AmountCop,
+  remittance: SettlementRemittanceSummary.nullable(),
 });
 export type SettlementReportRow = z.infer<typeof SettlementReportRow>;
 
 export const SettlementReportTotals = z.object({
   trip_count: z.number().int().nonnegative(),
-  total_cash_income: AmountCop,
+  cash_collected: AmountCop,
+  commission: AmountCop,
+  driver_net: AmountCop,
+  amount_to_remit: AmountCop,
+  pending_cash_trip_count: z.number().int().nonnegative(),
+  pending_cash_amount: AmountCop,
+  remitted_amount: AmountCop.nullable(),
+  remittance_balance: z.number().int().nullable(),
 });
 export type SettlementReportTotals = z.infer<typeof SettlementReportTotals>;
 
 export const SettlementReportResponse = z.object({
   from: IsoDate,
   to: IsoDate,
+  time_zone: z.literal(SETTLEMENT_TIME_ZONE),
+  week_start: IsoDate.nullable(),
+  in_progress: z.boolean(),
   generated_at: z.string().datetime(),
   rows: z.array(SettlementReportRow),
   totals: SettlementReportTotals,
 });
 export type SettlementReportResponse = z.infer<typeof SettlementReportResponse>;
+
+export const SETTLEMENT_CSV_COLUMNS = [
+  { key: 'driver_name', label: 'Conductor' },
+  { key: 'national_id', label: 'Cédula' },
+  { key: 'plate', label: 'Placa' },
+  { key: 'trip_count', label: 'Viajes' },
+  { key: 'cash_collected', label: 'Efectivo cobrado' },
+  { key: 'commission', label: 'Comisión registrada' },
+  { key: 'driver_net', label: 'Neto del conductor' },
+  { key: 'amount_to_remit', label: 'Total a remitir' },
+  { key: 'pending_cash_trip_count', label: 'Viajes con cobro pendiente' },
+  { key: 'pending_cash_amount', label: 'Monto con cobro pendiente' },
+] as const satisfies readonly { key: keyof SettlementReportRow; label: string }[];
+
+export const SETTLEMENT_CSV_CONTENT_TYPE = 'text/csv; charset=utf-8';
+
+export const RemittanceEntryKind = z.enum(['remittance', 'reversal']);
+export type RemittanceEntryKind = z.infer<typeof RemittanceEntryKind>;
+
+export const SettlementWeekStart = CalendarDate.refine(isMonday, 'La semana debe empezar en lunes');
+export type SettlementWeekStart = z.infer<typeof SettlementWeekStart>;
+
+export const RecordRemittanceDTO = z.object({
+  driver_id: z.number().int().positive(),
+  week_start: SettlementWeekStart,
+  expected_amount: AmountCop.positive(),
+});
+export type RecordRemittanceDTO = z.infer<typeof RecordRemittanceDTO>;
+
+export const RemittanceActor = z.object({
+  user_id: z.number().int().positive(),
+  name: z.string(),
+});
+export type RemittanceActor = z.infer<typeof RemittanceActor>;
+
+export const SettlementRemittanceEntry = z.object({
+  remittance_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  week_start: IsoDate,
+  kind: RemittanceEntryKind,
+  amount: AmountCop,
+  recorded_by: RemittanceActor,
+  recorded_at: z.string().datetime(),
+  reverses_remittance_id: z.number().int().positive().nullable(),
+  reversed: z.boolean(),
+});
+export type SettlementRemittanceEntry = z.infer<typeof SettlementRemittanceEntry>;
+
+export const RemittanceResult = z.object({
+  entry: SettlementRemittanceEntry,
+  idempotent: z.boolean(),
+  summary: SettlementRemittanceSummary,
+});
+export type RemittanceResult = z.infer<typeof RemittanceResult>;
+
+export const RemittanceHistoryQuery = z.object({
+  driver_id: z.coerce.number().int().positive(),
+  week_start: SettlementWeekStart.optional(),
+});
+export type RemittanceHistoryQuery = z.infer<typeof RemittanceHistoryQuery>;
+
+export const RemittanceHistoryResponse = z.object({
+  rows: z.array(SettlementRemittanceEntry),
+});
+export type RemittanceHistoryResponse = z.infer<typeof RemittanceHistoryResponse>;
 
 export const AdminErrorCode = z.enum([
   'NATIONAL_ID_TAKEN',
@@ -320,6 +475,11 @@ export const AdminErrorCode = z.enum([
   'DOCUMENT_TYPE_NOT_ALLOWED',
   'DOCUMENT_NOT_FOUND',
   'DOCUMENT_STORAGE_UNAVAILABLE',
+  'DRIVER_HAS_ACTIVE_TRIP',
+  'NOTHING_TO_REMIT',
+  'SETTLEMENT_BALANCE_CHANGED',
+  'REMITTANCE_NOT_FOUND',
+  'REMITTANCE_NOT_REVERSIBLE',
 ]);
 export type AdminErrorCode = z.infer<typeof AdminErrorCode>;
 
