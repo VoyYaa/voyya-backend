@@ -332,6 +332,7 @@ export const PlatformErrorCode = z.enum([
   'NO_DECISION_TO_RESEND',
   'MUNICIPALITY_FARE_REQUIRED',
   'SERVICE_NOT_AVAILABLE',
+  'SETTINGS_CONFLICT',
 ]);
 export type PlatformErrorCode = z.infer<typeof PlatformErrorCode>;
 
