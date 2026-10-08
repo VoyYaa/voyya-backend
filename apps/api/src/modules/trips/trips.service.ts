@@ -36,6 +36,7 @@ import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import { calculateFare } from './domain/fare.calculator';
+import { freeCancellationDeadline, isFreeCancellation } from './domain/free-cancellation';
 import { haversineKm } from './domain/geo';
 import { passengerUiState } from './domain/ui-state';
 import { HOLIDAYS_PROVIDER, type HolidaysProvider } from './holidays/holidays.provider';
@@ -196,6 +197,7 @@ export class TripsService {
     passengerId: number,
     _dto: CancelTripRequestDTO,
   ): Promise<TripRequestCancelled> {
+    const receivedAt = new Date();
     const tripRequest = await this.repo.getTripRequest(tripRequestId);
     if (!tripRequest) {
       throw new NotFoundException({
@@ -216,12 +218,11 @@ export class TripsService {
       });
     }
 
-    const windowMin = this.env.get('CANCELLATION_WINDOW_MIN');
-    let freeOfCharge = true;
-    if (tripRequest.status !== 'pending_assignment') {
-      const reference = tripRequest.assignedAt ?? tripRequest.updatedAt;
-      freeOfCharge = minutesSince(reference) <= windowMin;
-    }
+    const freeOfCharge = isFreeCancellation(
+      tripRequest,
+      this.env.get('CANCELLATION_WINDOW_MIN'),
+      receivedAt,
+    );
     const penaltyRecorded = !freeOfCharge;
 
     const outcome = await this.tripClosing.closeTrip({
@@ -290,7 +291,10 @@ export class TripsService {
       fare: await this.rebuildFare(t),
       driver,
       arrived_at: t.arrivedAt ? t.arrivedAt.toISOString() : null,
+      free_cancellation_until:
+        freeCancellationDeadline(t, this.env.get('CANCELLATION_WINDOW_MIN'))?.toISOString() ?? null,
       updated_at: t.updatedAt.toISOString(),
+      server_time: new Date().toISOString(),
     };
   }
 
@@ -411,7 +415,4 @@ function almostEqual(a: number, b: number): boolean {
 }
 function round3(n: number): number {
   return Math.round(n * 1000) / 1000;
-}
-function minutesSince(date: Date): number {
-  return (Date.now() - date.getTime()) / 60000;
 }

@@ -74,3 +74,49 @@ describe('redactPiiDeep', () => {
     expect(() => redactPiiDeep(deep)).not.toThrow();
   });
 });
+
+describe('redactPii 0.8.1 case table', () => {
+  it.each([
+    ['national_id=71000001', 'national_id=[redacted]'],
+    ['{"national_id":"71000001"}', '{"national_id":"[redacted]"}'],
+    ['nationalId: 71000001', 'nationalId: [redacted]'],
+    ['current_pin=482913&new_pin=591027', 'current_pin=[redacted]&new_pin=[redacted]'],
+    ['{"current_pin":"482913","new_pin":"591027"}', '{"current_pin":"[redacted]","new_pin":"[redacted]"}'],
+    ['new_pin 482913', 'new_pin [redacted]'],
+    ['CC 71000001', 'CC [redacted]'],
+    ['C.C. 71.000.001', 'C.C. [redacted]'],
+    ['cédula 71 000 001', 'cédula [redacted]'],
+    ['pin: 48 29 13', 'pin: [redacted]'],
+    ['Cédula: 71 000 001 registrada', 'Cédula: [redacted] registrada'],
+    ['pin=482913 2026-10-08', 'pin=[redacted] 2026-10-08'],
+    [
+      'VoyYa · PIN 482913. Ingresa con tu número de cédula y este PIN.',
+      'VoyYa · PIN [redacted] Ingresa con tu número de cédula y este PIN.',
+    ],
+  ])('redacts %s', (input, expected) => {
+    expect(redactPii(input)).toBe(expected);
+  });
+
+  it.each([
+    '{route: /pin POST}',
+    'POST /auth/driver/pin} 403',
+    '/admin/drivers/5/pin/resend',
+    '{"field":"new_pin","error":"El PIN debe tener 6 dígitos"}',
+    'pin_delivered_at=2026-10-08',
+    'pin_must_change=true',
+    'access 2026',
+    'pin 12',
+    'pin 12 veces',
+    'licencia vencida 2026',
+    'PIN [redacted]',
+    'assignment=412 fare=8000',
+    'driver.national_id=71000001',
+  ])('leaves %s untouched', (input) => {
+    expect(redactPii(input)).toBe(input);
+  });
+
+  it('is idempotent', () => {
+    const once = redactPii('current_pin=482913&new_pin=591027 cédula 71 000 001');
+    expect(redactPii(once)).toBe(once);
+  });
+});

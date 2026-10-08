@@ -1,4 +1,5 @@
 import type { INestApplication } from '@nestjs/common';
+import { AuthError } from '@voyyaa/shared';
 import request from 'supertest';
 import {
   bootPinApp,
@@ -60,9 +61,16 @@ suite('POST /auth/driver/pin: rejections (ADR-028)', () => {
     const sequential = await changePin(ctx.app, token, { current_pin: '482915', new_pin: '123456' });
     expect(sequential.status).toBe(400);
     expect(sequential.body.code).toBe('INVALID_DATA');
+    expect(AuthError.safeParse(sequential.body).success).toBe(true);
+    expect(sequential.body).toEqual({
+      code: 'INVALID_DATA',
+      message: 'Solicitud inválida',
+      details: [{ field: 'new_pin', error: expect.any(String) }],
+    });
 
     const same = await changePin(ctx.app, token, { current_pin: '482915', new_pin: '482915' });
     expect(same.status).toBe(400);
+    expect(AuthError.safeParse(same.body).success).toBe(true);
     expect(same.body.details).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
