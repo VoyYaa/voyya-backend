@@ -1,4 +1,8 @@
-import pino, { type Logger as PinoLogger } from 'pino';
+import pino, {
+  type DestinationStream,
+  type Logger as PinoLogger,
+  type LoggerOptions,
+} from 'pino';
 import { redactPii } from '@voyyaa/shared';
 import { requestContext } from './request-context.service';
 
@@ -14,7 +18,8 @@ const REDACT_KEYS = [
   'password_hash',
   'pin',
   'otp',
-  'code',
+  'otp_code',
+  'otpCode',
   'token',
   'phone',
   'contact_phone',
@@ -30,18 +35,29 @@ const REDACT_KEYS = [
   'last_name',
 ];
 
+const REQUEST_BODY_PATHS = ['body', '*.body', '*.*.body'];
+
+const OTP_CODE_PATHS = ['otp.code', 'verification.code'];
+
 function redactPaths(): string[] {
   const withWildcard = REDACT_KEYS.map((key) => `*.${key}`);
+  const otpWithWildcard = OTP_CODE_PATHS.map((path) => `*.${path}`);
   return [
     'req.headers.authorization',
     'req.headers.cookie',
+    ...REQUEST_BODY_PATHS,
+    ...OTP_CODE_PATHS,
+    ...otpWithWildcard,
     ...withWildcard,
     ...REDACT_KEYS,
   ];
 }
 
-export function buildLogger(config: LoggerFactoryConfig): PinoLogger {
-  return pino({
+export function buildLogger(
+  config: LoggerFactoryConfig,
+  destination?: DestinationStream,
+): PinoLogger {
+  const options: LoggerOptions = {
     level: config.level,
     formatters: {
       level(label) {
@@ -67,5 +83,6 @@ export function buildLogger(config: LoggerFactoryConfig): PinoLogger {
         return method.apply(this, inputArgs as Parameters<typeof method>);
       },
     },
-  });
+  };
+  return destination ? pino(options, destination) : pino(options);
 }

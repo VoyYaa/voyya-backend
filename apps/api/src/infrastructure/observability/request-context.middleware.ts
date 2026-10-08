@@ -35,6 +35,7 @@ export function createRequestContextMiddleware(requestContext: RequestContextSer
           method: req.method,
           route: resolveRoute(req),
           status: res.statusCode,
+          error_code: res.locals?.errorCode as string | undefined,
           duration_ms: Math.round(durationMs),
           request_id: context?.requestId ?? requestId,
           user_id: context?.userId,

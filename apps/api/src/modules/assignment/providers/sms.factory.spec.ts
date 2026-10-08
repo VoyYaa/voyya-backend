@@ -1,4 +1,5 @@
 import type { EnvService } from '../../../config/env.service';
+import { ConsoleSmsProvider } from './console-sms.provider';
 import { NoopSmsProvider } from './noop-sms.provider';
 import { createSmsProvider } from './sms.factory';
 import { TwilioSmsProvider } from './twilio-sms.provider';
@@ -37,6 +38,22 @@ describe('createSmsProvider (explicit selection)', () => {
   it('noop in production -> throws, even with credentials present', () => {
     expect(() =>
       createSmsProvider(env({ SMS_PROVIDER: 'noop', NODE_ENV: 'production', ...credentials })),
+    ).toThrow();
+  });
+
+  it('SMS_PROVIDER=console in development -> ConsoleSmsProvider', () => {
+    const p = createSmsProvider(env({ SMS_PROVIDER: 'console', NODE_ENV: 'development' }));
+    expect(p).toBeInstanceOf(ConsoleSmsProvider);
+  });
+
+  it('SMS_PROVIDER=console in test -> ConsoleSmsProvider', () => {
+    const p = createSmsProvider(env({ SMS_PROVIDER: 'console', NODE_ENV: 'test' }));
+    expect(p).toBeInstanceOf(ConsoleSmsProvider);
+  });
+
+  it('console in production -> throws, even with credentials present', () => {
+    expect(() =>
+      createSmsProvider(env({ SMS_PROVIDER: 'console', NODE_ENV: 'production', ...credentials })),
     ).toThrow();
   });
 });

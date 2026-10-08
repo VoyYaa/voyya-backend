@@ -1,5 +1,6 @@
 import { EnvService } from '../../../config/env.service';
 import type { SmsProvider } from '../ports/sms-provider.port';
+import { ConsoleSmsProvider } from './console-sms.provider';
 import { NoopSmsProvider } from './noop-sms.provider';
 import { TwilioSmsProvider } from './twilio-sms.provider';
 
@@ -18,6 +19,10 @@ export function createSmsProvider(env: EnvService): SmsProvider {
 
   if (env.get('NODE_ENV') === 'production') {
     throw new Error('SMS: the stub is forbidden in production. Set SMS_PROVIDER=twilio.');
+  }
+
+  if (env.get('SMS_PROVIDER') === 'console') {
+    return new ConsoleSmsProvider();
   }
 
   return new NoopSmsProvider(env);

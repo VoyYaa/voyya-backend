@@ -56,6 +56,11 @@ describe('validateEnv — provider selection', () => {
     expect(env.SMS_PROVIDER).toBe('noop');
   });
 
+  it.each(['development', 'test'])('accepts SMS_PROVIDER=console in %s', (nodeEnv) => {
+    const env = validateEnv({ ...base, NODE_ENV: nodeEnv, SMS_PROVIDER: 'console' });
+    expect(env.SMS_PROVIDER).toBe('console');
+  });
+
   it('rejects an unknown provider value', () => {
     expect(failureOf({ ...base, SMS_PROVIDER: 'sns' })).toContain('SMS_PROVIDER');
   });
@@ -78,6 +83,7 @@ describe('validateEnv — provider selection', () => {
 
   it.each([
     ['SMS_PROVIDER', 'noop'],
+    ['SMS_PROVIDER', 'console'],
     ['EMAIL_PROVIDER', 'noop'],
     ['PUSH_PROVIDER', 'noop'],
   ])('rejects %s=%s in production', (key, value) => {

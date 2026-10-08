@@ -42,7 +42,7 @@ const BaseEnvSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
-  SMS_PROVIDER: z.enum(['twilio', 'noop']).default('noop'),
+  SMS_PROVIDER: z.enum(['twilio', 'noop', 'console']).default('noop'),
   EMAIL_PROVIDER: z.enum(['sendgrid', 'noop']).default('noop'),
   PUSH_PROVIDER: z.enum(['expo', 'noop']).default('noop'),
 

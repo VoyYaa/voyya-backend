@@ -11,6 +11,8 @@ import { resolveRoute } from '../infrastructure/observability/route-pattern';
 import { requestContext } from '../infrastructure/observability/request-context.service';
 import { captureError } from '../infrastructure/observability/sentry';
 
+const INTERNAL_ERROR_CODE = 'INTERNAL_ERROR';
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -24,10 +26,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const status = exception.getStatus();
       const body = exception.getResponse();
 
+      const errorCode = extractCode(body);
+      flagErrorCode(res, errorCode);
+
       if (status >= 500) {
         this.logger.error({
           msg: 'unhandled_http_exception',
           status,
+          error_code: errorCode,
           route: resolveRoute(req),
           stack: exception.stack,
         });
@@ -36,7 +42,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         this.logger.warn({
           msg: 'http_exception',
           status,
-          code: extractCode(body),
+          error_code: errorCode,
           route: resolveRoute(req),
         });
       }
@@ -46,15 +52,25 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     const stack = exception instanceof Error ? exception.stack : undefined;
-    this.logger.error({ msg: 'unhandled_error', route: resolveRoute(req), stack });
+    flagErrorCode(res, INTERNAL_ERROR_CODE);
+    this.logger.error({
+      msg: 'unhandled_error',
+      error_code: INTERNAL_ERROR_CODE,
+      route: resolveRoute(req),
+      stack,
+    });
     captureError(exception);
 
     res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
-      code: 'INTERNAL_ERROR',
+      code: INTERNAL_ERROR_CODE,
       message: 'Error interno del servidor',
       request_id: requestContext.get()?.requestId,
     });
   }
+}
+
+function flagErrorCode(res: Response, errorCode: string | undefined): void {
+  if (errorCode && res.locals) res.locals.errorCode = errorCode;
 }
 
 function extractCode(body: unknown): string | undefined {
