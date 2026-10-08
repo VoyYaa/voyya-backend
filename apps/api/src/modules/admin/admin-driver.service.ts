@@ -30,6 +30,7 @@ import { FILE_STORAGE, type FileStorageProvider } from '../affiliation/ports/fil
 import { HASHER, type Hasher } from '../auth/hasher.service';
 import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
+import { driverCredentialsSms } from './messages';
 import {
   AdminDriverRepository,
   type CreatedDriverDocumentRow,
@@ -155,10 +156,7 @@ export class AdminDriverService {
       throw this.translateUniqueViolation(error);
     }
 
-    const { delivery, deliveredAt } = await this.deliverPin(companyId, created.driverId, created.phone, {
-      nationalId: created.nationalId,
-      pin,
-    });
+    const { delivery, deliveredAt } = await this.deliverPin(companyId, created.driverId, created.phone, pin);
 
     return {
       driver_id: created.driverId,
@@ -210,10 +208,7 @@ export class AdminDriverService {
       throw new NotFoundException({ code: 'DRIVER_NOT_FOUND', message: 'El conductor no existe' });
     }
 
-    const { delivery, deliveredAt } = await this.deliverPin(companyId, rotated.driverId, rotated.phone, {
-      nationalId: rotated.nationalId,
-      pin,
-    });
+    const { delivery, deliveredAt } = await this.deliverPin(companyId, rotated.driverId, rotated.phone, pin);
 
     return {
       driver_id: rotated.driverId,
@@ -249,14 +244,10 @@ export class AdminDriverService {
     companyId: number,
     driverId: number,
     phone: string,
-    payload: { nationalId: string; pin: string },
+    pin: string,
   ): Promise<{ delivery: PinDeliveryStatus; deliveredAt: Date | null }> {
     try {
-      await this.sms.send(
-        phone,
-        `VoyYa · cédula ${payload.nationalId} · PIN ${payload.pin}`,
-        'driver-credentials',
-      );
+      await this.sms.send(phone, driverCredentialsSms(pin), 'driver-credentials');
     } catch {
       this.logger.warn(`PIN delivery failed for driver=${driverId}`);
       return { delivery: 'failed', deliveredAt: null };

@@ -132,6 +132,18 @@ describe('AdminDriverService.create', () => {
     expect(JSON.stringify(result)).not.toMatch(/"pin"/i);
   });
 
+  it('G-02: the credentials SMS carries the PIN but never the national id', async () => {
+    const { service, sms } = create();
+
+    await service.create(COMPANY_ID, dto);
+
+    const [, message, kind] = (sms.send as jest.Mock).mock.calls[0] as [string, string, string];
+    expect(kind).toBe('driver-credentials');
+    expect(message).toMatch(/PIN \d+/);
+    expect(message).not.toContain(dto.national_id);
+    expect(message).not.toMatch(/c.dula\s*\d/i);
+  });
+
   it('SMS fails -> 201-equivalent result with pin_delivery=failed and pin_delivered_at=null', async () => {
     const { service, sms } = create();
     (sms.send as jest.Mock).mockRejectedValueOnce(new Error('twilio down'));
