@@ -1,6 +1,5 @@
-export function driverCredentialsSms(pin: string, ttlHours: number): string {
-  const unit = ttlHours === 1 ? 'hora' : 'horas';
-  return `VoyYa · PIN ${pin}. Ingresa con tu número de cédula y este PIN. Vence en ${ttlHours} ${unit}.`;
+export function driverCredentialsSms(pin: string): string {
+  return `VoyYa · PIN ${pin}. Ingresa con tu número de cédula y este PIN.`;
 }
 
 export const DRIVER_HAS_ACTIVE_TRIP_MESSAGE =

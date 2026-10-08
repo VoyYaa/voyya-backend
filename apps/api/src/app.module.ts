@@ -13,7 +13,6 @@ import { AffiliationModule } from './modules/affiliation/affiliation.module';
 import { AssignmentModule } from './modules/assignment/assignment.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
-import { PinChangeGuard } from './modules/auth/guards/pin-change.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
@@ -45,7 +44,6 @@ import { skipUnlessOptedIn } from './shared/opt-in-throttle';
   providers: [
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
-    { provide: APP_GUARD, useClass: PinChangeGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
   ],
 })

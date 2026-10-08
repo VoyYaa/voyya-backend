@@ -17,8 +17,6 @@ const REDACT_KEYS = [
   'password',
   'password_hash',
   'pin',
-  'current_pin',
-  'new_pin',
   'otp',
   'otp_code',
   'otpCode',
@@ -35,10 +33,6 @@ const REDACT_KEYS = [
   'dropoff_address',
   'first_name',
   'last_name',
-  'lat',
-  'lng',
-  'current_lat',
-  'current_lng',
 ];
 
 const REQUEST_BODY_PATHS = ['body', '*.body', '*.*.body'];

@@ -9,7 +9,6 @@ import {
 } from '@nestjs/common';
 import {
   CancelTripRequestDTO,
-  type ActiveTripResponse,
   type QuoteResponse,
   QuoteFareDTO,
   CreateTripRequestDTO,
@@ -41,11 +40,6 @@ export class TripsController {
     @CurrentUserId() passengerId: number,
   ): Promise<TripRequestCreated> {
     return this.trips.create(dto, passengerId);
-  }
-
-  @Get('active')
-  getActive(@CurrentUserId() passengerId: number): Promise<ActiveTripResponse> {
-    return this.trips.getActive(passengerId);
   }
 
   @Get(':id')

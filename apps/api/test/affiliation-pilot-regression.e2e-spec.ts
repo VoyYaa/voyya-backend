@@ -10,7 +10,6 @@ import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliati
 import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
-import { grantLocationConsent } from './support/grant-location-consent';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -200,7 +199,6 @@ suite(
         },
       });
       const driverId = driverUser.userId;
-      await grantLocationConsent(prisma, driverId);
 
       const vehicle = await prisma.runInTenant(companyId, (tx) =>
         tx.vehicle.create({ data: { plate: randomPlate(), companyId, status: 'active' } }),

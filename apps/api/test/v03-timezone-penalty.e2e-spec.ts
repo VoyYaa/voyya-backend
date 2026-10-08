@@ -11,7 +11,6 @@ import { TripsRepository } from '../src/modules/trips/trips.repository';
 import { TripsService } from '../src/modules/trips/trips.service';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { RequestContextService } from '../src/infrastructure/observability/request-context.service';
-import { createFreshPassenger } from './support/fresh-passenger';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -123,7 +122,6 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
   });
 
   async function makePendingTrip(): Promise<number> {
-    passengerId = await createFreshPassenger(raw);
     const trip = await raw.tripRequest.create({
       data: {
         passengerId,

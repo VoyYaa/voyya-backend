@@ -66,51 +66,6 @@ describe('TripLifecycleService · ownership (403 NOT_THE_DRIVER)', () => {
   });
 });
 
-describe('TripLifecycleService · transition on an already closed trip (BUG-5)', () => {
-  it('the assigned driver starting a completed trip gets 409 INVALID_TRIP_TRANSITION, not 403', async () => {
-    const seenAllow: Array<readonly AssignmentStatus[] | undefined> = [];
-    const assignment = {
-      async getAcceptedAssignment(
-        _t: number,
-        _d: number,
-        _c: number,
-        allow?: readonly AssignmentStatus[],
-      ) {
-        seenAllow.push(allow);
-        return allow?.includes('completed') && !allow.includes('accepted') ? { assignmentId: 1 } : null;
-      },
-    } as unknown as AssignmentService;
-    const service = new TripLifecycleService(
-      buildRepo({}),
-      assignment,
-      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
-      buildParams(),
-      buildEmitter(),
-    );
-
-    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
-
-    expect(e).toBeInstanceOf(ConflictException);
-    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
-    expect(seenAllow).toEqual([['accepted'], ['completed']]);
-  });
-
-  it('a driver with no assignment on the trip still gets 403 NOT_THE_DRIVER', async () => {
-    const service = new TripLifecycleService(
-      buildRepo({}),
-      buildAssignment(false),
-      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
-      buildParams(),
-      buildEmitter(),
-    );
-
-    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
-
-    expect(e).toBeInstanceOf(ForbiddenException);
-    expect(e.getResponse()).toMatchObject({ code: 'NOT_THE_DRIVER' });
-  });
-});
-
 describe('TripLifecycleService.markEnRoute', () => {
   it('applied -> idempotent=false, status driver_en_route', async () => {
     const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {

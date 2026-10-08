@@ -42,7 +42,7 @@ suite('DatabasePreflightService against real Postgres — covers the 5 tenant-ow
   });
 
   tableOwnerOnlyIt(
-    'ADR-027: hasForcedRls is false with only 9 of the 10 tables forced, true again once restored',
+    'ADR-021: hasForcedRls is false with only 7 of the 8 tables forced, true again once restored',
     async () => {
       class RolledBack extends Error {}
       const ownerClient = owner as PrismaClient;

@@ -2,14 +2,12 @@ import { NotFoundException } from '@nestjs/common';
 import type { OpsDriverQuery, OpsQueueQuery } from '@voyyaa/shared';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { OperationalParamsService } from '../assignment/operational-params.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { OpsConsoleRepository } from './ops-console.repository';
 import { OpsConsoleService } from './ops-console.service';
 
 const COMPANY_ID = 1;
 const MUNICIPALITY_ID = 10;
-const SCOPE = { companyId: COMPANY_ID, municipalityId: MUNICIPALITY_ID, receivesUnassigned: true };
 
 function fakePrisma(): PrismaService {
   return {
@@ -17,7 +15,7 @@ function fakePrisma(): PrismaService {
   } as unknown as PrismaService;
 }
 
-function create(locationStaleMin = 15, dispatchTarget: number | null = COMPANY_ID) {
+function create(locationStaleMin = 15) {
   const repo = {
     listTripRequests: jest.fn().mockResolvedValue([]),
     getTripRequest: jest.fn().mockResolvedValue(null),
@@ -25,16 +23,14 @@ function create(locationStaleMin = 15, dispatchTarget: number | null = COMPANY_I
     getDriver: jest.fn().mockResolvedValue(null),
   };
   const companyMunicipality = { resolve: jest.fn().mockResolvedValue(MUNICIPALITY_ID) };
-  const activeCompany = { resolve: jest.fn().mockResolvedValue(dispatchTarget) };
   const params = { get: jest.fn().mockResolvedValue({ locationStaleMin }) };
   const service = new OpsConsoleService(
     fakePrisma(),
     repo as unknown as OpsConsoleRepository,
     companyMunicipality as unknown as CompanyMunicipalityResolver,
-    activeCompany as unknown as ActiveCompanyResolver,
     params as unknown as OperationalParamsService,
   );
-  return { service, repo, companyMunicipality, activeCompany, params };
+  return { service, repo, companyMunicipality, params };
 }
 
 describe('OpsConsoleService.listTripRequests', () => {
@@ -74,7 +70,7 @@ describe('OpsConsoleService.listTripRequests', () => {
 
     expect(repo.listTripRequests).toHaveBeenCalledWith(
       expect.anything(),
-      SCOPE,
+      MUNICIPALITY_ID,
       ['no_driver', 'expired'],
       100,
       60,
@@ -88,31 +84,11 @@ describe('OpsConsoleService.listTripRequests', () => {
 
     expect(repo.listTripRequests).toHaveBeenCalledWith(
       expect.anything(),
-      SCOPE,
+      MUNICIPALITY_ID,
       null,
       100,
       60,
     );
-  });
-});
-
-describe('OpsConsoleService trip scope (B-04)', () => {
-  it('the dispatch-target company of the municipality also sees unassigned requests', async () => {
-    const { service, repo } = create(15, COMPANY_ID);
-    await service.listTripRequests(COMPANY_ID, { status: 'all', limit: 100 });
-    expect(repo.listTripRequests.mock.calls[0]?.[1]).toEqual(SCOPE);
-  });
-
-  it('another company in the same municipality does not receive unassigned requests', async () => {
-    const { service, repo } = create(15, 99);
-    await service.listTripRequests(COMPANY_ID, { status: 'all', limit: 100 });
-    expect(repo.listTripRequests.mock.calls[0]?.[1]).toEqual({ ...SCOPE, receivesUnassigned: false });
-  });
-
-  it('a municipality with no active company yields no unassigned visibility in the detail', async () => {
-    const { service, repo } = create(15, null);
-    await expect(service.getTripRequest(COMPANY_ID, 5)).rejects.toBeInstanceOf(NotFoundException);
-    expect(repo.getTripRequest.mock.calls[0]?.[1]).toEqual({ ...SCOPE, receivesUnassigned: false });
   });
 });
 

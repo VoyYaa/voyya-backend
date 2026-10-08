@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { DriverStatus, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { requireTripLocation } from '../../shared/require-trip-location';
 
 export interface DriverShiftRow {
   status: DriverStatus;
@@ -28,7 +27,7 @@ export interface PendingCashTripRow {
   tripRequestId: number;
   finishedAt: Date;
   fare: number;
-  dropoffAddress: string | null;
+  dropoffAddress: string;
 }
 
 type RawShiftRow = {
@@ -81,24 +80,6 @@ export class DriverRepository {
       RETURNING driver_id
     `;
     return rows.length;
-  }
-
-  async clearLocationAfterConsentRevoked(
-    tx: Prisma.TransactionClient,
-    driverId: number,
-    companyId: number,
-  ): Promise<void> {
-    await tx.$executeRaw`
-      UPDATE fleet.driver
-         SET current_lat = NULL,
-             current_lng = NULL,
-             location_updated_at = NULL,
-             status = CASE WHEN status = 'available'
-                           THEN 'off_shift'::fleet."DriverStatus"
-                           ELSE status END,
-             updated_at = (now() AT TIME ZONE 'UTC')
-       WHERE driver_id = ${driverId} AND company_id = ${companyId}
-    `;
   }
 
   async getShiftRow(
@@ -219,8 +200,8 @@ export class DriverRepository {
       tripRequestId: t.tripRequestId,
       assignmentId: a.assignmentId,
       status: t.status,
-      pickupAddress: requireTripLocation(t.pickupAddress),
-      dropoffAddress: requireTripLocation(t.dropoffAddress),
+      pickupAddress: t.pickupAddress,
+      dropoffAddress: t.dropoffAddress,
       fare: Number(t.fare),
       commission: Number(t.commission),
       arrivedAt: t.arrivedAt,

@@ -35,9 +35,8 @@ const PREFLIGHT_QUERY = `
             (('fleet','driver'), ('fleet','vehicle'), ('assignment','assignment'),
              ('trips','fare_config'), ('admin','system_parameter'),
              ('tenancy','company_document'), ('tenancy','company_review'),
-             ('fleet','driver_document'),
-             ('admin','settlement_remittance'), ('admin','settlement_export'))
-    ) = 10 AS "hasForcedRls"
+             ('fleet','driver_document'))
+    ) = 8 AS "hasForcedRls"
 `;
 
 @Injectable()

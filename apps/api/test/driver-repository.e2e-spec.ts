@@ -1,7 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { DriverRepository } from '../src/modules/assignment/driver.repository';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
-import { createFreshPassenger } from './support/fresh-passenger';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -229,7 +228,7 @@ suite('DriverRepository raw SQL against real Postgres (ADR-009)', () => {
       const driverId = await makeDriver('on_trip');
       const trip = await raw.tripRequest.create({
         data: {
-          passengerId: await createFreshPassenger(raw, { firstName: '_DriverRepo', lastName: 'Passenger' }),
+          passengerId,
           municipalityId,
           serviceType: 'taxi',
           paymentMethod: 'cash',
@@ -282,7 +281,7 @@ suite('DriverRepository raw SQL against real Postgres (ADR-009)', () => {
       const driverId = await makeDriver('available');
       const trip = await raw.tripRequest.create({
         data: {
-          passengerId: await createFreshPassenger(raw),
+          passengerId,
           municipalityId,
           serviceType: 'taxi',
           paymentMethod: 'cash',
@@ -325,7 +324,7 @@ suite('DriverRepository raw SQL against real Postgres (ADR-009)', () => {
       const driverId = await makeDriver('available');
       const trip = await raw.tripRequest.create({
         data: {
-          passengerId: await createFreshPassenger(raw),
+          passengerId,
           municipalityId,
           serviceType: 'taxi',
           paymentMethod: 'cash',
@@ -489,7 +488,7 @@ suite('DriverRepository raw SQL against real Postgres (ADR-009)', () => {
       const driverId = await makeDriverWithLocation('on_trip', hoursAgo(20));
       const trip = await raw.tripRequest.create({
         data: {
-          passengerId: await createFreshPassenger(raw),
+          passengerId,
           municipalityId,
           serviceType: 'taxi',
           paymentMethod: 'cash',

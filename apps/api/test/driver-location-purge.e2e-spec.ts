@@ -1,4 +1,3 @@
-import { Logger } from '@nestjs/common';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { DriverLocationPurgeService } from '../src/modules/assignment/driver-location-purge.service';
 import { DriverRepository } from '../src/modules/assignment/driver.repository';
@@ -174,46 +173,5 @@ suite('DriverLocationPurgeService against real Postgres, connected as app_voyya 
     );
 
     await expect(Promise.all([service.purge(), service.purge()])).resolves.toBeDefined();
-  });
-
-  it('a company whose purge fails with a database error does not abort the others (G-13)', async () => {
-    const failing = await makeCompany(`_purge-svc-fail-${runId}`);
-    const healthyBefore = await makeCompany(`_purge-svc-ok1-${runId}`);
-    const healthyAfter = await makeCompany(`_purge-svc-ok2-${runId}`);
-    const failingDriver = await makeStaleDriver(failing);
-    const driverBefore = await makeStaleDriver(healthyBefore);
-    const driverAfter = await makeStaleDriver(healthyAfter);
-
-    const faultyRepo = Object.create(repo) as DriverRepository;
-    faultyRepo.listCompanyIds = async () => [healthyBefore, failing, healthyAfter];
-    const realPurge = repo.purgeStaleLocations.bind(repo);
-    faultyRepo.purgeStaleLocations = async (tx, companyId, hours) => {
-      if (companyId === failing) {
-        await tx.$executeRawUnsafe('SELECT 1 / 0');
-      }
-      return realPurge(tx, companyId, hours);
-    };
-    const service = new DriverLocationPurgeService(prismaService, faultyRepo, fakeEnv(12));
-
-    await expect((service as unknown as { run: () => Promise<void> }).run()).rejects.toThrow(
-      'Location purge failed for 1 company',
-    );
-
-    const rowBefore = await withTenant(healthyBefore, (tx) => tx.driver.findUnique({ where: { driverId: driverBefore } }));
-    const rowAfter = await withTenant(healthyAfter, (tx) => tx.driver.findUnique({ where: { driverId: driverAfter } }));
-    const rowFailing = await withTenant(failing, (tx) => tx.driver.findUnique({ where: { driverId: failingDriver } }));
-    expect(rowBefore?.currentLat).toBeNull();
-    expect(rowAfter?.currentLat).toBeNull();
-    expect(rowFailing?.currentLat).not.toBeNull();
-  });
-
-  it('warns at startup when LOCATION_PURGE_HOURS=0 and stays silent otherwise', () => {
-    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-    new DriverLocationPurgeService(prismaService, repo, fakeEnv(0)).onModuleInit();
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('LOCATION_PURGE_HOURS=0'));
-    warn.mockClear();
-    new DriverLocationPurgeService(prismaService, repo, fakeEnv(12)).onModuleInit();
-    expect(warn).not.toHaveBeenCalled();
-    warn.mockRestore();
   });
 });

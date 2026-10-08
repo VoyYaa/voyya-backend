@@ -6,7 +6,6 @@ import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { RefreshTokenService } from '../src/modules/auth/refresh-token.service';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
-import { grantLocationConsent } from './support/grant-location-consent';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -107,7 +106,6 @@ suite('Admin console — suspend-driver must stay inside the caller tenant (B-02
       },
     });
     victimDriverId = driverUser.userId;
-    await grantLocationConsent(prisma, victimDriverId);
 
     const pinHash = await bcrypt.hash(DRIVER_PIN, 4);
 

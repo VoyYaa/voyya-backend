@@ -169,7 +169,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
     await withTenant((tx) =>
       tx.driver.upsert({
         where: { driverId: driverAId },
-        update: { companyId, status: 'available', currentVehicleId: vehicleAId, pin: 'x', currentLat: 6.9, currentLng: -75.4 },
+        update: { companyId, status: 'available', currentVehicleId: vehicleAId, pin: 'x' },
         create: {
           driverId: driverAId,
           companyId,
@@ -177,8 +177,6 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
           pin: 'x',
           status: 'available',
           currentVehicleId: vehicleAId,
-          currentLat: 6.9,
-          currentLng: -75.4,
         },
       }),
     );
@@ -186,7 +184,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
     await withTenant((tx) =>
       tx.driver.upsert({
         where: { driverId: driverBId },
-        update: { companyId, status: 'available', currentVehicleId: vehicleBId, pin: 'x', currentLat: 6.9, currentLng: -75.4 },
+        update: { companyId, status: 'available', currentVehicleId: vehicleBId, pin: 'x' },
         create: {
           driverId: driverBId,
           companyId,
@@ -194,8 +192,6 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
           pin: 'x',
           status: 'available',
           currentVehicleId: vehicleBId,
-          currentLat: 6.9,
-          currentLng: -75.4,
         },
       }),
     );

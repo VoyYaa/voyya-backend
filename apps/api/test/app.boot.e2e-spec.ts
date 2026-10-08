@@ -1,7 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { AppModule } from '../src/app.module';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
-import { ConsentNoticeRegistry } from '../src/modules/auth/consent-notice.registry';
 
 describe('AppModule (boot / wiring)', () => {
   beforeAll(() => {
@@ -21,8 +20,6 @@ describe('AppModule (boot / wiring)', () => {
     const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(PrismaService)
       .useValue(prismaStub)
-      .overrideProvider(ConsentNoticeRegistry)
-      .useValue({ onModuleInit: async () => undefined })
       .compile();
 
     const app = moduleRef.createNestApplication();

@@ -1,4 +1,4 @@
-import { type Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 
 interface ReferencingKey {
   child: string;
@@ -8,14 +8,6 @@ interface ReferencingKey {
 
 const SAFE_PREFIX = /^[A-Za-z0-9_-]+$/;
 const NO_TENANT = '0';
-const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
-  'admin.settlement_remittance',
-  'admin.settlement_export',
-  'auth.consent_record',
-]);
-const REVERSALS_FIRST = "kind = 'reversal'";
-
-type OwnerDelete = (table: string, where: string) => Promise<void>;
 
 const keysByTable = new Map<string, ReferencingKey[]>();
 
@@ -52,7 +44,6 @@ async function deleteWhere(
   table: string,
   where: string,
   path: ReadonlySet<string>,
-  ownerDelete: OwnerDelete,
 ): Promise<void> {
   const nextPath = new Set([...path, table]);
   for (const key of await referencingKeys(tx, table)) {
@@ -64,12 +55,7 @@ async function deleteWhere(
       key.child,
       `(${childColumns}) IN (SELECT ${parentColumns} FROM ${table} WHERE ${where})`,
       nextPath,
-      ownerDelete,
     );
-  }
-  if (APPEND_ONLY_TABLES.has(table)) {
-    await ownerDelete(table, where);
-    return;
   }
   await tx.$executeRawUnsafe(`DELETE FROM ${table} WHERE ${where}`);
 }
@@ -85,31 +71,6 @@ async function withTenant<T>(
   });
 }
 
-interface OwnerSession {
-  delete: OwnerDelete;
-  close: () => Promise<void>;
-}
-
-function createOwnerSession(): OwnerSession {
-  const url = process.env.PG_TEST_OWNER_URL;
-  let client: PrismaClient | null = null;
-  return {
-    delete: async (table, where) => {
-      if (!url) return;
-      client ??= new PrismaClient({ datasourceUrl: url });
-      if (table === 'admin.settlement_remittance') {
-        await client.$executeRawUnsafe(
-          `DELETE FROM ${table} WHERE ${REVERSALS_FIRST} AND (${where})`,
-        );
-      }
-      await client.$executeRawUnsafe(`DELETE FROM ${table} WHERE ${where}`);
-    },
-    close: async () => {
-      if (client) await client.$disconnect();
-    },
-  };
-}
-
 export async function purgeMunicipalitiesByNamePrefix(
   prisma: PrismaClient,
   namePrefix: string,
@@ -118,19 +79,7 @@ export async function purgeMunicipalitiesByNamePrefix(
     throw new Error(`Unsafe fixture prefix: ${namePrefix}`);
   }
   const pattern = `${namePrefix}%`;
-  const owner = createOwnerSession();
-  try {
-    await purgeWith(prisma, pattern, owner.delete);
-  } finally {
-    await owner.close();
-  }
-}
 
-async function purgeWith(
-  prisma: PrismaClient,
-  pattern: string,
-  ownerDelete: OwnerDelete,
-): Promise<void> {
   const companies = await prisma.$queryRaw<Array<{ company_id: number }>>`
     SELECT c.company_id
       FROM tenancy.company c
@@ -139,11 +88,11 @@ async function purgeWith(
   `;
   for (const { company_id: companyId } of companies) {
     await withTenant(prisma, String(companyId), (tx) =>
-      deleteWhere(tx, 'tenancy.company', `company_id = ${Number(companyId)}`, new Set(), ownerDelete),
+      deleteWhere(tx, 'tenancy.company', `company_id = ${Number(companyId)}`, new Set()),
     );
   }
 
   await withTenant(prisma, NO_TENANT, (tx) =>
-    deleteWhere(tx, 'tenancy.municipality', `name LIKE '${pattern}'`, new Set(), ownerDelete),
+    deleteWhere(tx, 'tenancy.municipality', `name LIKE '${pattern}'`, new Set()),
   );
 }

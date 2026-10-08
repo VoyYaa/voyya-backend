@@ -48,27 +48,6 @@ describe('buildLogger redaction', () => {
     expect(output()).not.toContain('4821');
   });
 
-  it.each(['current_pin', 'new_pin'])('redacts %s at the top level and nested (CM-10)', (key) => {
-    const { logger, output } = capture();
-
-    logger.info({ msg: 'probe', [key]: '482193', ctx: { [key]: '735104' } });
-
-    expect(output()).not.toContain('482193');
-    expect(output()).not.toContain('735104');
-  });
-
-  it.each(['lat', 'lng', 'current_lat', 'current_lng'])(
-    'redacts the coordinate %s at the top level and nested (CM-10)',
-    (key) => {
-      const { logger, output } = capture();
-
-      logger.info({ msg: 'probe', [key]: 6.96391, ctx: { [key]: -75.41862 } });
-
-      expect(output()).not.toContain('6.96391');
-      expect(output()).not.toContain('75.41862');
-    },
-  );
-
   it('redacts a PIN-labelled value inside a text message', () => {
     const { logger, output } = capture();
 

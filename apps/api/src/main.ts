@@ -26,11 +26,7 @@ export function configureApp(
   (app.getHttpAdapter().getInstance() as Express).disable('x-powered-by');
 
   const origins = parseCorsOrigins(env.get('CORS_ORIGINS'));
-  app.enableCors({
-    origin: origins.length > 0 ? origins : false,
-    credentials: true,
-    exposedHeaders: ['Content-Disposition'],
-  });
+  app.enableCors({ origin: origins.length > 0 ? origins : false, credentials: true });
 
   app.useGlobalFilters(new AllExceptionsFilter());
 }
