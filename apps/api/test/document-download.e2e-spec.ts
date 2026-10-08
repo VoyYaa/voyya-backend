@@ -7,6 +7,7 @@ import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { DocumentDownloadTokenService } from '../src/modules/affiliation/document-download-token.service';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -69,8 +70,9 @@ suite('Document download — end to end over HTTP, unauthenticated by design (AD
   }, 20_000);
 
   afterAll(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_DlMuni');
     if (app) await app.close();
-  });
+  }, 60_000);
 
   async function companyFixture(suffix: string): Promise<number> {
     const municipality = await prisma.municipality.create({

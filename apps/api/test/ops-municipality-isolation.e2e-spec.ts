@@ -97,9 +97,9 @@ suite('trips.trip_request has no RLS: municipality isolation is a bare WHERE (AD
     });
 
     const passengerUser = await prisma.user.upsert({
-      where: { phone: '_9990000401' },
+      where: { phone: '_ops-municipality-isolation-passenger' },
       update: {},
-      create: { firstName: '_Iso', lastName: 'Passenger', phone: '_9990000401', role: 'passenger' },
+      create: { firstName: '_Iso', lastName: 'Passenger', phone: '_ops-municipality-isolation-passenger', role: 'passenger' },
     });
     await prisma.passenger.upsert({
       where: { passengerId: passengerUser.userId },

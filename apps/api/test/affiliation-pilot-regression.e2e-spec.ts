@@ -9,6 +9,7 @@ import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -149,8 +150,9 @@ suite(
     }, 20_000);
 
     afterAll(async () => {
+      if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_PilotRegressionMuni');
       if (app) await app.close();
-    });
+    }, 60_000);
 
     it('ActiveCompanyResolver resuelve esta empresa como la única activa de su municipio (regresión de Cootrayal/Yarumal)', async () => {
       const resolved = await activeCompanies.resolve(municipalityId);

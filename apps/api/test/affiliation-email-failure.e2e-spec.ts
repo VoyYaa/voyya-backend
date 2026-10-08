@@ -9,6 +9,7 @@ import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { EMAIL_PROVIDER, type EmailProvider } from '../src/modules/affiliation/ports/email-provider.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -82,8 +83,9 @@ suite('El fallo del correo NO deshace la decisión ya persistida (ADR-021 §5.2)
   }, 20_000);
 
   afterAll(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_EmailFailureMuni');
     if (app) await app.close();
-  });
+  }, 60_000);
 
   async function freshMunicipality(): Promise<number> {
     const suffix = uniqueSuffix();

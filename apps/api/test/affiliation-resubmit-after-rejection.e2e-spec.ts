@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -100,8 +101,9 @@ suite('Reintento tras rechazo — misma fila, historial acumulado (ADR-021 §3.4
   }, 20_000);
 
   afterEach(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_ResubmitMuni');
     if (app) await app.close();
-  });
+  }, 60_000);
 
   it('rechazada -> reenviada con el mismo NIT -> reutiliza la fila y aprueba; el historial conserva ambas decisiones', async () => {
     const suffix = uniqueSuffix();

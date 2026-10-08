@@ -5,6 +5,7 @@ import { randomInt } from 'node:crypto';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -48,8 +49,9 @@ suite('Approve company — doubleclick is an atomic single-take (ADR-021 §2.3)'
   }, 20_000);
 
   afterAll(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_ConcurApproveMuni');
     if (app) await app.close();
-  });
+  }, 60_000);
 
   async function pendingCompanyFixture(): Promise<number> {
     const suffix = uniqueSuffix();

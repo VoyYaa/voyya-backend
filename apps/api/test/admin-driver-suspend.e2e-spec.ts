@@ -260,6 +260,13 @@ suite('Admin console — suspend-driver must stay inside the caller tenant (B-02
       return prisma.refreshToken.count({ where: { userId: victimDriverId, revoked: false } });
     }
 
+    async function waitForRevokedSessions(): Promise<void> {
+      const deadline = Date.now() + 3_000;
+      while (Date.now() < deadline && (await liveRefreshTokens()) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+
     beforeEach(async () => {
       await setDriverStatus('off_shift');
     });
@@ -277,6 +284,7 @@ suite('Admin console — suspend-driver must stay inside the caller tenant (B-02
       expect(res.status).toBe(200);
 
       expect(await driverStatus()).toBe('suspended');
+      await waitForRevokedSessions();
       expect(await liveRefreshTokens()).toBe(0);
       expect(await refreshStatus(refreshToken)).toBe(401);
       expect(await refreshStatus(secondRefresh)).toBe(401);

@@ -1,5 +1,6 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { randomInt } from 'node:crypto';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -217,8 +218,9 @@ suite(
     }, 30_000);
 
     afterAll(async () => {
+      if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_RlsDocsMuni');
       if (prisma) await prisma.$disconnect();
-    });
+    }, 60_000);
 
     it('the 3 tables have RLS forced (relforcerowsecurity = true)', async () => {
       const rows = await prisma.$queryRaw<Array<{ nspname: string; relname: string; relforcerowsecurity: boolean }>>`

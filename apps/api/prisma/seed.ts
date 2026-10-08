@@ -97,6 +97,13 @@ async function main(): Promise<void> {
     },
   });
 
+  await prisma.$executeRaw`
+    SELECT setval(
+      pg_get_serial_sequence('tenancy.municipality', 'municipality_id'),
+      (SELECT GREATEST(COALESCE(MAX(municipality_id), 0), 1) FROM tenancy.municipality)
+    )
+  `;
+
   await prisma.user.upsert({
     where: { email: PLATFORM_ADMIN_EMAIL },
     update: { passwordHash: platformAdminHash, role: 'platform_admin', accountStatus: 'active' },
