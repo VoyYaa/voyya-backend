@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { requireTripLocation } from '../../shared/require-trip-location';
 import { ACTIVE_TRIP_STATUSES, type DriverStatus, type TripStatus } from '@voyyaa/shared';
 
@@ -65,21 +65,30 @@ export interface OpsDriverDetailDbRow extends OpsDriverDbRow {
   activeTripRequestId: number | null;
 }
 
+export interface OpsTripScope {
+  companyId: number;
+  municipalityId: number;
+  receivesUnassigned: boolean;
+}
+
 @Injectable()
 export class OpsConsoleRepository {
   async listTripRequests(
     tx: Prisma.TransactionClient,
-    municipalityId: number,
+    scope: OpsTripScope,
     statuses: readonly TripStatus[] | null,
     limit: number,
     terminalWindowSec: number,
   ): Promise<OpsQueueDbRow[]> {
     const cutoff = new Date(Date.now() - terminalWindowSec * 1000);
+    const unassignedIds = scope.receivesUnassigned
+      ? await this.findUnassignedTripIds(tx, scope.municipalityId, { cutoff, tripRequestId: null })
+      : [];
     const rows = await tx.tripRequest.findMany({
       where: {
-        municipalityId,
         locationPurgedAt: null,
         AND: [
+          scopeCondition(scope.companyId, unassignedIds),
           {
             OR: [
               { status: { in: [...ACTIVE_TRIP_STATUSES] } },
@@ -133,11 +142,14 @@ export class OpsConsoleRepository {
 
   async getTripRequest(
     tx: Prisma.TransactionClient,
-    municipalityId: number,
+    scope: OpsTripScope,
     tripRequestId: number,
   ): Promise<OpsTripDetailRow | null> {
+    const unassignedIds = scope.receivesUnassigned
+      ? await this.findUnassignedTripIds(tx, scope.municipalityId, { cutoff: null, tripRequestId })
+      : [];
     const t = await tx.tripRequest.findFirst({
-      where: { tripRequestId, municipalityId },
+      where: { tripRequestId, ...scopeCondition(scope.companyId, unassignedIds) },
       select: {
         tripRequestId: true,
         status: true,
@@ -186,6 +198,27 @@ export class OpsConsoleRepository {
       finishedAt: t.finishedAt,
       cashCollectedAt: t.cashCollectedAt,
     };
+  }
+
+  private async findUnassignedTripIds(
+    tx: Prisma.TransactionClient,
+    municipalityId: number,
+    window: { cutoff: Date | null; tripRequestId: number | null },
+  ): Promise<number[]> {
+    const activeStatuses = [...ACTIVE_TRIP_STATUSES];
+    const byId = window.tripRequestId === null ? Prisma.empty : Prisma.sql`AND t.trip_request_id = ${window.tripRequestId}`;
+    const byWindow =
+      window.cutoff === null
+        ? Prisma.empty
+        : Prisma.sql`AND (t.status::text = ANY(${activeStatuses}::text[]) OR t.updated_at > ${window.cutoff})`;
+    const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
+      SELECT t.trip_request_id
+        FROM trips.trip_request t
+       WHERE t.municipality_id = ${municipalityId}
+         AND NOT assignment.trip_has_assignment(t.trip_request_id)
+         ${byId}
+         ${byWindow}`;
+    return rows.map((r) => r.trip_request_id);
   }
 
   async listDrivers(
@@ -241,6 +274,15 @@ export class OpsConsoleRepository {
       activeTripRequestId: d.assignments[0]?.tripRequestId ?? null,
     };
   }
+}
+
+function scopeCondition(companyId: number, unassignedIds: readonly number[]): Prisma.TripRequestWhereInput {
+  return {
+    OR: [
+      { assignments: { some: { companyId } } },
+      ...(unassignedIds.length > 0 ? [{ tripRequestId: { in: [...unassignedIds] } }] : []),
+    ],
+  };
 }
 
 const driverSelect = {
