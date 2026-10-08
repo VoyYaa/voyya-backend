@@ -1,0 +1,81 @@
+import { createHash } from 'node:crypto';
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import {
+  canonicalLocationNoticeText,
+  type ConsentPurpose,
+  hasLegalPlaceholders,
+  LOCATION_NOTICE_VERSION,
+  NoticeAudience,
+} from '@voyyaa/shared';
+import { EnvService } from '../../config/env.service';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+
+const LOCATION_PURPOSE: ConsentPurpose = 'location';
+
+export function noticeFingerprint(text: string): string {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+@Injectable()
+export class ConsentNoticeRegistry implements OnModuleInit {
+  private readonly logger = new Logger(ConsentNoticeRegistry.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly env: EnvService,
+  ) {}
+
+  async onModuleInit(): Promise<void> {
+    await this.register();
+  }
+
+  async register(): Promise<void> {
+    let hasPlaceholders = false;
+    for (const audience of NoticeAudience.options) {
+      const body = canonicalLocationNoticeText(audience);
+      await this.registerNotice(audience, body);
+      hasPlaceholders = hasPlaceholders || hasLegalPlaceholders(body);
+    }
+    if (hasPlaceholders && this.env.get('NODE_ENV') === 'production') {
+      this.logger.error(
+        `El aviso ${LOCATION_NOTICE_VERSION} aún contiene marcadores legales sin completar ` +
+          '([NIT], [DOMICILIO], [CORREO DE HABEAS DATA]): no es apto para producción',
+      );
+    }
+  }
+
+  async isKnown(
+    purpose: ConsentPurpose,
+    noticeVersion: string,
+    audience: NoticeAudience,
+  ): Promise<boolean> {
+    const notice = await this.prisma.consentNotice.findUnique({
+      where: { purpose_noticeVersion_audience: { purpose, noticeVersion, audience } },
+      select: { noticeVersion: true },
+    });
+    return notice !== null;
+  }
+
+  private async registerNotice(audience: NoticeAudience, body: string): Promise<void> {
+    const sha256 = noticeFingerprint(body);
+    await this.prisma.consentNotice.createMany({
+      data: [{ purpose: LOCATION_PURPOSE, noticeVersion: LOCATION_NOTICE_VERSION, audience, sha256, body }],
+      skipDuplicates: true,
+    });
+    const stored = await this.prisma.consentNotice.findUniqueOrThrow({
+      where: {
+        purpose_noticeVersion_audience: {
+          purpose: LOCATION_PURPOSE,
+          noticeVersion: LOCATION_NOTICE_VERSION,
+          audience,
+        },
+      },
+      select: { sha256: true },
+    });
+    if (stored.sha256 !== sha256) {
+      throw new Error(
+        `El texto de ${LOCATION_NOTICE_VERSION} (${audience}) cambió sin subir la versión del aviso`,
+      );
+    }
+  }
+}

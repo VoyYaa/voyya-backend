@@ -116,7 +116,7 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
     await withTenant((tx) =>
       tx.driver.upsert({
         where: { driverId },
-        update: { companyId, status: 'on_trip', currentVehicleId: vehicleId, pin: 'x' },
+        update: { companyId, status: 'on_trip', currentVehicleId: vehicleId, pin: 'x', currentLat: 6.9, currentLng: -75.4 },
         create: {
           driverId,
           companyId,
@@ -124,6 +124,8 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
           pin: 'x',
           status: 'on_trip',
           currentVehicleId: vehicleId,
+          currentLat: 6.9,
+          currentLng: -75.4,
         },
       }),
     );
@@ -203,6 +205,30 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
 
     const assignment = await getAssignment(trip.tripRequestId);
     expect(assignment?.status).toBe('completed');
+  });
+
+  it('releases a driver without a position as off_shift, never available (ADR-029 section 4)', async () => {
+    const trip = await makeTrip('in_progress');
+    await withTenant((tx) =>
+      tx.driver.update({
+        where: { driverId },
+        data: { currentLat: null, currentLng: null, locationUpdatedAt: null },
+      }),
+    );
+
+    const outcome = await tripClosing.closeTrip({
+      tripRequestId: trip.tripRequestId,
+      to: 'completed',
+      companyId,
+      cashCollected: true,
+    });
+
+    expect(outcome.kind).toBe('applied');
+    expect((await getDriver())?.status).toBe('off_shift');
+
+    await withTenant((tx) =>
+      tx.driver.update({ where: { driverId }, data: { currentLat: 6.9, currentLng: -75.4 } }),
+    );
   });
 
   it('repeating the same close is idempotent: does not recompute net_earnings', async () => {

@@ -257,7 +257,10 @@ export class AssignmentRepository {
   ): Promise<void> {
     await tx.$executeRaw`
       UPDATE fleet.driver
-         SET status = 'available', updated_at = (now() AT TIME ZONE 'UTC')
+         SET status = CASE WHEN current_lat IS NULL OR current_lng IS NULL
+                           THEN 'off_shift'::fleet."DriverStatus"
+                           ELSE 'available'::fleet."DriverStatus" END,
+             updated_at = (now() AT TIME ZONE 'UTC')
        WHERE driver_id = ${driverId}
          AND status = 'on_trip'
          AND company_id = ${companyId}

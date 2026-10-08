@@ -145,38 +145,35 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
       create: { passengerId: userE.userId },
     });
 
-    const versionD = `${LOCATION_NOTICE_VERSION}-d`;
-    const versionE = `${LOCATION_NOTICE_VERSION}-e`;
-
     const grantD = await request(app.getHttpServer())
       .post('/consents')
       .set(headers(userD.userId))
-      .send({ purpose: 'location', notice_version: versionD });
+      .send({ purpose: 'location', notice_version: LOCATION_NOTICE_VERSION });
     expect(grantD.status).toBe(200);
 
     const grantE = await request(app.getHttpServer())
       .post('/consents')
       .set(headers(userE.userId))
-      .send({ purpose: 'location', notice_version: versionE });
+      .send({ purpose: 'location', notice_version: LOCATION_NOTICE_VERSION });
     expect(grantE.status).toBe(200);
+
+    const revokeD = await request(app.getHttpServer())
+      .post('/consents/revoke')
+      .set(headers(userD.userId))
+      .send({ purpose: 'location' });
+    expect(revokeD.status).toBe(200);
 
     const listD = await request(app.getHttpServer()).get('/consents').set(headers(userD.userId));
     const listE = await request(app.getHttpServer()).get('/consents').set(headers(userE.userId));
 
     expect(listD.status).toBe(200);
     expect(listD.body).toHaveLength(1);
-    expect(listD.body[0].notice_version).toBe(versionD);
+    expect(listD.body[0].state).toBe('revoked');
 
     expect(listE.status).toBe(200);
     expect(listE.body).toHaveLength(1);
-    expect(listE.body[0].notice_version).toBe(versionE);
-
-    for (const record of listD.body) {
-      expect(record.notice_version).not.toBe(versionE);
-    }
-    for (const record of listE.body) {
-      expect(record.notice_version).not.toBe(versionD);
-    }
+    expect(listE.body[0].state).toBe('granted');
+    expect(listE.body[0].revoked_at).toBeNull();
   });
 
   it('GET /consents for a user with no consents yet reports state none and requires acceptance', async () => {

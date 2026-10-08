@@ -8,7 +8,10 @@ import { AuthController } from './auth.controller';
 import { AuthRepository } from './auth.repository';
 import { AuthService } from './auth.service';
 import { ConsentController } from './consent.controller';
+import { ConsentNoticeRegistry } from './consent-notice.registry';
+import { ConsentQueryService } from './consent-query.service';
 import { ConsentRepository } from './consent.repository';
+import { ConsentService } from './consent.service';
 import { DriverCredentialsController } from './driver-credentials.controller';
 import { DriverPinRepository } from './driver-pin.repository';
 import { DriverPinService } from './driver-pin.service';
@@ -35,9 +38,12 @@ import { RefreshTokenService } from './refresh-token.service';
     DriverPinService,
     AuthCleanupService,
     ConsentRepository,
+    ConsentService,
+    ConsentNoticeRegistry,
+    ConsentQueryService,
     { provide: HASHER, useClass: BcryptHasher },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
-  exports: [AuthService, JwtModule],
+  exports: [AuthService, JwtModule, ConsentQueryService],
 })
 export class AuthModule {}

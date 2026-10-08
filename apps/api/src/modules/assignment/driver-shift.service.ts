@@ -1,4 +1,4 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type {
   DriverHomeState,
   DriverShiftState,
@@ -8,6 +8,7 @@ import type {
   UpdateDriverShiftDTO,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { ConsentQueryService } from '../auth/consent-query.service';
 import { DriverRepository, type DriverShiftRow } from './driver.repository';
 import { OperationalParamsService } from './operational-params.service';
 
@@ -17,6 +18,7 @@ export class DriverShiftService {
     private readonly prisma: PrismaService,
     private readonly repo: DriverRepository,
     private readonly params: OperationalParamsService,
+    private readonly consents: ConsentQueryService,
   ) {}
 
   async updateShift(
@@ -25,6 +27,7 @@ export class DriverShiftService {
     dto: UpdateDriverShiftDTO,
   ): Promise<DriverShiftState> {
     if (dto.on_shift) {
+      await this.requireLocationConsent(driverId, { currentVersion: true });
       return this.startShift(driverId, companyId, dto.location.lat, dto.location.lng);
     }
     return this.endShift(driverId, companyId);
@@ -35,6 +38,7 @@ export class DriverShiftService {
     companyId: number,
     dto: ReportDriverLocationDTO,
   ): Promise<void> {
+    await this.requireLocationConsent(driverId, { currentVersion: false });
     const ok = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.reportLocation(tx, driverId, companyId, dto.lat, dto.lng),
     );
@@ -141,6 +145,20 @@ export class DriverShiftService {
       });
     }
     return toShiftState(current);
+  }
+
+  private async requireLocationConsent(
+    driverId: number,
+    options: { currentVersion: boolean },
+  ): Promise<void> {
+    const status = await this.consents.locationStatus(driverId);
+    const accepted = status.state === 'granted' && !(options.currentVersion && status.requires_acceptance);
+    if (!accepted) {
+      throw new ForbiddenException({
+        code: 'LOCATION_CONSENT_REQUIRED',
+        message: 'Acepta el aviso de ubicación para poder compartirla.',
+      });
+    }
   }
 
   private async noShowGraceMinFor(companyId: number): Promise<number> {

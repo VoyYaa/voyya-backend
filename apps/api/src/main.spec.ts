@@ -45,7 +45,7 @@ describe('configureApp', () => {
   it('no CORS_ORIGINS configured -> origin: false (blocks all cross-origin browsers)', () => {
     const { app, raw } = fakeApp();
     configureApp(app, fakeEnv(''), fakeRequestContext());
-    expect(raw.enableCors).toHaveBeenCalledWith({ origin: false, credentials: true });
+    expect(raw.enableCors).toHaveBeenCalledWith({ origin: false, credentials: true, exposedHeaders: ['Content-Disposition'] });
   });
 
   it('CORS_ORIGINS with entries -> trims and forwards them as the allow-list', () => {
@@ -54,6 +54,7 @@ describe('configureApp', () => {
     expect(raw.enableCors).toHaveBeenCalledWith({
       origin: ['https://a.test', 'https://b.test'],
       credentials: true,
+      exposedHeaders: ['Content-Disposition'],
     });
   });
 });

@@ -4,7 +4,7 @@ import {
   InternalServerErrorException,
   UnauthorizedException,
 } from '@nestjs/common';
-import type { RequestWithTenant } from './tenant-request';
+import type { AuthenticatedUser, RequestWithTenant } from './tenant-request';
 
 export const CurrentTenant = createParamDecorator(
   (_data: unknown, ctx: ExecutionContext): number => {
@@ -25,5 +25,15 @@ export const CurrentUserId = createParamDecorator(
       throw new UnauthorizedException({ code: 'SESSION_REQUIRED', message: 'Sesión requerida' });
     }
     return id;
+  },
+);
+
+export const CurrentUser = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): AuthenticatedUser => {
+    const user = ctx.switchToHttp().getRequest<RequestWithTenant>().user;
+    if (user === undefined) {
+      throw new UnauthorizedException({ code: 'SESSION_REQUIRED', message: 'Sesión requerida' });
+    }
+    return user;
   },
 );

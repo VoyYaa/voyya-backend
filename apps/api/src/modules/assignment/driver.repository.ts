@@ -83,6 +83,24 @@ export class DriverRepository {
     return rows.length;
   }
 
+  async clearLocationAfterConsentRevoked(
+    tx: Prisma.TransactionClient,
+    driverId: number,
+    companyId: number,
+  ): Promise<void> {
+    await tx.$executeRaw`
+      UPDATE fleet.driver
+         SET current_lat = NULL,
+             current_lng = NULL,
+             location_updated_at = NULL,
+             status = CASE WHEN status = 'available'
+                           THEN 'off_shift'::fleet."DriverStatus"
+                           ELSE status END,
+             updated_at = (now() AT TIME ZONE 'UTC')
+       WHERE driver_id = ${driverId} AND company_id = ${companyId}
+    `;
+  }
+
   async getShiftRow(
     tx: Prisma.TransactionClient,
     driverId: number,
