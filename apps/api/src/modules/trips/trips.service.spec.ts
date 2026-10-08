@@ -19,10 +19,10 @@ import type { HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
 import { TripsService } from './trips.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 
-function fakeActiveCompanyResolver(companyId: number | null = 1): ActiveCompanyResolver {
-  return { resolve: async () => companyId } as unknown as ActiveCompanyResolver;
+function fakeDispatchCompaniesResolver(companyId: number | null = 1): DispatchCompaniesResolver {
+  return { resolveFirst: async () => companyId } as unknown as DispatchCompaniesResolver;
 }
 
 const SECRET = 'test-secret-0123456789';
@@ -156,7 +156,7 @@ function createService(
     NO_HOLIDAYS,
     assignment,
     fakeTripClosing(state.tripClosingRejected ?? false),
-    fakeActiveCompanyResolver(),
+    fakeDispatchCompaniesResolver(),
     new RequestContextService(),
   );
   return { service, emitter, assignment };

@@ -9,7 +9,7 @@ import type { PushProvider } from '../src/modules/assignment/ports/push-provider
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import { TripLifecycleService } from '../src/modules/trips/trip-lifecycle.service';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
-import type { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 
 const url = process.env.PG_TEST_URL;
@@ -55,12 +55,12 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
     } as unknown as PrismaService;
 
     assignmentRepo = new AssignmentRepository(prismaService);
-    const activeCompanyResolver = {
-      async resolve() {
+    const dispatchCompanies = {
+      async resolveFirst() {
         return companyId;
       },
-    } as unknown as ActiveCompanyResolver;
-    tripClosing = new TripClosingService(prismaService, assignmentRepo, activeCompanyResolver);
+    } as unknown as DispatchCompaniesResolver;
+    tripClosing = new TripClosingService(prismaService, assignmentRepo, dispatchCompanies);
 
     const candidateRepo = {} as unknown as CandidateRepository;
     const push = { async sendAssignment() {} } as unknown as PushProvider;
@@ -79,7 +79,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
       emitter,
       push,
       tripClosing,
-      activeCompanyResolver,
+      dispatchCompanies,
     );
 
     const tripsRepo = new TripsRepository(raw as unknown as PrismaService);

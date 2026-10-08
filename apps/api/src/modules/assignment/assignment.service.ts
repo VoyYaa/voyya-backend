@@ -28,7 +28,7 @@ import {
   TRIPS_EVENTS,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { calculateEta, haversineKm } from '../trips/domain/geo';
 import { AssignmentRepository, type TripRequestInfo } from './assignment.repository';
 import { CandidateRepository } from './candidate.repository';
@@ -73,7 +73,7 @@ export class AssignmentService {
     private readonly emitter: EventEmitter2,
     @Inject(PUSH_PROVIDER) private readonly push: PushProvider,
     private readonly tripClosing: TripClosingService,
-    private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
   ) {}
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CREATED)
@@ -93,7 +93,7 @@ export class AssignmentService {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info || info.status !== 'pending_assignment') return;
 
-    const companyId = await this.activeCompanyResolver.resolve(municipalityId);
+    const companyId = await this.dispatchCompanies.resolveFirst(municipalityId);
     if (companyId === null) {
       this.logger.warn(`No active company in municipality=${municipalityId}`);
       this.emitNoDriver(tripRequestId, 0, 0);
@@ -360,7 +360,7 @@ export class AssignmentService {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info) return null;
 
-    const companyId = await this.activeCompanyResolver.resolve(info.municipalityId);
+    const companyId = await this.dispatchCompanies.resolveFirst(info.municipalityId);
     if (companyId === null) return null;
 
     const row = await this.prisma.runInTenant(companyId, (tx) =>

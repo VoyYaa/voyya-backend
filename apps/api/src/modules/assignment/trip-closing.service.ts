@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { TRIP_STATUS_TRANSITIONS, type TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { AssignmentRepository } from './assignment.repository';
 
 export type TripClosingTarget =
@@ -55,7 +55,7 @@ export class TripClosingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repo: AssignmentRepository,
-    private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
   ) {}
 
   async closeTrip(input: CloseTripInput): Promise<CloseTripOutcome> {
@@ -129,7 +129,7 @@ export class TripClosingService {
     if (!info) {
       throw new Error(`Trip request ${tripRequestId} not found while closing`);
     }
-    const companyId = await this.activeCompanyResolver.resolve(info.municipalityId);
+    const companyId = await this.dispatchCompanies.resolveFirst(info.municipalityId);
     if (companyId === null) {
       throw new Error(`No active company for municipality ${info.municipalityId}`);
     }

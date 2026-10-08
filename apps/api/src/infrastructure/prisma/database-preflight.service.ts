@@ -10,7 +10,35 @@ export interface DatabasePreflightResult {
   hasSingleTakeIndex: boolean;
   hasForcedRls: boolean;
   hasSafeTripProbe: boolean;
+  hasMunicipalityCatalog: boolean;
+  hasServiceConfig: boolean;
+  hasTripCompanyScope: boolean;
 }
+
+const SERVICE_CONFIG_TABLES = [
+  'trips.municipality_fare',
+  'admin.municipality_operational_params',
+  'tenancy.company_commission',
+];
+const TRIP_SCOPE_TABLES = [...SERVICE_CONFIG_TABLES, 'trips.trip_request'];
+const TRIP_SCOPE_FUNCTIONS = [
+  'trips.trip_request_company_preference()',
+  'assignment.company_has_live_assignment(integer, boolean)',
+];
+const LIVE_ASSIGNMENT_FUNCTION = 'assignment.company_has_live_assignment(integer, boolean)';
+
+const quotedList = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(', ');
+
+const GUC_RESIDUAL_PROBE = `
+  DO $$
+  BEGIN
+    PERFORM set_config('app.current_company', '', true);
+    EXECUTE 'EXPLAIN SELECT count(*) FROM trips.trip_request WHERE trip_request_id = 0';
+    PERFORM count(*) FROM trips.trip_request WHERE trip_request_id = 0;
+    UPDATE trips.trip_request SET updated_at = updated_at WHERE trip_request_id = 0;
+  END
+  $$
+`;
 
 const PREFLIGHT_QUERY = `
   SELECT
@@ -37,8 +65,10 @@ const PREFLIGHT_QUERY = `
              ('trips','fare_config'), ('admin','system_parameter'),
              ('tenancy','company_document'), ('tenancy','company_review'),
              ('fleet','driver_document'),
-             ('admin','settlement_remittance'), ('admin','settlement_export'))
-    ) = 10 AS "hasForcedRls",
+             ('admin','settlement_remittance'), ('admin','settlement_export'),
+             ('trips','trip_request'), ('trips','municipality_fare'),
+             ('admin','municipality_operational_params'), ('tenancy','company_commission'))
+    ) = 14 AS "hasForcedRls",
     EXISTS (
       SELECT 1 FROM pg_proc p
       JOIN pg_namespace n ON n.oid = p.pronamespace
@@ -47,7 +77,68 @@ const PREFLIGHT_QUERY = `
         AND p.prosecdef
         AND (r.rolsuper OR r.rolbypassrls)
         AND COALESCE(p.proconfig, ARRAY[]::text[]) @> ARRAY['row_security=off']
-    ) AS "hasSafeTripProbe"
+    ) AS "hasSafeTripProbe",
+    (
+      EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'tenancy' AND table_name = 'municipality'
+          AND column_name = 'dane_code'
+      )
+      AND EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'municipality_coverage_matches_status'
+          AND conrelid = to_regclass('tenancy.municipality')
+      )
+    ) AS "hasMunicipalityCatalog",
+    (
+      (SELECT count(*) FROM pg_indexes
+        WHERE indexname IN ('uq_municipality_fare_open', 'uq_municipality_operational_params_open',
+                            'uq_company_commission_open')) = 3
+      AND (SELECT count(*) FROM pg_constraint WHERE conname ~ '_no_motorcycle$') = 4
+      AND COALESCE((
+        SELECT count(*) = ${SERVICE_CONFIG_TABLES.length}
+               AND bool_and(
+                 NOT has_table_privilege(current_user, t.oid, 'DELETE')
+                 AND NOT has_table_privilege(current_user, t.oid, 'UPDATE')
+                 AND has_column_privilege(current_user, t.oid, 'valid_to', 'UPDATE'))
+          FROM (SELECT to_regclass(name) AS oid FROM unnest(ARRAY[${quotedList(SERVICE_CONFIG_TABLES)}]) AS name) t
+         WHERE t.oid IS NOT NULL
+      ), false)
+    ) AS "hasServiceConfig",
+    (
+      EXISTS (
+        SELECT 1 FROM pg_policy
+        WHERE polname = 'company_scope_trip_request' AND polrelid = to_regclass('trips.trip_request')
+      )
+      AND EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'trip_request_company_preference'
+          AND tgrelid = to_regclass('trips.trip_request') AND NOT tgisinternal
+      )
+      AND (
+        SELECT count(*) FROM information_schema.columns
+        WHERE table_schema = 'trips' AND table_name = 'trip_request'
+          AND column_name IN ('company_id', 'addressed_company_id', 'requested_company_id')
+      ) = 3
+      AND COALESCE((
+        SELECT count(*) = ${TRIP_SCOPE_FUNCTIONS.length}
+               AND bool_and(NOT p.prosecdef
+                            AND EXISTS (SELECT 1 FROM unnest(COALESCE(p.proconfig, ARRAY[]::text[])) AS setting
+                                         WHERE setting LIKE 'search_path=%'))
+          FROM (SELECT to_regprocedure(name) AS oid FROM unnest(ARRAY[${quotedList(TRIP_SCOPE_FUNCTIONS)}]) AS name) f
+          JOIN pg_proc p ON p.oid = f.oid
+      ), false)
+      AND COALESCE(
+        has_function_privilege(current_user, to_regprocedure('${LIVE_ASSIGNMENT_FUNCTION}'), 'EXECUTE')
+        AND NOT has_function_privilege('public', to_regprocedure('${LIVE_ASSIGNMENT_FUNCTION}'), 'EXECUTE'),
+        false)
+      AND COALESCE((
+        SELECT count(*) = ${TRIP_SCOPE_TABLES.length}
+               AND bool_and(NOT pg_has_role(current_user, c.relowner, 'MEMBER'))
+          FROM (SELECT to_regclass(name) AS oid FROM unnest(ARRAY[${quotedList(TRIP_SCOPE_TABLES)}]) AS name) t
+          JOIN pg_class c ON c.oid = t.oid
+      ), false)
+    ) AS "hasTripCompanyScope"
 `;
 
 @Injectable()
@@ -83,10 +174,22 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
   private async runPreflightQuery(): Promise<DatabasePreflightResult | null> {
     try {
       const rows = await this.prisma.$queryRawUnsafe<DatabasePreflightResult[]>(PREFLIGHT_QUERY);
-      return rows[0] ?? null;
+      const row = rows[0];
+      if (!row) return null;
+      return { ...row, hasTripCompanyScope: row.hasTripCompanyScope && (await this.survivesResidualGuc()) };
     } catch (error) {
       this.logger.warn(`Database preflight query failed: ${errorMessage(error)}`);
       return null;
+    }
+  }
+
+  private async survivesResidualGuc(): Promise<boolean> {
+    try {
+      await this.prisma.$executeRawUnsafe(GUC_RESIDUAL_PROBE);
+      return true;
+    } catch (error) {
+      this.logger.warn(`Residual GUC probe on trips.trip_request failed: ${errorMessage(error)}`);
+      return false;
     }
   }
 
@@ -107,6 +210,9 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
     if (!result.hasSingleTakeIndex) failed.push('has_single_take_index');
     if (!result.hasForcedRls) failed.push('has_forced_rls');
     if (!result.hasSafeTripProbe) failed.push('has_safe_trip_probe');
+    if (!result.hasMunicipalityCatalog) failed.push('has_municipality_catalog');
+    if (!result.hasServiceConfig) failed.push('has_service_config');
+    if (!result.hasTripCompanyScope) failed.push('has_trip_company_scope');
     return failed;
   }
 }

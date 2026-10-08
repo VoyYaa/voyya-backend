@@ -11,7 +11,7 @@ import { CandidateRepository } from '../src/modules/assignment/candidate.reposit
 import { OperationalParamsService } from '../src/modules/assignment/operational-params.service';
 import type { PushProvider } from '../src/modules/assignment/ports/push-provider.port';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
-import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 
 const url = process.env.PG_TEST_URL;
@@ -349,7 +349,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
     });
   });
 
-  describe('AssignmentService.start() resolves the SAME company as TripsService.quote() (single ActiveCompanyResolver, §2)', () => {
+  describe('AssignmentService.start() resolves the SAME company as TripsService.quote() (single DispatchCompaniesResolver, §2)', () => {
     it('with two active companies, the assignment engine dispatches through the lower company_id — never diverges from the quote', async () => {
       const municipality = await prisma.municipality.upsert({
         where: { municipalityId: 9185 },
@@ -469,9 +469,9 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         },
       });
 
-      const activeCompanyResolver = new ActiveCompanyResolver(prisma);
+      const dispatchCompanies = new DispatchCompaniesResolver(prisma);
       const assignmentRepo = new AssignmentRepository(prisma);
-      const tripClosing = new TripClosingService(prisma, assignmentRepo, activeCompanyResolver);
+      const tripClosing = new TripClosingService(prisma, assignmentRepo, dispatchCompanies);
       const candidateRepo = new CandidateRepository();
       const paramsService = new OperationalParamsService(prisma, {
         get: (k: string) => defaultEnv[k],
@@ -486,7 +486,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         emitter,
         push,
         tripClosing,
-        activeCompanyResolver,
+        dispatchCompanies,
       );
 
       await assignmentService.onTripRequestCreated({

@@ -184,3 +184,23 @@ describe('validateEnv — LOCATION_PURGE_HOURS in production', () => {
     expect(validateEnv({ ...base, NODE_ENV: nodeEnv, LOCATION_PURGE_HOURS: '0' }).LOCATION_PURGE_HOURS).toBe(0);
   });
 });
+
+describe('validateEnv — ACTIVE_SERVICE_TYPES (ADR-032 section 4.6, MD-17)', () => {
+  it('defaults to taxi', () => {
+    expect(validateEnv({ ...base, NODE_ENV: 'development' }).ACTIVE_SERVICE_TYPES).toEqual(['taxi']);
+  });
+
+  it('accepts several activatable services and trims them', () => {
+    const env = validateEnv({ ...base, NODE_ENV: 'development', ACTIVE_SERVICE_TYPES: 'taxi, comfort' });
+    expect(env.ACTIVE_SERVICE_TYPES).toEqual(['taxi', 'comfort']);
+  });
+
+  it.each(['motorcycle', 'taxi,motorcycle', 'taxi,bus', 'taxi,,', ''])(
+    'fails with %p instead of filtering it',
+    (value) => {
+      expect(failureOf({ ...base, NODE_ENV: 'development', ACTIVE_SERVICE_TYPES: value })).toMatch(
+        /ACTIVE_SERVICE_TYPES/,
+      );
+    },
+  );
+});

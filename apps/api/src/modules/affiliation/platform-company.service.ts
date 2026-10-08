@@ -14,7 +14,7 @@ import type {
 import { EnvService } from '../../config/env.service';
 import { generateTemporaryPassword } from '../../shared/temporary-password';
 import { HASHER, type Hasher } from '../auth/hasher.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { CompanyProvisioningService } from '../tenancy/company-provisioning.service';
 import { DocumentDownloadTokenService } from './document-download-token.service';
 import { EMAIL_PROVIDER, type EmailProvider } from './ports/email-provider.port';
@@ -30,7 +30,7 @@ import { PlatformCompanyRepository } from './platform-company.repository';
 export class PlatformCompanyService {
   constructor(
     private readonly repo: PlatformCompanyRepository,
-    private readonly activeCompanies: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
     private readonly provisioning: CompanyProvisioningService,
     private readonly links: AffiliationLinkService,
     private readonly downloadTokens: DocumentDownloadTokenService,
@@ -79,7 +79,7 @@ export class PlatformCompanyService {
       return Promise.all([
         this.repo.listDocuments(tx, companyId),
         this.repo.listReviews(tx, companyId),
-        this.activeCompanies.resolve(row.municipalityId, { tx, excludeCompanyId: companyId }),
+        this.dispatchCompanies.resolveFirst(row.municipalityId, { tx, excludeCompanyId: companyId }),
       ]);
     });
     const conflictName =

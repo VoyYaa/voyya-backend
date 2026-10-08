@@ -7,7 +7,7 @@ import { REQUIRED_DRIVER_DOCUMENT_TYPES } from '@voyyaa/shared';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
-import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 import { grantLocationConsent } from './support/grant-location-consent';
@@ -49,7 +49,7 @@ suite(
   () => {
     let app: INestApplication;
     let prisma: PrismaService;
-    let activeCompanies: ActiveCompanyResolver;
+    let dispatchCompanies: DispatchCompaniesResolver;
     let storage: FileStorageProvider;
     let companyId: number;
     let municipalityId: number;
@@ -84,7 +84,7 @@ suite(
       await app.init();
 
       prisma = moduleRef.get(PrismaService);
-      activeCompanies = moduleRef.get(ActiveCompanyResolver);
+      dispatchCompanies = moduleRef.get(DispatchCompaniesResolver);
       storage = moduleRef.get(FILE_STORAGE);
 
       const suffix = uniqueSuffix();
@@ -155,8 +155,8 @@ suite(
       if (app) await app.close();
     }, 60_000);
 
-    it('ActiveCompanyResolver resuelve esta empresa como la única activa de su municipio (regresión de Cootrayal/Yarumal)', async () => {
-      const resolved = await activeCompanies.resolve(municipalityId);
+    it('DispatchCompaniesResolver resuelve esta empresa como la única activa de su municipio (regresión de Cootrayal/Yarumal)', async () => {
+      const resolved = await dispatchCompanies.resolveFirst(municipalityId);
       expect(resolved).toBe(companyId);
     });
 

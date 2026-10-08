@@ -2,7 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { OpsDriverQuery, OpsQueueQuery } from '@voyyaa/shared';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { OperationalParamsService } from '../assignment/operational-params.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { OpsConsoleRepository } from './ops-console.repository';
 import { OpsConsoleService } from './ops-console.service';
@@ -25,16 +25,16 @@ function create(locationStaleMin = 15, dispatchTarget: number | null = COMPANY_I
     getDriver: jest.fn().mockResolvedValue(null),
   };
   const companyMunicipality = { resolve: jest.fn().mockResolvedValue(MUNICIPALITY_ID) };
-  const activeCompany = { resolve: jest.fn().mockResolvedValue(dispatchTarget) };
+  const dispatchCompanies = { resolveFirst: jest.fn().mockResolvedValue(dispatchTarget) };
   const params = { get: jest.fn().mockResolvedValue({ locationStaleMin }) };
   const service = new OpsConsoleService(
     fakePrisma(),
     repo as unknown as OpsConsoleRepository,
     companyMunicipality as unknown as CompanyMunicipalityResolver,
-    activeCompany as unknown as ActiveCompanyResolver,
+    dispatchCompanies as unknown as DispatchCompaniesResolver,
     params as unknown as OperationalParamsService,
   );
-  return { service, repo, companyMunicipality, activeCompany, params };
+  return { service, repo, companyMunicipality, dispatchCompanies, params };
 }
 
 describe('OpsConsoleService.listTripRequests', () => {

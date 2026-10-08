@@ -7,7 +7,7 @@ import type {
   TripClosingRow,
 } from './assignment.repository';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 
 interface FakeTripRow {
   status: TripStatus;
@@ -104,8 +104,8 @@ function buildRepo(db: FakeDb): AssignmentRepository {
 
 function buildService(db: FakeDb): TripClosingService {
   const prisma = {} as unknown as PrismaService;
-  const activeCompanyResolver = {} as unknown as ActiveCompanyResolver;
-  return new TripClosingService(prisma, buildRepo(db), activeCompanyResolver);
+  const dispatchCompanies = {} as unknown as DispatchCompaniesResolver;
+  return new TripClosingService(prisma, buildRepo(db), dispatchCompanies);
 }
 
 describe('TripClosingService.closeTripInTx', () => {

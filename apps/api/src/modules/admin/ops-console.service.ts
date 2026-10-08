@@ -14,7 +14,7 @@ import {
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { OperationalParamsService } from '../assignment/operational-params.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { driverPinStatus } from './driver-pin-status';
 import { OpsConsoleRepository, type OpsDriverDbRow, type OpsTripScope } from './ops-console.repository';
@@ -25,7 +25,7 @@ export class OpsConsoleService {
     private readonly prisma: PrismaService,
     private readonly repo: OpsConsoleRepository,
     private readonly companyMunicipality: CompanyMunicipalityResolver,
-    private readonly activeCompany: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
     private readonly params: OperationalParamsService,
   ) {}
 
@@ -99,7 +99,7 @@ export class OpsConsoleService {
 
   private async resolveScope(companyId: number): Promise<OpsTripScope> {
     const municipalityId = await this.companyMunicipality.resolve(companyId);
-    const dispatchTarget = await this.activeCompany.resolve(municipalityId);
+    const dispatchTarget = await this.dispatchCompanies.resolveFirst(municipalityId);
     return { companyId, municipalityId, receivesUnassigned: dispatchTarget === companyId };
   }
 

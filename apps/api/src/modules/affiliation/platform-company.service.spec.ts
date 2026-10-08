@@ -1,6 +1,6 @@
 import type { EnvService } from '../../config/env.service';
 import type { Hasher } from '../auth/hasher.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import type { CompanyProvisioningService } from '../tenancy/company-provisioning.service';
 import type { AffiliationLinkService } from './affiliation-link.service';
 import type { DocumentDownloadTokenService } from './document-download-token.service';
@@ -57,8 +57,8 @@ function create(overrides: { conflictCompanyId?: number | null } = {}) {
     listDocuments: jest.fn().mockResolvedValue([documentRow]),
     listReviews: jest.fn().mockResolvedValue([] as CompanyReviewRow[]),
   };
-  const activeCompanies = {
-    resolve: jest.fn().mockResolvedValue(overrides.conflictCompanyId ?? null),
+  const dispatchCompanies = {
+    resolveFirst: jest.fn().mockResolvedValue(overrides.conflictCompanyId ?? null),
   };
   const downloadTokens = {
     buildUrl: jest.fn((companyDocumentId: number, companyId: number, _mintedBy: number) =>
@@ -69,7 +69,7 @@ function create(overrides: { conflictCompanyId?: number | null } = {}) {
 
   const service = new PlatformCompanyService(
     repo as unknown as PlatformCompanyRepository,
-    activeCompanies as unknown as ActiveCompanyResolver,
+    dispatchCompanies as unknown as DispatchCompaniesResolver,
     {} as CompanyProvisioningService,
     {} as AffiliationLinkService,
     downloadTokens as unknown as DocumentDownloadTokenService,
@@ -78,7 +78,7 @@ function create(overrides: { conflictCompanyId?: number | null } = {}) {
     {} as Hasher,
   );
 
-  return { service, repo, activeCompanies, downloadTokens };
+  return { service, repo, dispatchCompanies, downloadTokens };
 }
 
 describe('PlatformCompanyService.detail', () => {

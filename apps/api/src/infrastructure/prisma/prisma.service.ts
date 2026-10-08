@@ -57,6 +57,13 @@ export class PrismaService
       return fn(tx);
     });
   }
+
+  async runAsPlatform<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.platform_session', 'on', true)`;
+      return fn(tx);
+    });
+  }
 }
 
 function sleep(ms: number): Promise<void> {

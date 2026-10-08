@@ -8,10 +8,10 @@ import type { OperationalParams, OperationalParamsService } from './operational-
 import type { PushProvider } from './ports/push-provider.port';
 import type { TripClosingService } from './trip-closing.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 
-function fakeActiveCompanyResolver(companyId = 1): ActiveCompanyResolver {
-  return { resolve: async () => companyId } as unknown as ActiveCompanyResolver;
+function fakeDispatchCompaniesResolver(companyId = 1): DispatchCompaniesResolver {
+  return { resolveFirst: async () => companyId } as unknown as DispatchCompaniesResolver;
 }
 
 interface DriverRow {
@@ -132,7 +132,7 @@ function buildService(db: FakeDb): AssignmentService {
     emitter,
     push,
     tripClosing,
-    fakeActiveCompanyResolver(),
+    fakeDispatchCompaniesResolver(),
   );
 }
 
@@ -238,7 +238,7 @@ describe('AssignmentService.listNearby (GET /assignments/nearby · polling)', ()
       emitter,
       push,
       tripClosing,
-      fakeActiveCompanyResolver(),
+      fakeDispatchCompaniesResolver(),
     );
   }
 
@@ -338,7 +338,7 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
       emitter,
       push,
       tripClosing,
-      fakeActiveCompanyResolver(),
+      fakeDispatchCompaniesResolver(),
     );
   }
 
@@ -387,7 +387,7 @@ describe('AssignmentService.getAcceptedAssignment (V-01: allow-list, never "canc
       emitter,
       push,
       tripClosing,
-      fakeActiveCompanyResolver(),
+      fakeDispatchCompaniesResolver(),
     );
   }
 
@@ -486,7 +486,7 @@ describe('AssignmentService.onTripRequestCreated · push never gates the assignm
       emitter,
       push,
       tripClosing,
-      fakeActiveCompanyResolver(),
+      fakeDispatchCompaniesResolver(),
     );
 
     return { service, events, setTimeoutSpy };

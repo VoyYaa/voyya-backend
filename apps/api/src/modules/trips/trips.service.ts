@@ -32,7 +32,7 @@ import { Prisma, type TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import { calculateFare } from './domain/fare.calculator';
@@ -66,14 +66,14 @@ export class TripsService {
     @Inject(HOLIDAYS_PROVIDER) private readonly holidays: HolidaysProvider,
     private readonly assignment: AssignmentService,
     private readonly tripClosing: TripClosingService,
-    private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
     private readonly requestContext: RequestContextService,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
     await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    const companyId = await this.activeCompanyResolver.resolve(dto.municipality_id);
+    const companyId = await this.dispatchCompanies.resolveFirst(dto.municipality_id);
     if (companyId === null) {
       throw new ConflictException({
         code: 'NO_COMPANY_AVAILABLE',
@@ -303,7 +303,7 @@ export class TripsService {
   private async rebuildFare(t: TripRequest): Promise<FareBreakdown> {
     const total = Number(t.fare);
     const commission = Number(t.commission);
-    const companyId = await this.activeCompanyResolver.resolve(t.municipalityId);
+    const companyId = await this.dispatchCompanies.resolveFirst(t.municipalityId);
     const config =
       companyId === null ? null : await this.repo.getActiveFareConfig(companyId, t.serviceType);
     if (config) {
