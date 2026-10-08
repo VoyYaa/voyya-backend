@@ -13,7 +13,6 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
-  DOCUMENT_MAX_BYTES,
   type AffiliationApplicationCreated,
   type AffiliationDocument,
   type AffiliationMunicipalityListResponse,
@@ -24,6 +23,7 @@ import {
 import { Public } from '../auth/decorators/public.decorator';
 import { OptInThrottle } from '../../shared/opt-in-throttle';
 import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from '../../shared/throttlers';
+import { documentUploadOptions } from '../../shared/document-upload-options';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AffiliationService } from './affiliation.service';
 import { DocumentStagingService } from './document-staging.service';
@@ -43,7 +43,7 @@ export class AffiliationController {
 
   @Post('documents')
   @HttpCode(201)
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: DOCUMENT_MAX_BYTES, files: 1 } }))
+  @UseInterceptors(FileInterceptor('file', documentUploadOptions))
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
   @OptInThrottle(AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT)
   uploadDocument(

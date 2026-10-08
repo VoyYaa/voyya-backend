@@ -12,7 +12,6 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import {
-  DOCUMENT_MAX_BYTES,
   type CreatedDriver,
   CreateDriverDTO,
   type ResendDriverPinResponse,
@@ -21,6 +20,7 @@ import {
   type UploadedDocument,
 } from '@voyyaa/shared';
 import { DocumentStagingService } from '../affiliation/document-staging.service';
+import { documentUploadOptions } from '../../shared/document-upload-options';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentTenant } from '../tenancy/identity.decorators';
@@ -38,7 +38,7 @@ export class AdminDriverController {
 
   @Post('documents')
   @HttpCode(201)
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: DOCUMENT_MAX_BYTES, files: 1 } }))
+  @UseInterceptors(FileInterceptor('file', documentUploadOptions))
   uploadDocument(@UploadedFile() file: { buffer: Buffer; size: number }): Promise<UploadedDocument> {
     return this.staging.stage(file);
   }
