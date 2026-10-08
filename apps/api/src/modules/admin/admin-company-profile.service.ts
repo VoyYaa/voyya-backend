@@ -9,7 +9,15 @@ export class AdminCompanyProfileService {
   async get(companyId: number): Promise<CompanyProfile> {
     const company = await this.prisma.company.findUnique({
       where: { companyId },
-      select: { companyId: true, taxId: true, status: true, legalName: true },
+      select: {
+        companyId: true,
+        taxId: true,
+        status: true,
+        legalName: true,
+        publicName: true,
+        serviceTypes: true,
+        municipality: { select: { status: true } },
+      },
     });
     if (!company) {
       throw new InternalServerErrorException('Company not found for the authenticated tenant');
@@ -18,9 +26,9 @@ export class AdminCompanyProfileService {
       company_id: company.companyId,
       tax_id: company.taxId,
       status: company.status as CompanyProfile['status'],
-      display_name: company.legalName,
-      service_types: ['taxi'],
-      municipality_coverage_active: true,
+      display_name: company.publicName ?? company.legalName,
+      service_types: company.serviceTypes,
+      municipality_coverage_active: company.municipality.status === 'active',
     };
   }
 }

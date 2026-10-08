@@ -8,11 +8,13 @@ import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { AssignmentRepository } from '../src/modules/assignment/assignment.repository';
 import { AssignmentService } from '../src/modules/assignment/assignment.service';
 import { CandidateRepository } from '../src/modules/assignment/candidate.repository';
-import { OperationalParamsService } from '../src/modules/assignment/operational-params.service';
+import { OperationalParamsRepository } from '../src/modules/service-config/operational-params.repository';
+import { OperationalParamsService } from '../src/modules/service-config/operational-params.service';
 import type { PushProvider } from '../src/modules/assignment/ports/push-provider.port';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { commissionsOf, openFares, seedCommission, seedOpenFare } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -77,7 +79,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
     });
   });
 
-  describe('B-01 regression, rewritten for RLS + WHERE (no more a shared "owner" to check)', () => {
+  describe('B-01 regression, closed by ADR-032 (the company has no write endpoint for fare or parameters)', () => {
     let municipalityId: number;
     let companyAId: number;
     let companyBId: number;
@@ -126,6 +128,10 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
 
       await seedFullSettings(prisma, companyAId, { baseFare: 8000 });
       await seedFullSettings(prisma, companyBId, { baseFare: 8500 });
+      if ((await openFares(prisma, municipalityId)).length === 0) await seedOpenFare(prisma, municipalityId, 'taxi', 8000);
+      for (const companyId of [companyAId, companyBId]) {
+        if ((await commissionsOf(prisma, companyId)).length === 0) await seedCommission(prisma, companyId, 8);
+      }
 
       const adminA = await prisma.user.upsert({
         where: { phone: '_9990000701' },
@@ -142,108 +148,25 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
       adminBAuth = `Bearer ${jwt.sign({ sub: adminB.userId, role: 'admin', type: 'access', company_id: companyBId })}`;
     }, 20_000);
 
-    it("company B's admin changes its own fare -> 200, company A's fare and version are untouched", async () => {
-      const before = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('Authorization', adminBAuth);
-      const beforeA = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('Authorization', adminAAuth);
+    it('B-01 closed by construction: neither admin can write a fare any more (403), and both fares stay as they were', async () => {
+      const beforeA = await request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminAAuth);
+      const beforeB = await request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminBAuth);
 
-      const res = await request(app.getHttpServer())
-        .put('/admin/settings')
-        .set('Authorization', adminBAuth)
-        .send({
-          version: before.body.version,
-          base_fare: 1500,
-          night_surcharge_pct: before.body.night_surcharge_pct,
-          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-          search_radius_km: before.body.search_radius_km,
-          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-        });
+      for (const auth of [adminAAuth, adminBAuth]) {
+        const res = await request(app.getHttpServer())
+          .put('/admin/settings')
+          .set('Authorization', auth)
+          .send({ version: 'x', base_fare: 1500 });
+        expect(res.status).toBe(403);
+        expect(res.body).toMatchObject({ code: 'SETTINGS_MANAGED_BY_PLATFORM' });
+      }
 
-      expect(res.status).toBe(200);
-      expect(res.body.base_fare).toBe(1500);
-
-      const afterA = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('Authorization', adminAAuth);
-      expect(afterA.body.base_fare).toBe(beforeA.body.base_fare);
-      expect(afterA.body.version).toBe(beforeA.body.version);
-    });
-  });
-
-  describe('B-13 — two concurrent PUT for the SAME company, only one wins (partial unique index)', () => {
-    let companyId: number;
-    let adminAuth: string;
-
-    beforeAll(async () => {
-      const municipality = await prisma.municipality.upsert({
-        where: { municipalityId: 9182 },
-        update: { coveragePolygon: poly, status: 'active' },
-        create: {
-          municipalityId: 9182,
-          name: '_Adr018ConcurrencyMuni',
-          department: 'Test',
-          coveragePolygon: poly,
-          status: 'active',
-        },
-      });
-
-      const company = await prisma.company.upsert({
-        where: { taxId: '_adr018-concurrency-co' },
-        update: { status: 'active' },
-        create: {
-          legalName: '_Adr018ConcurrencyCo',
-          taxId: '_adr018-concurrency-co',
-          type: 'cooperative',
-          municipalityId: municipality.municipalityId,
-          status: 'active',
-        },
-      });
-      companyId = company.companyId;
-
-      await seedFullSettings(prisma, companyId, { baseFare: 8000 });
-
-      const admin = await prisma.user.upsert({
-        where: { phone: '_9990000703' },
-        update: { companyId, role: 'admin' },
-        create: { firstName: '_Adr018', lastName: 'ConcurrencyAdmin', phone: '_9990000703', role: 'admin', companyId },
-      });
-      adminAuth = `Bearer ${jwt.sign({ sub: admin.userId, role: 'admin', type: 'access', company_id: companyId })}`;
-    }, 20_000);
-
-    it('2 concurrent PUT with the same version -> one 200, one 409, exactly 1 open fare_config row remains', async () => {
-      const before = await request(app.getHttpServer())
-        .get('/admin/settings')
-        .set('Authorization', adminAuth);
-
-      const N = 2;
-      const results = await Promise.all(
-        Array.from({ length: N }, (_v, i) =>
-          request(app.getHttpServer())
-            .put('/admin/settings')
-            .set('Authorization', adminAuth)
-            .send({
-              version: before.body.version,
-              base_fare: 8100 + i,
-              night_surcharge_pct: before.body.night_surcharge_pct,
-              holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-              search_radius_km: before.body.search_radius_km,
-              acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-            }),
-        ),
-      );
-
-      const ok = results.filter((r) => r.status === 200);
-      const conflict = results.filter((r) => r.status === 409);
-      expect(ok).toHaveLength(1);
-      expect(conflict).toHaveLength(N - 1);
-
-      const openRows = await prisma.runInTenant(companyId, (tx) =>
-        tx.fareConfig.count({ where: { companyId, serviceType: 'taxi', validTo: null } }),
-      );
-      expect(openRows).toBe(1);
+      const afterA = await request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminAAuth);
+      const afterB = await request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminBAuth);
+      expect(beforeA.status).toBe(200);
+      expect(beforeB.status).toBe(200);
+      expect(afterA.body).toEqual(beforeA.body);
+      expect(afterB.body).toEqual(beforeB.body);
     });
   });
 
@@ -473,7 +396,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
       const assignmentRepo = new AssignmentRepository(prisma);
       const tripClosing = new TripClosingService(prisma, assignmentRepo, dispatchCompanies);
       const candidateRepo = new CandidateRepository();
-      const paramsService = new OperationalParamsService(prisma, {
+      const paramsService = new OperationalParamsService(prisma, new OperationalParamsRepository(), {
         get: (k: string) => defaultEnv[k],
       } as never);
       const push: PushProvider = { async sendAssignment() {} };
@@ -515,6 +438,7 @@ const defaultEnv: Record<string, number> = {
   TIEBREAK_WINDOW_HOURS: 3,
   AVG_SPEED_KMH: 20,
   NO_SHOW_GRACE_MIN: 5,
+  CANCELLATION_WINDOW_MIN: 2,
   LOCATION_STALE_MIN: 15,
 };
 
