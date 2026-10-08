@@ -13,6 +13,7 @@ import { Prisma } from '@prisma/client';
 import {
   type CreatedDriver,
   type CreateDriverDTO,
+  DRIVER_PIN_LENGTH,
   DRIVER_SUSPENDED_EVENT,
   type DriverSuspendedEvent,
   type DriverSuspensionReason,
@@ -37,6 +38,8 @@ import {
   type CreatedDriverRow,
   type DriverDocumentRowInput,
 } from './admin-driver.repository';
+
+const MS_PER_HOUR = 3_600_000;
 
 @Injectable()
 export class AdminDriverService {
@@ -79,8 +82,9 @@ export class AdminDriverService {
       }),
     );
 
-    const pin = generateNumericCode(this.env.get('DRIVER_PIN_LENGTH'));
+    const pin = generateNumericCode(DRIVER_PIN_LENGTH);
     const pinHash = await this.hasher.hash(pin);
+    const temporaryPinExpiresAt = this.temporaryPinExpiry();
 
     const promotionScope = randomUUID();
     const documentRows: Array<DriverDocumentRowInput & { fromKey: string; toKey: string }> =
@@ -133,6 +137,7 @@ export class AdminDriverService {
           email: dto.email ?? null,
           license: dto.license ?? null,
           pinHash,
+          temporaryPinExpiresAt,
           vehicle: {
             plate: dto.vehicle.plate,
             model: dto.vehicle.model,
@@ -182,6 +187,7 @@ export class AdminDriverService {
       })),
       pin_delivery: delivery,
       pin_delivered_at: deliveredAt ? deliveredAt.toISOString() : null,
+      temporary_pin_expires_at: temporaryPinExpiresAt.toISOString(),
       created_at: created.createdAt.toISOString(),
     };
   }
@@ -198,11 +204,12 @@ export class AdminDriverService {
   }
 
   async resendPin(companyId: number, driverId: number): Promise<ResendDriverPinResponse> {
-    const pin = generateNumericCode(this.env.get('DRIVER_PIN_LENGTH'));
+    const pin = generateNumericCode(DRIVER_PIN_LENGTH);
     const pinHash = await this.hasher.hash(pin);
+    const temporaryPinExpiresAt = this.temporaryPinExpiry();
 
     const rotated = await this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.rotatePin(tx, driverId, companyId, pinHash),
+      this.repo.rotatePin(tx, driverId, companyId, pinHash, temporaryPinExpiresAt),
     );
     if (!rotated) {
       throw new NotFoundException({ code: 'DRIVER_NOT_FOUND', message: 'El conductor no existe' });
@@ -214,6 +221,7 @@ export class AdminDriverService {
       driver_id: rotated.driverId,
       pin_delivery: delivery,
       pin_delivered_at: deliveredAt ? deliveredAt.toISOString() : null,
+      temporary_pin_expires_at: temporaryPinExpiresAt.toISOString(),
     };
   }
 
@@ -245,6 +253,11 @@ export class AdminDriverService {
     this.emitter.emit(DRIVER_SUSPENDED_EVENT, event);
 
     return { ok: true };
+  }
+
+  private temporaryPinExpiry(): Date {
+    const ttlHours = this.env.get('DRIVER_TEMPORARY_PIN_TTL_HOURS');
+    return new Date(Date.now() + ttlHours * MS_PER_HOUR);
   }
 
   private async deliverPin(

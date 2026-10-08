@@ -3,6 +3,7 @@ import { AssignmentRepository } from '../src/modules/assignment/assignment.repos
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import type { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createFreshPassenger } from './support/fresh-passenger';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -135,7 +136,7 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   async function makeTrip(status: FixtureStatus, arrivedMinutesAgo?: number) {
     const trip = await raw.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(raw),
         municipalityId,
         serviceType: 'taxi',
         paymentMethod: 'cash',
@@ -301,7 +302,7 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   it('V-09: penalty_recorded is monotonic, closeTripRequest never clears a previously recorded penalty', async () => {
     const trip = await raw.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(raw),
         municipalityId,
         serviceType: 'taxi',
         paymentMethod: 'cash',

@@ -15,6 +15,7 @@ import {
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { OperationalParamsService } from '../assignment/operational-params.service';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
+import { driverPinStatus } from './driver-pin-status';
 import { OpsConsoleRepository, type OpsDriverDbRow } from './ops-console.repository';
 
 @Injectable()
@@ -142,6 +143,9 @@ function toOpsDriverRow(row: OpsDriverDbRow, staleMin: number, now: number): Ops
     location_updated_at: row.locationUpdatedAt ? row.locationUpdatedAt.toISOString() : null,
     location_stale: isLocationStale(row.locationUpdatedAt, staleMin, now),
     pin_delivered_at: row.pinDeliveredAt ? row.pinDeliveredAt.toISOString() : null,
+    pin_status: driverPinStatus(row, now),
+    temporary_pin_expires_at:
+      row.pinMustChange && row.temporaryPinExpiresAt ? row.temporaryPinExpiresAt.toISOString() : null,
     created_at: row.createdAt.toISOString(),
   };
 }

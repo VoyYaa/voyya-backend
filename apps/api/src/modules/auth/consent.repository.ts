@@ -1,22 +1,16 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
-import type { ConsentPurpose, NoticeVersion } from '@voyyaa/shared';
+import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
+import {
+  ConsentPurpose,
+  type ConsentStatus,
+  type NoticeVersion,
+} from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { buildConsentStatus, type ConsentLedgerEntry } from './consent-status';
 
-export interface ConsentRecordRow {
-  purpose: ConsentPurpose;
-  noticeVersion: string;
-  grantedAt: Date;
-}
+const CONSENT_LOCK_NAMESPACE = 91_100;
 
-type RawConsentRow = {
-  purpose: ConsentPurpose;
-  notice_version: string;
-  granted_at: Date;
-};
-
-function toRow(row: RawConsentRow): ConsentRecordRow {
-  return { purpose: row.purpose, noticeVersion: row.notice_version, grantedAt: row.granted_at };
-}
+const ledgerSelect = { action: true, noticeVersion: true, recordedAt: true } as const;
 
 @Injectable()
 export class ConsentRepository {
@@ -26,29 +20,49 @@ export class ConsentRepository {
     userId: number,
     purpose: ConsentPurpose,
     noticeVersion: NoticeVersion,
-  ): Promise<ConsentRecordRow> {
-    const rows = await this.prisma.$queryRaw<RawConsentRow[]>`
-      INSERT INTO auth.consent_record (user_id, purpose, notice_version, granted_at)
-      VALUES (${userId}, ${purpose}::auth."ConsentPurpose", ${noticeVersion}, (now() AT TIME ZONE 'UTC'))
-      ON CONFLICT (user_id, purpose, notice_version)
-      DO UPDATE SET user_id = EXCLUDED.user_id
-      RETURNING purpose, notice_version, granted_at
-    `;
-    const row = rows[0];
-    if (!row) throw new InternalServerErrorException('Consent insert returned no row');
-    return toRow(row);
+  ): Promise<ConsentStatus> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${CONSENT_LOCK_NAMESPACE}::int, ${userId}::int)`;
+      const latest = await this.latestEntry(tx, userId, purpose);
+      const alreadyGranted =
+        latest !== null && latest.action === 'granted' && latest.noticeVersion === noticeVersion;
+      if (!alreadyGranted) {
+        await tx.consentRecord.create({
+          data: { userId, purpose, noticeVersion, action: 'granted' },
+        });
+      }
+      return this.statusFor(tx, userId, purpose);
+    });
   }
 
-  async list(userId: number): Promise<ConsentRecordRow[]> {
-    const rows = await this.prisma.consentRecord.findMany({
-      where: { userId },
-      orderBy: { grantedAt: 'asc' },
-      select: { purpose: true, noticeVersion: true, grantedAt: true },
+  async list(userId: number): Promise<ConsentStatus[]> {
+    return this.prisma.$transaction((tx) =>
+      Promise.all(ConsentPurpose.options.map((purpose) => this.statusFor(tx, userId, purpose))),
+    );
+  }
+
+  private async statusFor(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    purpose: ConsentPurpose,
+  ): Promise<ConsentStatus> {
+    const [latest, latestGranted] = await Promise.all([
+      this.latestEntry(tx, userId, purpose),
+      this.latestEntry(tx, userId, purpose, 'granted'),
+    ]);
+    return buildConsentStatus(purpose, latest, latestGranted);
+  }
+
+  private async latestEntry(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    purpose: ConsentPurpose,
+    action?: 'granted' | 'revoked',
+  ): Promise<ConsentLedgerEntry | null> {
+    return tx.consentRecord.findFirst({
+      where: { userId, purpose, ...(action ? { action } : {}) },
+      orderBy: [{ recordedAt: 'desc' }, { consentRecordId: 'desc' }],
+      select: ledgerSelect,
     });
-    return rows.map((r) => ({
-      purpose: r.purpose,
-      noticeVersion: r.noticeVersion,
-      grantedAt: r.grantedAt,
-    }));
   }
 }

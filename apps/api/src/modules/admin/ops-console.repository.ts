@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import { requireTripLocation } from '../../shared/require-trip-location';
 import { ACTIVE_TRIP_STATUSES, type DriverStatus, type TripStatus } from '@voyyaa/shared';
 
 export interface OpsAssignedDriverRow {
@@ -24,8 +25,8 @@ export interface OpsTripDetailRow {
   tripRequestId: number;
   status: TripStatus;
   statusSince: Date;
-  pickupAddress: string;
-  dropoffAddress: string;
+  pickupAddress: string | null;
+  dropoffAddress: string | null;
   fareTotal: number;
   commission: number;
   passengerName: string;
@@ -54,6 +55,8 @@ export interface OpsDriverDbRow {
   vehicle: OpsDriverVehicleRow | null;
   locationUpdatedAt: Date | null;
   pinDeliveredAt: Date | null;
+  pinMustChange: boolean;
+  temporaryPinExpiresAt: Date | null;
   createdAt: Date;
 }
 
@@ -75,6 +78,7 @@ export class OpsConsoleRepository {
     const rows = await tx.tripRequest.findMany({
       where: {
         municipalityId,
+        locationPurgedAt: null,
         AND: [
           {
             OR: [
@@ -120,8 +124,8 @@ export class OpsConsoleRepository {
       requestedAt: r.requestedAt,
       statusSince: r.updatedAt,
       passengerName: fullName(r.passenger.user.firstName, r.passenger.user.lastName),
-      pickupAddress: r.pickupAddress,
-      dropoffAddress: r.dropoffAddress,
+      pickupAddress: requireTripLocation(r.pickupAddress),
+      dropoffAddress: requireTripLocation(r.dropoffAddress),
       fareTotal: Number(r.fare),
       driver: toAssignedDriver(r.assignments[0]),
     }));
@@ -245,6 +249,8 @@ const driverSelect = {
   status: true,
   locationUpdatedAt: true,
   pinDeliveredAt: true,
+  pinMustChange: true,
+  temporaryPinExpiresAt: true,
   createdAt: true,
   user: { select: { firstName: true, lastName: true, phone: true } },
   currentVehicle: { select: { vehicleId: true, plate: true, model: true } },
@@ -256,6 +262,8 @@ interface DriverSelectResult {
   status: DriverStatus;
   locationUpdatedAt: Date | null;
   pinDeliveredAt: Date | null;
+  pinMustChange: boolean;
+  temporaryPinExpiresAt: Date | null;
   createdAt: Date;
   user: { firstName: string; lastName: string; phone: string };
   currentVehicle: { vehicleId: number; plate: string; model: string | null } | null;
@@ -274,6 +282,8 @@ function toDriverRow(d: DriverSelectResult): OpsDriverDbRow {
       : null,
     locationUpdatedAt: d.locationUpdatedAt,
     pinDeliveredAt: d.pinDeliveredAt,
+    pinMustChange: d.pinMustChange,
+    temporaryPinExpiresAt: d.temporaryPinExpiresAt,
     createdAt: d.createdAt,
   };
 }

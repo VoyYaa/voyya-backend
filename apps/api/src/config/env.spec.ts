@@ -131,3 +131,56 @@ describe('validateEnv — CORS_ORIGINS in production', () => {
     expect(failureOf({ ...base, NODE_ENV: 'development', CORS_ORIGINS: 'http://localhost:5173' })).toBe('');
   });
 });
+
+describe('validateEnv — driver PIN lifetime', () => {
+  it('defaults the temporary PIN lifetime to 72 hours', () => {
+    expect(validateEnv({ ...base }).DRIVER_TEMPORARY_PIN_TTL_HOURS).toBe(72);
+  });
+
+  it.each(['0', '169', '1.5', 'abc'])('rejects DRIVER_TEMPORARY_PIN_TTL_HOURS=%s', (value) => {
+    expect(failureOf({ ...base, DRIVER_TEMPORARY_PIN_TTL_HOURS: value })).toContain(
+      'DRIVER_TEMPORARY_PIN_TTL_HOURS',
+    );
+  });
+
+  it.each(['1', '168'])('accepts DRIVER_TEMPORARY_PIN_TTL_HOURS=%s', (value) => {
+    expect(failureOf({ ...base, DRIVER_TEMPORARY_PIN_TTL_HOURS: value })).toBe('');
+  });
+});
+
+describe('validateEnv — trip coordinates retention', () => {
+  it('defaults to the contract constant', () => {
+    expect(validateEnv({ ...base }).TRIP_COORDINATES_RETENTION_DAYS).toBe(90);
+  });
+
+  it.each(['0', '-1', '1.5'])('rejects TRIP_COORDINATES_RETENTION_DAYS=%s everywhere', (value) => {
+    expect(failureOf({ ...base, TRIP_COORDINATES_RETENTION_DAYS: value })).toContain(
+      'TRIP_COORDINATES_RETENTION_DAYS',
+    );
+  });
+
+  it('accepts another value outside production for tests', () => {
+    expect(failureOf({ ...base, NODE_ENV: 'test', TRIP_COORDINATES_RETENTION_DAYS: '30' })).toBe('');
+  });
+
+  it('rejects a value other than the contract constant in production', () => {
+    expect(failureOf({ ...production, TRIP_COORDINATES_RETENTION_DAYS: '30' })).toContain(
+      'TRIP_COORDINATES_RETENTION_DAYS',
+    );
+    expect(failureOf({ ...production, TRIP_COORDINATES_RETENTION_DAYS: '90' })).toBe('');
+  });
+});
+
+describe('validateEnv — LOCATION_PURGE_HOURS in production', () => {
+  it.each(['0', '13', '24'])('rejects %s hours in production', (value) => {
+    expect(failureOf({ ...production, LOCATION_PURGE_HOURS: value })).toContain('LOCATION_PURGE_HOURS');
+  });
+
+  it.each(['1', '12'])('accepts %s hours in production', (value) => {
+    expect(failureOf({ ...production, LOCATION_PURGE_HOURS: value })).toBe('');
+  });
+
+  it.each(['development', 'test'])('keeps 0 as "disabled" in %s', (nodeEnv) => {
+    expect(validateEnv({ ...base, NODE_ENV: nodeEnv, LOCATION_PURGE_HOURS: '0' }).LOCATION_PURGE_HOURS).toBe(0);
+  });
+});

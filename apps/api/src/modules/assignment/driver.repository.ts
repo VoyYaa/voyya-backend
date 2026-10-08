@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import type { DriverStatus, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { requireTripLocation } from '../../shared/require-trip-location';
 
 export interface DriverShiftRow {
   status: DriverStatus;
@@ -27,7 +28,7 @@ export interface PendingCashTripRow {
   tripRequestId: number;
   finishedAt: Date;
   fare: number;
-  dropoffAddress: string;
+  dropoffAddress: string | null;
 }
 
 type RawShiftRow = {
@@ -200,8 +201,8 @@ export class DriverRepository {
       tripRequestId: t.tripRequestId,
       assignmentId: a.assignmentId,
       status: t.status,
-      pickupAddress: t.pickupAddress,
-      dropoffAddress: t.dropoffAddress,
+      pickupAddress: requireTripLocation(t.pickupAddress),
+      dropoffAddress: requireTripLocation(t.dropoffAddress),
       fare: Number(t.fare),
       commission: Number(t.commission),
       arrivedAt: t.arrivedAt,

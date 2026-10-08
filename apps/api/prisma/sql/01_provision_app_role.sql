@@ -52,5 +52,7 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA auth, tenancy, users, fleet, trips, assignmen
 ALTER DEFAULT PRIVILEGES IN SCHEMA auth, tenancy, users, fleet, trips, assignment, admin
   GRANT USAGE, SELECT ON SEQUENCES TO app_voyya;
 
+REVOKE UPDATE, DELETE ON admin.settlement_remittance, admin.settlement_export FROM app_voyya;
+
 -- Verification (prints the row so the operator sees it in the psql output):
 SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'app_voyya';

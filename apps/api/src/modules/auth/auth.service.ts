@@ -329,6 +329,7 @@ export class AuthService {
       role,
       tenant,
       profile_complete: role !== 'passenger' || profile.firstName.trim().length > 0,
+      pin_change_required: false,
     };
   }
 

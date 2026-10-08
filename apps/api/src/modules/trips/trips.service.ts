@@ -30,6 +30,7 @@ import {
 import type { TripRequest } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
+import { requireTripLocation } from '../../shared/require-trip-location';
 import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
@@ -336,7 +337,10 @@ export class TripsService {
       passenger_id: tripRequest.passengerId,
       municipality_id: tripRequest.municipalityId,
       service_type: tripRequest.serviceType,
-      origin: { lat: tripRequest.pickupLat, lng: tripRequest.pickupLng },
+      origin: {
+        lat: requireTripLocation(tripRequest.pickupLat),
+        lng: requireTripLocation(tripRequest.pickupLng),
+      },
       occurred_at: new Date().toISOString(),
     };
     this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_CREATED, event);
