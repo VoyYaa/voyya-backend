@@ -22,6 +22,8 @@ import {
   type UploadedDocument,
 } from '@voyyaa/shared';
 import { Public } from '../auth/decorators/public.decorator';
+import { OptInThrottle } from '../../shared/opt-in-throttle';
+import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from '../../shared/throttlers';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { AffiliationService } from './affiliation.service';
 import { DocumentStagingService } from './document-staging.service';
@@ -42,7 +44,8 @@ export class AffiliationController {
   @Post('documents')
   @HttpCode(201)
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: DOCUMENT_MAX_BYTES, files: 1 } }))
-  @Throttle({ default: { limit: 5, ttl: 60_000 }, affiliation_docs_hour: { limit: 30, ttl: 3_600_000 } })
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @OptInThrottle(AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT)
   uploadDocument(
     @UploadedFile() file: { buffer: Buffer; size: number },
   ): Promise<UploadedDocument> {

@@ -16,6 +16,8 @@ import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
+import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from './shared/throttlers';
+import { skipUnlessOptedIn } from './shared/opt-in-throttle';
 
 @Module({
   imports: [
@@ -27,7 +29,7 @@ import { TripsModule } from './modules/trips/trips.module';
       inject: [EnvService],
       useFactory: (env: EnvService) => [
         { name: 'default', ttl: env.get('THROTTLE_TTL_SECONDS') * 1000, limit: env.get('THROTTLE_LIMIT') },
-        { name: 'affiliation_docs_hour', ttl: 3_600_000, limit: 30 },
+        { name: AFFILIATION_DOCS_HOURLY, ...AFFILIATION_DOCS_HOURLY_LIMIT, skipIf: skipUnlessOptedIn(AFFILIATION_DOCS_HOURLY) },
       ],
     }),
     PrismaModule,
