@@ -18,6 +18,10 @@ import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { OpsConsoleController } from './ops-console.controller';
 import { OpsConsoleRepository } from './ops-console.repository';
 import { OpsConsoleService } from './ops-console.service';
+import { SettlementController } from './settlement/settlement.controller';
+import { SettlementRemittanceService } from './settlement/settlement-remittance.service';
+import { SettlementReportService } from './settlement/settlement-report.service';
+import { SettlementRepository } from './settlement/settlement.repository';
 
 @Module({
   imports: [AssignmentModule, AffiliationModule],
@@ -27,6 +31,7 @@ import { OpsConsoleService } from './ops-console.service';
     AdminFleetQuotaController,
     AdminSettingsController,
     OpsConsoleController,
+    SettlementController,
   ],
   providers: [
     AdminCompanyProfileService,
@@ -37,6 +42,9 @@ import { OpsConsoleService } from './ops-console.service';
     OpsConsoleService,
     OpsConsoleRepository,
     CompanyMunicipalityResolver,
+    SettlementReportService,
+    SettlementRemittanceService,
+    SettlementRepository,
     { provide: HASHER, useClass: BcryptHasher },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
