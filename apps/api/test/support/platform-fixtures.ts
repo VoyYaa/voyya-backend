@@ -1,5 +1,5 @@
 import type { JwtService } from '@nestjs/jwt';
-import type { ServiceType } from '@prisma/client';
+import type { PrismaClient, ServiceType } from '@prisma/client';
 import { randomInt } from 'node:crypto';
 import type { PrismaService } from '../../src/infrastructure/prisma/prisma.service';
 
@@ -149,4 +149,44 @@ export async function openFares(prisma: PrismaService, municipalityId: number, s
 
 export async function commissionsOf(prisma: PrismaService, companyId: number) {
   return prisma.runAsPlatform((tx) => tx.companyCommission.findMany({ where: { companyId } }));
+}
+
+export async function ensureOpenFare(
+  prisma: PrismaService,
+  municipalityId: number,
+  serviceType: ServiceType = 'taxi',
+  baseFare = 8000,
+): Promise<number> {
+  const open = await prisma.municipalityFare.findFirst({
+    where: { municipalityId, serviceType, validTo: null },
+  });
+  return open ? open.municipalityFareId : seedOpenFare(prisma, municipalityId, serviceType, baseFare);
+}
+
+export async function ensureCommission(
+  prisma: PrismaService,
+  companyId: number,
+  commissionPct = 8,
+): Promise<void> {
+  const open = await prisma.runInTenant(companyId, (tx) =>
+    tx.companyCommission.findFirst({ where: { companyId, validTo: null } }),
+  );
+  if (!open) await seedCommission(prisma, companyId, commissionPct);
+}
+
+export async function ensureCommissionWithClient(
+  client: PrismaClient,
+  companyId: number,
+  commissionPct = 8,
+): Promise<void> {
+  await client.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT set_config('app.platform_session', 'on', true)`;
+    await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
+    const open = await tx.$queryRaw<Array<{ company_id: number }>>`
+      SELECT company_id FROM tenancy.company_commission WHERE company_id = ${companyId} AND valid_to IS NULL`;
+    if (open.length > 0) return;
+    await tx.$executeRaw`
+      INSERT INTO tenancy.company_commission (company_id, commission_pct, origin, valid_from)
+      VALUES (${companyId}, ${commissionPct}, 'platform_edit', now() AT TIME ZONE 'UTC')`;
+  });
 }

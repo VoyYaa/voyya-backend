@@ -13,8 +13,11 @@ import { OperationalParamsService } from '../src/modules/service-config/operatio
 import type { PushProvider } from '../src/modules/assignment/ports/push-provider.port';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
+import { CompanyDirectory } from '../src/modules/tenancy/company-directory';
+import { CompanyCommissionReader } from '../src/modules/service-config/company-commission.reader';
+import { CompanyCommissionRepository } from '../src/modules/service-config/company-commission.repository';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
-import { commissionsOf, openFares, seedCommission, seedOpenFare } from './support/platform-fixtures';
+import { commissionsOf, ensureOpenFare, openFares, seedCommission, seedOpenFare } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -197,7 +200,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
       };
     }
 
-    it('two active companies in the same municipality -> resolves deterministically to the lower company_id fare', async () => {
+    it('two active companies in the same municipality -> the quote is the municipality fare, whatever the company (ADR-032 §4.1)', async () => {
       const municipality = await prisma.municipality.upsert({
         where: { municipalityId: 9183 },
         update: { coveragePolygon: poly, status: 'active' },
@@ -233,11 +236,9 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         },
       });
 
-      const lowerCompanyId = Math.min(companyX.companyId, companyY.companyId);
-      const higherCompanyId = Math.max(companyX.companyId, companyY.companyId);
-
-      await seedOpenFareConfig(prisma, lowerCompanyId, 8800);
-      await seedOpenFareConfig(prisma, higherCompanyId, 9900);
+      expect(companyX.companyId).not.toBe(companyY.companyId);
+      await ensureOpenFare(prisma, municipality.municipalityId, 'taxi', 8800);
+      const [openFare] = await openFares(prisma, municipality.municipalityId);
 
       const res = await request(app.getHttpServer())
         .post('/trips/quote')
@@ -245,8 +246,8 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         .send(quoteBody(municipality.municipalityId));
 
       expect(res.status).toBe(200);
-      expect(res.body.fare.base_fare).toBe(8800);
-      expect(res.body.fare.total).toBe(8800);
+      expect(res.body.fare.base_fare).toBe(Number(openFare?.baseFare));
+      expect(res.body.fare.commission).toBe(0);
     });
 
     it('no active company in the municipality -> 409 NO_COMPANY_AVAILABLE', async () => {
@@ -272,8 +273,8 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
     });
   });
 
-  describe('AssignmentService.start() resolves the SAME company as TripsService.quote() (single DispatchCompaniesResolver, §2)', () => {
-    it('with two active companies, the assignment engine dispatches through the lower company_id — never diverges from the quote', async () => {
+  describe('AssignmentService.start() searches every active company of the municipality (ADR-032 §1)', () => {
+    it('with two active companies, the engine offers to the company that has the driver, not to the lowest company_id', async () => {
       const municipality = await prisma.municipality.upsert({
         where: { municipalityId: 9185 },
         update: { coveragePolygon: poly, status: 'active' },
@@ -309,7 +310,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
           status: 'active',
         },
       });
-      const lowerCompanyId = Math.min(companyX.companyId, companyY.companyId);
+      const lowerCompanyId = Math.max(companyX.companyId, companyY.companyId);
 
       const driverPhone = uniquePhone();
       const driverUser = await prisma.user.upsert({
@@ -317,24 +318,23 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         update: {},
         create: { firstName: '_Adr018', lastName: 'Driver', phone: driverPhone, role: 'driver' },
       });
+      const plate = `_AD${randomInt(100_000, 999_999)}`;
       const vehicle = await prisma.runInTenant(lowerCompanyId, (tx) =>
-        tx.vehicle.upsert({
-          where: { plate: '_ADR18D1' },
-          update: { status: 'active', companyId: lowerCompanyId },
-          create: { plate: '_ADR18D1', companyId: lowerCompanyId, status: 'active' },
-        }),
+        tx.vehicle.create({ data: { plate, companyId: lowerCompanyId, status: 'active' } }),
       );
-      await prisma.runInTenant(lowerCompanyId, (tx) =>
-        tx.driver.updateMany({
-          where: {
-            companyId: lowerCompanyId,
-            currentLat: 0.1,
-            currentLng: 0.1,
-            driverId: { not: driverUser.userId },
-          },
-          data: { status: 'off_shift' },
-        }),
-      );
+      for (const otherCompanyId of [companyX.companyId, companyY.companyId]) {
+        await prisma.runInTenant(otherCompanyId, (tx) =>
+          tx.driver.updateMany({
+            where: {
+              companyId: otherCompanyId,
+              currentLat: 0.1,
+              currentLng: 0.1,
+              driverId: { not: driverUser.userId },
+            },
+            data: { status: 'off_shift' },
+          }),
+        );
+      }
       await prisma.runInTenant(lowerCompanyId, (tx) =>
         tx.driver.upsert({
           where: { driverId: driverUser.userId },
@@ -394,7 +394,7 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
 
       const dispatchCompanies = new DispatchCompaniesResolver(prisma);
       const assignmentRepo = new AssignmentRepository(prisma);
-      const tripClosing = new TripClosingService(prisma, assignmentRepo, dispatchCompanies);
+      const tripClosing = new TripClosingService(prisma, assignmentRepo);
       const candidateRepo = new CandidateRepository();
       const paramsService = new OperationalParamsService(prisma, new OperationalParamsRepository(), {
         get: (k: string) => defaultEnv[k],
@@ -410,6 +410,8 @@ suite('ADR-018 · trips.fare_config and admin.system_parameter are company-owned
         push,
         tripClosing,
         dispatchCompanies,
+        new CompanyCommissionReader(new CompanyCommissionRepository()),
+        new CompanyDirectory(prisma),
       );
 
       await assignmentService.onTripRequestCreated({
@@ -441,26 +443,6 @@ const defaultEnv: Record<string, number> = {
   CANCELLATION_WINDOW_MIN: 2,
   LOCATION_STALE_MIN: 15,
 };
-
-async function seedOpenFareConfig(
-  prisma: PrismaService,
-  companyId: number,
-  baseFare: number,
-): Promise<void> {
-  await prisma.runInTenant(companyId, async (tx) => {
-    await tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } });
-    await tx.fareConfig.create({
-      data: {
-        companyId,
-        serviceType: 'taxi',
-        baseFare,
-        nightSurchargePct: 0,
-        holidaySurchargePct: 0,
-        commissionPct: 8,
-      },
-    });
-  });
-}
 
 async function seedFullSettings(
   prisma: PrismaService,

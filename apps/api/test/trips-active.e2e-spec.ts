@@ -9,6 +9,7 @@ import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { createFreshPassenger } from './support/fresh-passenger';
+import { ensureCommission, ensureOpenFare } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const TEST_TIMEOUT_MS = 30_000;
@@ -75,19 +76,8 @@ suite('Passenger active trip: GET /trips/active, 409 with reference and the uniq
       },
     });
     companyId = company.companyId;
-    await prisma.runInTenant(companyId, async (tx) => {
-      await tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } });
-      await tx.fareConfig.create({
-        data: {
-          companyId,
-          serviceType: 'taxi',
-          baseFare: 8000,
-          nightSurchargePct: 20,
-          holidaySurchargePct: 15,
-          commissionPct: 8,
-        },
-      });
-    });
+    await ensureOpenFare(prisma, municipality.municipalityId, 'taxi', 8000);
+    await ensureCommission(prisma, companyId);
   }, 30_000);
 
   afterAll(async () => {
