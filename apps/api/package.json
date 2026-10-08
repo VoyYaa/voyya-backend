@@ -22,7 +22,8 @@
     "db:seed": "ts-node prisma/seed.ts",
     "provision:company": "ts-node scripts/provision-company.ts",
     "provision:platform-admin": "ts-node scripts/create-platform-admin.ts",
-    "provision:municipality": "ts-node scripts/add-municipality.ts"
+    "provision:municipality": "ts-node scripts/add-municipality.ts",
+    "ops:rotate-staff-password": "ts-node scripts/rotate-staff-password.ts"
   },
   "prisma": {
     "seed": "ts-node prisma/seed.ts"
