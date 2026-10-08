@@ -15,4 +15,5 @@ module.exports = {
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.module.ts', '!src/main.ts'],
   coverageDirectory: '<rootDir>/coverage',
   clearMocks: true,
+  maxWorkers: '50%',
 };
