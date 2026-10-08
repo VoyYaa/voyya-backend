@@ -1,19 +1,26 @@
 import type { INestApplication } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { LOCATION_NOTICE_VERSION } from '@voyyaa/shared';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
+import { grantLocationConsent } from './support/grant-location-consent';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 
 const url = process.env.PG_TEST_URL;
+const ownerUrl = process.env.PG_TEST_OWNER_URL;
+const ownerIt = ownerUrl ? it : it.skip;
 const suite = url ? describe : describe.skip;
 
-const MUNICIPALITY_ID = 9141;
+const MUNICIPALITY_ID = 9221;
+const MUNICIPALITY_NAME = '_ConsentRevocationMuni';
 const POSITION = { lat: 6.9, lng: -75.4 };
 
 suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let owner: PrismaClient;
   let companyId: number;
   let seq = 0;
   const runId = `${Date.now()}${Math.floor(Math.random() * 1_000_000)}`;
@@ -30,13 +37,14 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
     app.useGlobalFilters(new AllExceptionsFilter());
     await app.init();
     prisma = moduleRef.get(PrismaService);
+    owner = new PrismaClient({ datasourceUrl: ownerUrl ?? url });
 
     await prisma.municipality.upsert({
       where: { municipalityId: MUNICIPALITY_ID },
       update: {},
       create: {
         municipalityId: MUNICIPALITY_ID,
-        name: '_ConsentRevocationMuni',
+        name: MUNICIPALITY_NAME,
         department: 'Test',
         coveragePolygon: {
           type: 'Polygon',
@@ -68,7 +76,9 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
   }, 30_000);
 
   afterAll(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, MUNICIPALITY_NAME);
     if (app) await app.close();
+    if (owner) await owner.$disconnect();
   }, 20_000);
 
   function nextId(): number {
@@ -150,7 +160,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       }
     });
 
-    it('fails the startup when the stored hash of the current version differs', async () => {
+    ownerIt('fails the startup when the stored hash of the current version differs', async () => {
       const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
       const registry = app.get(ConsentNoticeRegistry);
       const original = await prisma.consentNotice.findUniqueOrThrow({
@@ -163,7 +173,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         },
       });
       const tampered = 'a'.repeat(64);
-      await prisma.consentNotice.update({
+      await owner.consentNotice.update({
         where: {
           purpose_noticeVersion_audience: {
             purpose: 'location',
@@ -176,7 +186,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       try {
         await expect(registry.register()).rejects.toThrow('cambió sin subir la versión del aviso');
       } finally {
-        await prisma.consentNotice.update({
+        await owner.consentNotice.update({
           where: {
             purpose_noticeVersion_audience: {
               purpose: 'location',
@@ -190,7 +200,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       await expect(registry.register()).resolves.toBeUndefined();
     });
 
-    it('refuses to boot the application while a stored hash differs from the contract text', async () => {
+    ownerIt('refuses to boot the application while a stored hash differs from the contract text', async () => {
       const key = {
         purpose_noticeVersion_audience: {
           purpose: 'location' as const,
@@ -199,7 +209,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         },
       };
       const original = await prisma.consentNotice.findUniqueOrThrow({ where: key });
-      await prisma.consentNotice.update({ where: key, data: { sha256: 'c'.repeat(64) } });
+      await owner.consentNotice.update({ where: key, data: { sha256: 'c'.repeat(64) } });
       try {
         const { AppModule } = await import('../src/app.module');
         const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -207,8 +217,53 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         await expect(second.init()).rejects.toThrow('cambió sin subir la versión del aviso');
         await moduleRef.get(PrismaService).$disconnect();
       } finally {
-        await prisma.consentNotice.update({ where: key, data: { sha256: original.sha256 } });
+        await owner.consentNotice.update({ where: key, data: { sha256: original.sha256 } });
       }
+    });
+
+    ownerIt('refuses to boot when the stored body no longer matches the stored hash (CM-03)', async () => {
+      const key = {
+        purpose_noticeVersion_audience: {
+          purpose: 'location' as const,
+          noticeVersion: LOCATION_NOTICE_VERSION,
+          audience: 'driver' as const,
+        },
+      };
+      const original = await prisma.consentNotice.findUniqueOrThrow({ where: key });
+      await owner.consentNotice.update({ where: key, data: { body: `${original.body} reescrito` } });
+      try {
+        const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
+        await expect(app.get(ConsentNoticeRegistry).register()).rejects.toThrow('no coincide con su huella');
+      } finally {
+        await owner.consentNotice.update({ where: key, data: { body: original.body } });
+      }
+    });
+
+    it('app_voyya cannot rewrite or delete the ledger or the notices (CM-03)', async () => {
+      const passengerId = await makePassenger();
+      await grantLocationConsent(prisma, passengerId, 'passenger');
+      const denied = /permission denied/i;
+
+      await expect(
+        prisma.$executeRaw`UPDATE auth.consent_record SET action = 'revoked' WHERE user_id = ${passengerId}`,
+      ).rejects.toThrow(denied);
+      await expect(
+        prisma.$executeRaw`DELETE FROM auth.consent_record WHERE user_id = ${passengerId}`,
+      ).rejects.toThrow(denied);
+      await expect(
+        prisma.$executeRaw`UPDATE auth.consent_notice SET body = 'x' WHERE audience = 'passenger'::auth."NoticeAudience"`,
+      ).rejects.toThrow(denied);
+      await expect(prisma.$executeRaw`DELETE FROM auth.consent_notice`).rejects.toThrow(denied);
+      expect(await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } })).toBe(1);
+    });
+
+    ownerIt('the ledger foreign key restricts updating the notice version (CM-03)', async () => {
+      const passengerId = await makePassenger();
+      await grantLocationConsent(prisma, passengerId, 'passenger');
+      await expect(
+        owner.$executeRaw`UPDATE auth.consent_notice SET notice_version = 'location-notice-renamed'
+                           WHERE notice_version = ${LOCATION_NOTICE_VERSION} AND audience = 'passenger'::auth."NoticeAudience"`,
+      ).rejects.toThrow(/consent_record_purpose_notice_version_audience_fkey|violates foreign key/);
     });
   });
 
@@ -495,6 +550,36 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
 
       expect(await readDriver(driverId)).toMatchObject({ status: 'off_shift', currentLat: null });
     });
+
+    it('no position survives a revocation raced by concurrent reports on an on_trip driver (CM-04)', async () => {
+      const { ConsentService } = await import('../src/modules/auth/consent.service');
+      const { DriverShiftService } = await import('../src/modules/assignment/driver-shift.service');
+      const consents = app.get(ConsentService);
+      const shifts = app.get(DriverShiftService);
+      const ROUNDS = 25;
+      const WORKERS = 10;
+      const REPORTS_PER_WORKER = 12;
+      const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+      let survivors = 0;
+      for (let round = 0; round < ROUNDS; round += 1) {
+        const driverId = await makeDriver('on_trip');
+        await grantLocationConsent(prisma, driverId);
+        const user = { userId: driverId, role: 'driver' as const, companyId };
+        const workers = Array.from({ length: WORKERS }, async () => {
+          for (let i = 0; i < REPORTS_PER_WORKER; i += 1) {
+            await shifts.reportLocation(driverId, companyId, POSITION).catch(() => undefined);
+          }
+        });
+        const revocation = delay(round % 4).then(() => consents.revoke(user, { purpose: 'location' }));
+        const [revoked] = await Promise.all([revocation, ...workers]);
+        expect(revoked.state).toBe('revoked');
+        const after = await readDriver(driverId);
+        if (after.currentLat !== null || after.currentLng !== null || after.locationUpdatedAt !== null) {
+          survivors += 1;
+        }
+      }
+      expect(survivors).toBe(0);
+    }, 120_000);
 
     it('does not touch another driver of the same company', async () => {
       const revoker = await makeDriver('available');

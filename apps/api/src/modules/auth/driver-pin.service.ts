@@ -66,16 +66,13 @@ export class DriverPinService {
 
     if (!(await this.hasher.compare(dto.current_pin, driver.pin))) {
       if (await this.isRepeatOfCompletedChange(driver, dto.new_pin)) {
+        if (isSuspended(driver)) return { error: accountSuspended() };
         return { profile: toProfile(driver) };
       }
       return { error: await this.countFailure(tx, driver, companyId) };
     }
 
-    if (isSuspended(driver)) {
-      return {
-        error: new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta no habilitada' }),
-      };
-    }
+    if (isSuspended(driver)) return { error: accountSuspended() };
     if (driver.pinMustChange && isExpired(driver.temporaryPinExpiresAt)) {
       return { error: temporaryPinExpired() };
     }
@@ -120,6 +117,10 @@ function isSuspended(driver: LockedDriver): boolean {
     driver.status === 'documents_blocked' ||
     driver.accountStatus === 'suspended'
   );
+}
+
+function accountSuspended(): HttpException {
+  return new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta no habilitada' });
 }
 
 function isExpired(expiresAt: Date | null): boolean {

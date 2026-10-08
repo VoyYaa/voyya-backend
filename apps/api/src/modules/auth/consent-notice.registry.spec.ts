@@ -8,16 +8,27 @@ interface AudienceKey {
   where: { purpose_noticeVersion_audience: { audience: string } };
 }
 
-function fakeTable(seed: Record<string, string> = {}) {
+function fakeTable(seed: Record<string, string> = {}, bodies: Record<string, string> = {}) {
   const rows = new Map(Object.entries(seed));
+  const storedBodies = new Map(Object.entries(bodies));
   return {
     rows,
-    createMany: jest.fn(async ({ data }: { data: Array<{ audience: string; sha256: string }> }) => {
-      for (const row of data) if (!rows.has(row.audience)) rows.set(row.audience, row.sha256);
+    createMany: jest.fn(
+      async ({ data }: { data: Array<{ audience: string; sha256: string; body: string }> }) => {
+        for (const row of data) {
+          if (rows.has(row.audience)) continue;
+          rows.set(row.audience, row.sha256);
+          storedBodies.set(row.audience, row.body);
+        }
+      },
+    ),
+    findUniqueOrThrow: jest.fn(async ({ where }: AudienceKey) => {
+      const audience = where.purpose_noticeVersion_audience.audience;
+      return {
+        sha256: rows.get(audience),
+        body: storedBodies.get(audience) ?? canonicalLocationNoticeText(audience as 'driver'),
+      };
     }),
-    findUniqueOrThrow: jest.fn(async ({ where }: AudienceKey) => ({
-      sha256: rows.get(where.purpose_noticeVersion_audience.audience),
-    })),
     findUnique: jest.fn(async ({ where }: AudienceKey) =>
       rows.has(where.purpose_noticeVersion_audience.audience) ? { noticeVersion: 'registered' } : null,
     ),
@@ -54,16 +65,36 @@ describe('ConsentNoticeRegistry', () => {
     );
   });
 
-  it('logs an error about legal placeholders in production without failing', async () => {
-    const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
-    await expect(build(fakeTable(), 'production').register()).resolves.toBeUndefined();
-    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('marcadores legales'));
+  it('fails the startup in production while the notice has legal placeholders, naming each marker', async () => {
+    const table = fakeTable();
+    await expect(build(table, 'production').register()).rejects.toThrow(
+      /\[URL DE LA POLÍTICA\].*no es apto para producción/,
+    );
+    await expect(build(table, 'production').register()).rejects.toThrow('[NIT]');
   });
 
-  it('does not log the placeholder error outside production', async () => {
-    const errorSpy = jest.spyOn(Logger.prototype, 'error').mockImplementation();
-    await build(fakeTable(), 'test').register();
-    expect(errorSpy).not.toHaveBeenCalled();
+  it('does not write the notice to the ledger when it refuses to start in production', async () => {
+    const table = fakeTable();
+    await expect(build(table, 'production').register()).rejects.toThrow();
+    expect(table.createMany).not.toHaveBeenCalled();
+  });
+
+  it('only warns about legal placeholders outside production', async () => {
+    const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const table = fakeTable();
+    await expect(build(table, 'development').register()).resolves.toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[URL DE LA POLÍTICA]'));
+    expect(table.rows.size).toBe(2);
+  });
+
+  it('fails when the stored body no longer matches the stored hash', async () => {
+    const table = fakeTable(
+      { driver: noticeFingerprint(canonicalLocationNoticeText('driver')) },
+      { driver: 'texto reescrito' },
+    );
+    await expect(build(table, 'test').register()).rejects.toThrow(
+      `${LOCATION_NOTICE_VERSION} (driver) no coincide con su huella`,
+    );
   });
 
   it('isKnown reflects the registered versions', async () => {

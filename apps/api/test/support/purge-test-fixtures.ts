@@ -11,6 +11,7 @@ const NO_TENANT = '0';
 const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'admin.settlement_remittance',
   'admin.settlement_export',
+  'auth.consent_record',
 ]);
 const REVERSALS_FIRST = "kind = 'reversal'";
 

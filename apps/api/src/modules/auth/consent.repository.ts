@@ -67,6 +67,15 @@ export class ConsentRepository {
     return this.prisma.$transaction((tx) => this.statusFor(tx, userId, purpose));
   }
 
+  async currentLocked(
+    tx: Prisma.TransactionClient,
+    userId: number,
+    purpose: ConsentPurpose,
+  ): Promise<ConsentStatus> {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock_shared(${CONSENT_LOCK_NAMESPACE}::int, ${userId}::int)`;
+    return this.statusFor(tx, userId, purpose);
+  }
+
   async list(userId: number): Promise<ConsentStatus[]> {
     return this.prisma.$transaction(async (tx) => {
       const statuses: ConsentStatus[] = [];

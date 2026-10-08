@@ -280,7 +280,7 @@ model ConsentRecord {
   recordedAt      DateTime        @default(dbgenerated("timezone('utc', now())")) @map("recorded_at")
 
   user   User           @relation(fields: [userId], references: [userId], onDelete: Cascade)
-  notice ConsentNotice? @relation(fields: [purpose, noticeVersion, audience], references: [purpose, noticeVersion, audience], onDelete: Restrict, onUpdate: Cascade)
+  notice ConsentNotice? @relation(fields: [purpose, noticeVersion, audience], references: [purpose, noticeVersion, audience], onDelete: Restrict, onUpdate: Restrict)
 
   @@index([userId, purpose, recordedAt(sort: Desc), consentRecordId(sort: Desc)])
   @@map("consent_record")

@@ -223,6 +223,9 @@ export class AdminDriverRepository {
     >`
       UPDATE fleet.driver d
          SET pin = ${pinHash},
+             status = CASE WHEN d.status = 'available'
+                           THEN 'off_shift'::fleet."DriverStatus"
+                           ELSE d.status END,
              pin_must_change = true,
              temporary_pin_expires_at = ${temporaryPinExpiresAt},
              pin_delivered_at = NULL,

@@ -36,7 +36,7 @@ function consentStatus(overrides: Partial<ConsentStatus> = {}): ConsentStatus {
 }
 
 function fakeConsents(status: ConsentStatus = consentStatus()): ConsentQueryService {
-  return { async locationStatus() { return status; } } as unknown as ConsentQueryService;
+  return { async locationStatusLocked() { return status; } } as unknown as ConsentQueryService;
 }
 
 async function capture(p: Promise<unknown>): Promise<HttpException> {
@@ -201,6 +201,36 @@ describe('DriverShiftService consent gate (ADR-029 §4)', () => {
       ),
     );
     expect(e.getResponse()).toMatchObject({ code: 'LOCATION_CONSENT_REQUIRED' });
+  });
+
+  it('checks the consent and writes the position on the same transaction (CM-04)', async () => {
+    const tx = { id: 'the-transaction' };
+    const seen: unknown[] = [];
+    const prisma = {
+      async runInTenant<T>(_c: number, fn: (t: unknown) => Promise<T>): Promise<T> {
+        return fn(tx);
+      },
+    } as unknown as PrismaService;
+    const consents = {
+      async locationStatusLocked(t: unknown) {
+        seen.push(['consent', t]);
+        return consentStatus();
+      },
+    } as unknown as ConsentQueryService;
+    const writing = {
+      async reportLocation(t: unknown) {
+        seen.push(['write', t]);
+        return true;
+      },
+    } as unknown as DriverRepository;
+    const service = new DriverShiftService(prisma, writing, fakeParams(), consents);
+
+    await service.reportLocation(DRIVER_ID, COMPANY_ID, location);
+
+    expect(seen).toEqual([
+      ['consent', tx],
+      ['write', tx],
+    ]);
   });
 
   it('ending the shift never requires consent', async () => {

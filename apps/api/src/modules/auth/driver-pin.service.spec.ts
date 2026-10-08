@@ -184,6 +184,28 @@ describe('DriverPinService.changePin', () => {
     expect(auth.issueSession).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['suspended', 'documents_blocked'] as const)(
+    'idempotent retry of a driver now %s -> 403 ACCOUNT_SUSPENDED, no session issued (CM-08)',
+    async (status) => {
+      const { service, repo, auth } = create();
+      repo.lockDriver.mockResolvedValue({ ...alreadyChanged(new Date(Date.now() - 5_000)), status });
+      const e = await capture(service.changePin(DRIVER_ID, COMPANY_ID, dto));
+      expect(e.getStatus()).toBe(403);
+      expect(code(e)).toBe('ACCOUNT_SUSPENDED');
+      expect(auth.issueSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it('idempotent retry of a driver whose account is suspended -> 403 ACCOUNT_SUSPENDED (CM-08)', async () => {
+    const { service, repo } = create();
+    repo.lockDriver.mockResolvedValue({
+      ...alreadyChanged(new Date(Date.now() - 5_000)),
+      accountStatus: 'suspended',
+    });
+    const e = await capture(service.changePin(DRIVER_ID, COMPANY_ID, dto));
+    expect(code(e)).toBe('ACCOUNT_SUSPENDED');
+  });
+
   it('same retry after the 60 s window counts as a wrong current PIN', async () => {
     const { service, repo } = create();
     repo.lockDriver.mockResolvedValue(alreadyChanged(new Date(Date.now() - 120_000)));

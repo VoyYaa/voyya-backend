@@ -173,6 +173,7 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
     REVOKE UPDATE, DELETE ON admin.settlement_remittance, admin.settlement_export FROM app_voyya;
+    REVOKE UPDATE, DELETE ON auth.consent_record, auth.consent_notice FROM app_voyya;
   END IF;
 END
 $$;

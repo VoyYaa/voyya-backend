@@ -144,6 +144,15 @@ describe('AdminDriverService.create', () => {
     expect(message).not.toMatch(/c.dula\s*\d/i);
   });
 
+  it('CM-13: the credentials SMS states the temporary PIN validity from the configured TTL', async () => {
+    const { service, sms } = create();
+
+    await service.create(COMPANY_ID, dto);
+
+    const [, message] = (sms.send as jest.Mock).mock.calls[0] as [string, string];
+    expect(message).toContain('Vence en 6 horas');
+  });
+
   it('SMS fails -> 201-equivalent result with pin_delivery=failed and pin_delivered_at=null', async () => {
     const { service, sms } = create();
     (sms.send as jest.Mock).mockRejectedValueOnce(new Error('twilio down'));

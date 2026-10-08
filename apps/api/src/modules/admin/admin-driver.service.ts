@@ -276,7 +276,11 @@ export class AdminDriverService {
     pin: string,
   ): Promise<{ delivery: PinDeliveryStatus; deliveredAt: Date | null }> {
     try {
-      await this.sms.send(phone, driverCredentialsSms(pin), 'driver-credentials');
+      await this.sms.send(
+        phone,
+        driverCredentialsSms(pin, this.env.get('DRIVER_TEMPORARY_PIN_TTL_HOURS')),
+        'driver-credentials',
+      );
     } catch {
       this.logger.warn(`PIN delivery failed for driver=${driverId}`);
       return { delivery: 'failed', deliveredAt: null };

@@ -52,8 +52,19 @@ suite('CORS exposes Content-Disposition to the console (reconciliation CSV filen
         status: 'active',
       },
     });
+    const admin = await prisma.user.upsert({
+      where: { phone: '_cors-admin' },
+      update: {},
+      create: {
+        firstName: '_Cors',
+        lastName: 'Admin',
+        phone: '_cors-admin',
+        role: 'admin',
+        companyId: company.companyId,
+      },
+    });
     const jwt = moduleRef.get(JwtService, { strict: false });
-    adminAuth = `Bearer ${jwt.sign({ sub: 1, role: 'admin', type: 'access', company_id: company.companyId })}`;
+    adminAuth = `Bearer ${jwt.sign({ sub: admin.userId, role: 'admin', type: 'access', company_id: company.companyId })}`;
   }, 30_000);
 
   afterAll(async () => {
