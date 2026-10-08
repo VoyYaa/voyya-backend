@@ -30,7 +30,7 @@ import { FILE_STORAGE, type FileStorageProvider } from '../affiliation/ports/fil
 import { HASHER, type Hasher } from '../auth/hasher.service';
 import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
-import { driverCredentialsSms } from './messages';
+import { DRIVER_HAS_ACTIVE_TRIP_MESSAGE, driverCredentialsSms } from './messages';
 import {
   AdminDriverRepository,
   type CreatedDriverDocumentRow,
@@ -222,12 +222,19 @@ export class AdminDriverService {
     driverId: number,
     reason: DriverSuspensionReason,
   ): Promise<SuspendDriverResponse> {
-    const found = await this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.findIdInTenant(tx, driverId, companyId),
+    const outcome = await this.prisma.runInTenant(companyId, (tx) =>
+      this.repo.suspend(tx, driverId, companyId, reason),
     );
-    if (found === null) {
+    if (outcome === 'not_found') {
       throw new NotFoundException({ code: 'DRIVER_NOT_FOUND', message: 'El conductor no existe' });
     }
+    if (outcome === 'on_trip') {
+      throw new ConflictException({
+        code: 'DRIVER_HAS_ACTIVE_TRIP',
+        message: DRIVER_HAS_ACTIVE_TRIP_MESSAGE,
+      });
+    }
+    this.logger.log(`Driver status set driver=${driverId} company=${companyId} status=${reason}`);
 
     const event: DriverSuspendedEvent = {
       driver_id: driverId,

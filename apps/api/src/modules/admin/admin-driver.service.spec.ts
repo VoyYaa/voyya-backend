@@ -84,7 +84,7 @@ function create() {
     readFleetQuota: jest.fn().mockResolvedValue({ declared: null, used: 0 }),
     markPinDelivered: jest.fn().mockResolvedValue(new Date('2026-01-01T00:05:00.000Z')),
     rotatePin: jest.fn(),
-    findIdInTenant: jest.fn(),
+    suspend: jest.fn(),
   };
   const hasher: Hasher = {
     hash: jest.fn(async (x: string) => `hashed:${x}`),
@@ -320,29 +320,72 @@ describe('AdminDriverService.resendPin', () => {
   });
 });
 
-describe('AdminDriverService.suspend (B-02: must stay inside the caller tenant)', () => {
-  it('driver belongs to the caller tenant -> emits fleet.driver_suspended scoped to that company', async () => {
-    const { service, repo, emitter } = create();
-    repo.findIdInTenant.mockResolvedValue(42);
+describe('AdminDriverService.suspend (B-02: tenant scope; C-01: the status really changes)', () => {
+  it('updates the status inside the tenant, then emits fleet.driver_suspended scoped to that company', async () => {
+    const { service, repo, emitter, prisma } = create();
+    repo.suspend.mockResolvedValue('updated');
 
     const result = await service.suspend(COMPANY_ID, 42, 'suspended');
 
     expect(result).toEqual({ ok: true });
-    expect(repo.findIdInTenant).toHaveBeenCalledWith(expect.anything(), 42, COMPANY_ID);
+    expect(prisma.runInTenant).toHaveBeenCalledWith(COMPANY_ID, expect.any(Function));
+    expect(repo.suspend).toHaveBeenCalledWith(expect.anything(), 42, COMPANY_ID, 'suspended');
     expect(emitter.emit).toHaveBeenCalledWith(
       DRIVER_SUSPENDED_EVENT,
       expect.objectContaining({ driver_id: 42, company_id: COMPANY_ID, reason: 'suspended' }),
     );
   });
 
-  it('driver belongs to a different tenant (not found under this company_id) -> 404 DRIVER_NOT_FOUND, no event emitted', async () => {
+  it.each(['suspended', 'documents_blocked', 'inactive'] as const)(
+    'persists the requested reason %s as the driver status',
+    async (reason) => {
+      const { service, repo } = create();
+      repo.suspend.mockResolvedValue('updated');
+
+      await service.suspend(COMPANY_ID, 42, reason);
+
+      expect(repo.suspend).toHaveBeenCalledWith(expect.anything(), 42, COMPANY_ID, reason);
+    },
+  );
+
+  it('does not emit the event when the status change did not happen', async () => {
     const { service, repo, emitter } = create();
-    repo.findIdInTenant.mockResolvedValue(null);
+    repo.suspend.mockResolvedValue('not_found');
+
+    await capture(service.suspend(COMPANY_ID, 42, 'suspended'));
+
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('driver not found under this company_id -> 404 DRIVER_NOT_FOUND, no event emitted', async () => {
+    const { service, repo, emitter } = create();
+    repo.suspend.mockResolvedValue('not_found');
 
     const e = await capture(service.suspend(COMPANY_ID, 999, 'suspended'));
 
     expect(e).toBeInstanceOf(NotFoundException);
     expect(e.getResponse()).toMatchObject({ code: 'DRIVER_NOT_FOUND' });
     expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('driver on an active trip -> 409 DRIVER_HAS_ACTIVE_TRIP, nothing suspended, no sessions revoked', async () => {
+    const { service, repo, emitter } = create();
+    repo.suspend.mockResolvedValue('on_trip');
+
+    const e = await capture(service.suspend(COMPANY_ID, 42, 'suspended'));
+
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'DRIVER_HAS_ACTIVE_TRIP' });
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent: suspending again re-emits the event so sessions are revoked again', async () => {
+    const { service, repo, emitter } = create();
+    repo.suspend.mockResolvedValue('updated');
+
+    await service.suspend(COMPANY_ID, 42, 'suspended');
+    await service.suspend(COMPANY_ID, 42, 'suspended');
+
+    expect(emitter.emit).toHaveBeenCalledTimes(2);
   });
 });

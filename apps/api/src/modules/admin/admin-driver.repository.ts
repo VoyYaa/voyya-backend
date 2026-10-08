@@ -53,6 +53,8 @@ export interface DriverDocumentRowInput {
   expiresAt: Date;
 }
 
+export type SuspendOutcome = 'updated' | 'not_found' | 'on_trip';
+
 export interface FleetQuotaRow {
   declared: number | null;
   used: number;
@@ -186,16 +188,24 @@ export class AdminDriverRepository {
     return rows[0]?.pin_delivered_at ?? null;
   }
 
-  async findIdInTenant(
+  async suspend(
     tx: Prisma.TransactionClient,
     driverId: number,
     companyId: number,
-  ): Promise<number | null> {
-    const driver = await tx.driver.findFirst({
-      where: { driverId, companyId },
-      select: { driverId: true },
+    status: DriverStatus,
+  ): Promise<SuspendOutcome> {
+    const { count } = await tx.driver.updateMany({
+      where: { driverId, companyId, status: { not: 'on_trip' } },
+      data: { status },
     });
-    return driver?.driverId ?? null;
+    if (count > 0) return 'updated';
+
+    const current = await tx.driver.findFirst({
+      where: { driverId, companyId },
+      select: { status: true },
+    });
+    if (current === null) return 'not_found';
+    return 'on_trip';
   }
 
   async rotatePin(
