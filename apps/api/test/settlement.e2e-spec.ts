@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
 import type { PrismaClient } from '@prisma/client';
 import request from 'supertest';
+import { addDays, settlementToday, weekStartOf } from '@voyyaa/shared';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { createFreshPassenger } from './support/fresh-passenger';
@@ -18,7 +19,7 @@ const WEEK_BASE = '2026-09-07';
 const WEEK_BASE_END = '2026-09-13';
 const EDGE_WEEK = '2026-09-21';
 const FORMULA_WEEK = '2026-11-02';
-const REMIT_WEEK = '2026-10-05';
+const REMIT_WEEK = '2026-08-31';
 const NOW_FINISHED = (day: string): Date => new Date(`${day}T17:00:00Z`);
 
 interface DriverFixture {
@@ -251,7 +252,7 @@ suite('Settlement report, CSV export and remittances as app_voyya (ADR-027)', ()
       await seedTrip({ companyId: companyA, driver: drivers.edge!, fare: commission * 10, commission, finishedAt: new Date(at), collected: true });
     }
 
-    const remitDay = NOW_FINISHED('2026-10-07');
+    const remitDay = NOW_FINISHED('2026-09-02');
     await seedTrip({ companyId: companyA, driver: drivers.remit!, fare: 10000, commission: 1000, finishedAt: remitDay, collected: true });
     await seedTrip({ companyId: companyA, driver: drivers.remit!, fare: 14000, commission: 1400, finishedAt: remitDay, collected: true });
     await seedTrip({ companyId: companyA, driver: drivers.race!, fare: 10000, commission: 900, finishedAt: remitDay, collected: true });
@@ -462,10 +463,39 @@ suite('Settlement report, CSV export and remittances as app_voyya (ADR-027)', ()
       post(remittances, token, { driver_id: driverId, week_start: weekStart, expected_amount: expected });
 
     const remitReport = (driverId: number) =>
-      get(SETTLEMENT, tokenAdminA, week(REMIT_WEEK, '2026-10-11', { driver_id: String(driverId) }));
+      get(SETTLEMENT, tokenAdminA, week(REMIT_WEEK, '2026-09-06', { driver_id: String(driverId) }));
+
+    it.each([
+      ['the week in progress', 0],
+      ['a future week', 7],
+      ['a week far in the future', 700],
+    ])('answers 409 SETTLEMENT_WEEK_IN_PROGRESS for %s without touching the driver', async (_label, offsetDays) => {
+      const weekStart = addDays(weekStartOf(settlementToday(new Date())), offsetDays);
+      const res = await record(drivers.remit!.driverId, 2400, tokenAdminA, weekStart);
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        code: 'SETTLEMENT_WEEK_IN_PROGRESS',
+        message: 'La semana aún no termina. Podrás marcarla como remitida desde el lunes.',
+      });
+      const foreign = await record(drivers.y!.driverId, 100, tokenAdminA, weekStart);
+      expect(foreign.status).toBe(409);
+      expect(foreign.body.code).toBe('SETTLEMENT_WEEK_IN_PROGRESS');
+      const history = await get(`${SETTLEMENT}/remittances`, tokenAdminA, {
+        driver_id: String(drivers.remit!.driverId),
+        week_start: weekStart,
+      });
+      expect(history.body.rows).toEqual([]);
+    });
+
+    it('accepts the most recent finished week (the previous Monday)', async () => {
+      const previous = addDays(weekStartOf(settlementToday(new Date())), -7);
+      const res = await record(drivers.empty!.driverId, 100, tokenAdminA, previous);
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('NOTHING_TO_REMIT');
+    });
 
     it('rejects a body that is not a Monday week or has a non positive amount', async () => {
-      expect((await record(drivers.remit!.driverId, 2400, tokenAdminA, '2026-10-06')).status).toBe(400);
+      expect((await record(drivers.remit!.driverId, 2400, tokenAdminA, '2026-09-01')).status).toBe(400);
       expect((await record(drivers.remit!.driverId, 0)).status).toBe(400);
     });
 
@@ -517,7 +547,7 @@ suite('Settlement report, CSV export and remittances as app_voyya (ADR-027)', ()
         driver: drivers.remit!,
         fare: 8000,
         commission: 800,
-        finishedAt: NOW_FINISHED('2026-10-08'),
+        finishedAt: NOW_FINISHED('2026-09-03'),
         collected: false,
       });
       const before = await remitReport(drivers.remit!.driverId);

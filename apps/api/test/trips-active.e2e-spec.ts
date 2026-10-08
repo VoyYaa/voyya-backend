@@ -162,7 +162,7 @@ suite('Passenger active trip: GET /trips/active, 409 with reference and the uniq
         .set('Authorization', passenger.auth);
 
       expect(active.status).toBe(200);
-      expect(active.body.active_trip).toEqual(byId.body);
+      expect({ ...active.body.active_trip, server_time: null }).toEqual({ ...byId.body, server_time: null });
       expect(active.body.active_trip).toMatchObject({
         trip_request_id: trip.tripRequestId,
         status: 'pending_assignment',
@@ -226,6 +226,65 @@ suite('Passenger active trip: GET /trips/active, 409 with reference and the uniq
 
       const again = await request(app.getHttpServer()).post('/trips').set('Authorization', passenger.auth).send(body);
       expect(again.status).toBe(201);
+    });
+  });
+
+  describe('free_cancellation_until and server_time (BUG-1, contract 0.8.1)', () => {
+    const WINDOW_MS = 2 * 60_000;
+    const SKEW_MS = 20_000;
+
+    async function insertAssigned(passengerId: number, status: 'assigned' | 'driver_en_route', assignedAt: Date) {
+      const trip = await insertTrip(passengerId, 'pending_assignment');
+      await prisma.tripRequest.update({ where: { tripRequestId: trip.tripRequestId }, data: { status, assignedAt } });
+      return trip;
+    }
+
+    it('GET /trips/:id and GET /trips/active expose assignedAt + window and a server_time', async () => {
+      const passenger = await newPassenger();
+      const assignedAt = new Date(Date.now() - 30_000);
+      const trip = await insertAssigned(passenger.id, 'driver_en_route', assignedAt);
+
+      const byId = await request(app.getHttpServer()).get(`/trips/${trip.tripRequestId}`).set('Authorization', passenger.auth);
+      const active = await request(app.getHttpServer()).get('/trips/active').set('Authorization', passenger.auth);
+
+      const expectedUntil = new Date(assignedAt.getTime() + WINDOW_MS).toISOString();
+      expect(byId.body.free_cancellation_until).toBe(expectedUntil);
+      expect(active.body.active_trip.free_cancellation_until).toBe(expectedUntil);
+      expect(Math.abs(Date.now() - new Date(byId.body.server_time).getTime())).toBeLessThan(10_000);
+      expect(active.body.active_trip.server_time).toEqual(expect.any(String));
+    });
+
+    it('is null while searching and in progress', async () => {
+      const searching = await newPassenger();
+      const pending = await insertTrip(searching.id, 'pending_assignment');
+      const pendingRes = await request(app.getHttpServer()).get(`/trips/${pending.tripRequestId}`).set('Authorization', searching.auth);
+      expect(pendingRes.body.free_cancellation_until).toBeNull();
+
+      const riding = await newPassenger();
+      const inProgress = await insertTrip(riding.id, 'in_progress');
+      const ridingRes = await request(app.getHttpServer()).get(`/trips/${inProgress.tripRequestId}`).set('Authorization', riding.auth);
+      expect(ridingRes.body.free_cancellation_until).toBeNull();
+    });
+
+    it.each([
+      ['just before the limit', SKEW_MS, true],
+      ['just after the limit', -SKEW_MS, false],
+    ])('cancelling %s agrees with free_cancellation_until', async (_label, marginMs, expectedFree) => {
+      const passenger = await newPassenger();
+      const assignedAt = new Date(Date.now() - WINDOW_MS + marginMs);
+      const trip = await insertAssigned(passenger.id, 'assigned', assignedAt);
+
+      const status = await request(app.getHttpServer()).get(`/trips/${trip.tripRequestId}`).set('Authorization', passenger.auth);
+      const promisedFree = new Date(status.body.server_time).getTime() <= new Date(status.body.free_cancellation_until).getTime();
+      expect(promisedFree).toBe(expectedFree);
+
+      const cancelled = await request(app.getHttpServer())
+        .post(`/trips/${trip.tripRequestId}/cancel`)
+        .set('Authorization', passenger.auth)
+        .send({});
+      expect(cancelled.status).toBe(200);
+      expect(cancelled.body.free_of_charge).toBe(expectedFree);
+      expect(cancelled.body.penalty_recorded).toBe(!expectedFree);
     });
   });
 

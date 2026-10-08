@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { canonicalLocationNoticeText, LOCATION_NOTICE_VERSION } from '@voyyaa/shared';
+import { canonicalLocationNoticeText, hasLegalPlaceholders, LOCATION_NOTICE_VERSION, NoticeAudience } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { ConsentNoticeRegistry, noticeFingerprint } from './consent-notice.registry';
@@ -35,10 +35,22 @@ function fakeTable(seed: Record<string, string> = {}, bodies: Record<string, str
   };
 }
 
-function build(table: ReturnType<typeof fakeTable>, nodeEnv: string): ConsentNoticeRegistry {
+const MARKED_NOTICE = 'Responsable: [NIT]. Política: [URL DE LA POLÍTICA].';
+
+class MarkedNoticeRegistry extends ConsentNoticeRegistry {
+  protected override noticeBody(): string {
+    return MARKED_NOTICE;
+  }
+}
+
+function build(
+  table: ReturnType<typeof fakeTable>,
+  nodeEnv: string,
+  registryClass: typeof ConsentNoticeRegistry = ConsentNoticeRegistry,
+): ConsentNoticeRegistry {
   const prisma = { consentNotice: table } as unknown as PrismaService;
   const env = { get: () => nodeEnv } as unknown as EnvService;
-  return new ConsentNoticeRegistry(prisma, env);
+  return new registryClass(prisma, env);
 }
 
 describe('ConsentNoticeRegistry', () => {
@@ -65,24 +77,34 @@ describe('ConsentNoticeRegistry', () => {
     );
   });
 
+  it.each(NoticeAudience.options)('the real %s notice has no legal placeholders', (audience) => {
+    expect(hasLegalPlaceholders(canonicalLocationNoticeText(audience))).toBe(false);
+  });
+
+  it('boots in production with the real notice (no markers)', async () => {
+    const table = fakeTable();
+    await expect(build(table, 'production').register()).resolves.toBeUndefined();
+    expect(table.rows.size).toBe(2);
+  });
+
   it('fails the startup in production while the notice has legal placeholders, naming each marker', async () => {
     const table = fakeTable();
-    await expect(build(table, 'production').register()).rejects.toThrow(
+    await expect(build(table, 'production', MarkedNoticeRegistry).register()).rejects.toThrow(
       /\[URL DE LA POLÍTICA\].*no es apto para producción/,
     );
-    await expect(build(table, 'production').register()).rejects.toThrow('[NIT]');
+    await expect(build(table, 'production', MarkedNoticeRegistry).register()).rejects.toThrow('[NIT]');
   });
 
   it('does not write the notice to the ledger when it refuses to start in production', async () => {
     const table = fakeTable();
-    await expect(build(table, 'production').register()).rejects.toThrow();
+    await expect(build(table, 'production', MarkedNoticeRegistry).register()).rejects.toThrow();
     expect(table.createMany).not.toHaveBeenCalled();
   });
 
   it('only warns about legal placeholders outside production', async () => {
     const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
     const table = fakeTable();
-    await expect(build(table, 'development').register()).resolves.toBeUndefined();
+    await expect(build(table, 'development', MarkedNoticeRegistry).register()).resolves.toBeUndefined();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('[URL DE LA POLÍTICA]'));
     expect(table.rows.size).toBe(2);
   });

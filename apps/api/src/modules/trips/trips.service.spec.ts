@@ -435,6 +435,36 @@ describe('TripsService.getActive (GET /trips/active)', () => {
     expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
   });
 
+  it('active trip carries free_cancellation_until (assignedAt + window) and server_time', async () => {
+    const assignedAt = new Date(Date.now() - 30_000);
+    const { service } = createService({
+      activeRow: activeRow({ assignedAt, updatedAt: new Date() }),
+      summary: SUMMARY,
+    });
+    const r = await service.getActive(1);
+    expect(r.active_trip?.free_cancellation_until).toBe(
+      new Date(assignedAt.getTime() + 2 * 60_000).toISOString(),
+    );
+    expect(Math.abs(Date.now() - new Date(r.active_trip?.server_time ?? 0).getTime())).toBeLessThan(5_000);
+  });
+
+  it('pending trip -> free_cancellation_until is null', async () => {
+    const { service } = createService({
+      activeRow: activeRow({ status: 'pending_assignment', assignedAt: null }),
+    });
+    const r = await service.getActive(1);
+    expect(r.active_trip?.free_cancellation_until).toBeNull();
+  });
+
+  it('in_progress trip -> free_cancellation_until is null', async () => {
+    const { service } = createService({
+      activeRow: activeRow({ status: 'in_progress' }),
+      summary: SUMMARY,
+    });
+    const r = await service.getActive(1);
+    expect(r.active_trip?.free_cancellation_until).toBeNull();
+  });
+
   it('pending trip -> ui searching and no driver lookup', async () => {
     const { service, assignment } = createService({
       activeRow: activeRow({ status: 'pending_assignment', assignedAt: null }),
@@ -503,5 +533,26 @@ describe('TripsService.cancel (free window from assignedAt)', () => {
       tripClosingRejected: true,
     });
     await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(ConflictException);
+  });
+  describe('boundary matches free_cancellation_until', () => {
+    const ASSIGNED = new Date('2026-10-08T15:00:00.000Z');
+    const DEADLINE_MS = ASSIGNED.getTime() + 2 * 60_000;
+
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    it.each([
+      ['exactly at the deadline', DEADLINE_MS, true],
+      ['1 ms before the deadline', DEADLINE_MS - 1, true],
+      ['1 ms after the deadline', DEADLINE_MS + 1, false],
+    ])('cancel %s -> free_of_charge=%s', async (_label, nowMs, expectedFree) => {
+      jest.setSystemTime(nowMs);
+      const { service } = createService({
+        tripRequest: tr({ assignedAt: ASSIGNED, updatedAt: ASSIGNED }),
+      });
+      const r = await service.cancel(5, 1, {});
+      expect(r.free_of_charge).toBe(expectedFree);
+      expect(r.penalty_recorded).toBe(!expectedFree);
+    });
   });
 });

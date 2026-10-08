@@ -5,10 +5,10 @@ export const DRIVER_LOCATION_RETENTION_MAX_HOURS = 13;
 
 export const DATA_CONTROLLER = {
   legal_name: 'VoyYa S.A.S.',
-  tax_id: '[NIT]',
-  address: '[DOMICILIO]',
-  privacy_email: '[CORREO DE HABEAS DATA]',
-  privacy_policy_url: '[URL DE LA POLÍTICA]',
+  tax_id: 'en trámite',
+  address: 'Calle 38B Sur # 45B-31',
+  privacy_email: 'jhonnier98t@gmail.com',
+  privacy_policy_url: 'https://www.voyya.website/privacy-policy',
 } as const;
 
 export interface NoticeRow {
@@ -55,8 +55,8 @@ const DRIVER_LOCATION_NOTICE: LocationNotice = {
       key: 'data',
       label: 'Qué usamos',
       value:
-        'La ubicación aproximada de tu teléfono (unos 100 metros), solo mientras estás en turno y con la app ' +
-        'abierta. No la seguimos en segundo plano.',
+        'La ubicación de tu teléfono, con una precisión de hasta 100 metros, solo mientras estás en turno y con ' +
+        'la app abierta. No la seguimos en segundo plano.',
     },
     {
       key: 'purpose',
@@ -110,8 +110,8 @@ const PASSENGER_LOCATION_NOTICE: LocationNotice = {
       key: 'data',
       label: 'Qué usamos',
       value:
-        'La ubicación aproximada de tu teléfono (unos 100 metros) mientras la app está abierta, y los puntos de ' +
-        'recogida y destino de cada viaje que pides. No la seguimos en segundo plano.',
+        'La ubicación de tu teléfono, con una precisión de hasta 100 metros, mientras la app está abierta, y los ' +
+        'puntos de recogida y destino de cada viaje que pides. No la seguimos en segundo plano.',
     },
     {
       key: 'purpose',

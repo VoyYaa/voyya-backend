@@ -43,10 +43,14 @@ export class ConsentNoticeRegistry implements OnModuleInit {
   async register(): Promise<void> {
     const bodies = NoticeAudience.options.map((audience) => ({
       audience,
-      body: canonicalLocationNoticeText(audience),
+      body: this.noticeBody(audience),
     }));
     this.reportPlaceholders(placeholderMarkers(bodies.map((b) => b.body)));
     for (const { audience, body } of bodies) await this.registerNotice(audience, body);
+  }
+
+  protected noticeBody(audience: NoticeAudience): string {
+    return canonicalLocationNoticeText(audience);
   }
 
   private reportPlaceholders(markers: string[]): void {

@@ -158,7 +158,9 @@ export const TripRequestStatus = z.object({
   fare: FareBreakdown,
   driver: AssignedDriverSummary.nullable(),
   arrived_at: z.string().datetime().nullable(),
+  free_cancellation_until: z.string().datetime().nullable(),
   updated_at: z.string().datetime(),
+  server_time: z.string().datetime(),
 });
 export type TripRequestStatus = z.infer<typeof TripRequestStatus>;
 

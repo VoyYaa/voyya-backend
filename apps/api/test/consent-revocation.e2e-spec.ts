@@ -15,6 +15,7 @@ const suite = url ? describe : describe.skip;
 
 const MUNICIPALITY_ID = 9221;
 const MUNICIPALITY_NAME = '_ConsentRevocationMuni';
+const OLD_NOTICE_VERSION = 'location-notice-old';
 const POSITION = { lat: 6.9, lng: -75.4 };
 
 suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)', () => {
@@ -77,6 +78,10 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
 
   afterAll(async () => {
     if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, MUNICIPALITY_NAME);
+    if (owner && ownerUrl) {
+      await owner.consentRecord.deleteMany({ where: { noticeVersion: OLD_NOTICE_VERSION } });
+      await owner.consentNotice.deleteMany({ where: { noticeVersion: OLD_NOTICE_VERSION } });
+    }
     if (app) await app.close();
     if (owner) await owner.$disconnect();
   }, 20_000);
@@ -257,6 +262,29 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       expect(await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } })).toBe(1);
     });
 
+    it('app_voyya cannot delete a user, so the consent proof and the user survive (CM-15)', async () => {
+      const passengerId = await makePassenger();
+      await grantLocationConsent(prisma, passengerId, 'passenger');
+
+      await expect(
+        prisma.$executeRaw`DELETE FROM auth."user" WHERE user_id = ${passengerId}`,
+      ).rejects.toThrow(/permission denied/i);
+
+      expect(await prisma.user.count({ where: { userId: passengerId } })).toBe(1);
+      expect(await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } })).toBe(1);
+    });
+
+    ownerIt('even the owner cannot delete a user that has consent records: the foreign key restricts (CM-15)', async () => {
+      const passengerId = await makePassenger();
+      await grantLocationConsent(prisma, passengerId, 'passenger');
+
+      await expect(
+        owner.$executeRaw`DELETE FROM auth."user" WHERE user_id = ${passengerId}`,
+      ).rejects.toThrow(/foreign key|consent_record_user_id_fkey/i);
+
+      expect(await prisma.consentRecord.count({ where: { userId: passengerId } })).toBe(1);
+    });
+
     ownerIt('the ledger foreign key restricts updating the notice version (CM-03)', async () => {
       const passengerId = await makePassenger();
       await grantLocationConsent(prisma, passengerId, 'passenger');
@@ -422,7 +450,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         data: [
           {
             purpose: 'location',
-            noticeVersion: 'location-notice-old',
+            noticeVersion: OLD_NOTICE_VERSION,
             audience: 'driver',
             sha256: 'b'.repeat(64),
             body: 'texto anterior del aviso',
@@ -431,7 +459,7 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         skipDuplicates: true,
       });
       const old = await prisma.consentNotice.findFirst({
-        where: { noticeVersion: 'location-notice-old', audience: 'driver' },
+        where: { noticeVersion: OLD_NOTICE_VERSION, audience: 'driver' },
       });
       if (old === null) throw new Error('old notice fixture missing');
       await prisma.consentRecord.create({

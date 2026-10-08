@@ -34,7 +34,8 @@ export const TripStateMachine = {
   assignment: {
     transitions: ASSIGNMENT_STATUS_TRANSITIONS,
     canTransition: canTransitionAssignmentStatus,
-    next: (from: AssignmentStatus): readonly AssignmentStatus[] => ASSIGNMENT_STATUS_TRANSITIONS[from],
+    next: (from: AssignmentStatus): readonly AssignmentStatus[] =>
+      ASSIGNMENT_STATUS_TRANSITIONS[from],
     assert: (from: AssignmentStatus, to: AssignmentStatus): void => {
       if (!canTransitionAssignmentStatus(from, to)) {
         throw new InvalidTransitionError('assignment', from, to);

@@ -174,6 +174,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
     REVOKE UPDATE, DELETE ON admin.settlement_remittance, admin.settlement_export FROM app_voyya;
     REVOKE UPDATE, DELETE ON auth.consent_record, auth.consent_notice FROM app_voyya;
+    REVOKE DELETE ON auth."user" FROM app_voyya;
   END IF;
 END
 $$;
@@ -200,3 +201,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_trip_request_active_per_passenger
 CREATE INDEX IF NOT EXISTS idx_trip_request_coordinates_purge
   ON trips.trip_request (COALESCE(finished_at, requested_at))
   WHERE location_purged_at IS NULL;
+
+-- (m) Unassigned-trip probe: bypass RLS only through its owner, callable only by the runtime role (CM-14) ---
+ALTER FUNCTION assignment.trip_has_assignment(integer) SET row_security = off;
+REVOKE EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) FROM PUBLIC;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+    GRANT EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) TO app_voyya;
+  END IF;
+END
+$$;

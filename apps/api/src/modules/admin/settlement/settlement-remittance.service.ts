@@ -8,6 +8,8 @@ import {
   type RemittanceResult,
   type SettlementRemittanceEntry,
   type SettlementRemittanceSummary,
+  settlementToday,
+  settlementWeekOf,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../../infrastructure/prisma/prisma.service';
 import { summarizeLedger, toRemittanceSummary } from './remittance-ledger';
@@ -36,6 +38,7 @@ export class SettlementRemittanceService {
   ) {}
 
   record(companyId: number, userId: number, dto: RecordRemittanceDTO): Promise<RemittanceResult> {
+    this.assertWeekFinished(dto.week_start);
     return this.prisma.runInTenant(companyId, async (tx) => {
       await this.lockOwnedDriver(tx, companyId, dto.driver_id);
       const amountToRemit = await this.amountToRemit(tx, companyId, dto.driver_id, dto.week_start);
@@ -102,6 +105,12 @@ export class SettlementRemittanceService {
       const rows = await this.repo.listHistory(tx, companyId, query.driver_id, query.week_start);
       return { rows: rows.map(toRemittanceEntry) };
     });
+  }
+
+  private assertWeekFinished(weekStart: string): void {
+    if (settlementWeekOf(weekStart).to >= settlementToday(new Date())) {
+      throw this.conflict('SETTLEMENT_WEEK_IN_PROGRESS', SETTLEMENT_MESSAGES.weekInProgress);
+    }
   }
 
   private async summaryOf(

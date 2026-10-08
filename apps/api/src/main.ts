@@ -80,6 +80,23 @@ async function bootstrap(): Promise<void> {
   new Logger('Bootstrap').log(`VoyYa API listening on :${port} (${env.get('NODE_ENV')})`);
 }
 
+const FATAL_FLUSH_TIMEOUT_MS = 2000;
+
+export async function runBootstrap(
+  start: () => Promise<void>,
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
+  try {
+    await start();
+  } catch (reason) {
+    const error = reason instanceof Error ? reason : new Error(String(reason));
+    new Logger('Bootstrap').fatal(`bootstrap failed: ${error.stack ?? error.message}`);
+    captureError(error);
+    await Sentry.flush(FATAL_FLUSH_TIMEOUT_MS).catch(() => false);
+    exit(1);
+  }
+}
+
 if (require.main === module) {
-  void bootstrap();
+  void runBootstrap(bootstrap);
 }
