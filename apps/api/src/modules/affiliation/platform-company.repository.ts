@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import type { ServiceType } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { setTenantSession } from '../../shared/tenant-session';
 
@@ -11,6 +12,10 @@ export interface PlatformCompanyListRow {
   municipalityId: number;
   municipalityName: string;
   municipalityAlreadyCovered: boolean;
+  municipalityDaneCode: string | null;
+  municipalityCoverageActive: boolean;
+  publicName: string | null;
+  serviceTypes: ServiceType[];
   vehicleCount: number | null;
   contactEmail: string | null;
   submittedAt: Date;
@@ -19,6 +24,7 @@ export interface PlatformCompanyListRow {
 export interface PlatformCompanyDetailRow extends PlatformCompanyListRow {
   legalForm: string;
   municipalityDepartment: string;
+  otherActiveCompanies: Array<{ companyId: number; legalName: string }>;
   contactFirstName: string | null;
   contactLastName: string | null;
   contactPhone: string | null;
@@ -67,6 +73,7 @@ export interface ActivatedCompanyRow {
   contactLastName: string | null;
   contactPhone: string | null;
   vehicleCount: number | null;
+  serviceTypes: ServiceType[];
 }
 
 @Injectable()
@@ -77,16 +84,24 @@ export class PlatformCompanyRepository {
     return this.prisma.$transaction(fn);
   }
 
+  async runAsPlatform<T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return this.prisma.runAsPlatform(fn);
+  }
+
   async setTenantSession(tx: Prisma.TransactionClient, companyId: number): Promise<void> {
     await setTenantSession(tx, companyId);
   }
 
   async listCompanies(
     status: 'pending' | 'active' | 'rejected' | 'all',
+    municipalityId: number | null,
     limit: number,
   ): Promise<PlatformCompanyListRow[]> {
     const rows = await this.prisma.company.findMany({
-      where: status === 'all' ? {} : { status },
+      where: {
+        ...(status === 'all' ? {} : { status }),
+        ...(municipalityId !== null ? { municipalityId } : {}),
+      },
       orderBy: { registeredAt: 'desc' },
       take: limit,
       select: this.listSelect(),
@@ -94,8 +109,31 @@ export class PlatformCompanyRepository {
     return rows.map((r) => this.mapListRow(r));
   }
 
+  async isCoverageActiveForCompany(companyId: number): Promise<boolean> {
+    const row = await this.prisma.company.findUnique({
+      where: { companyId },
+      select: { municipality: { select: { status: true } } },
+    });
+    return row?.municipality.status === 'active';
+  }
+
   async countPending(): Promise<number> {
     return this.prisma.company.count({ where: { status: 'pending' } });
+  }
+
+  async findApprovalDates(companyIds: readonly number[]): Promise<Map<number, Date>> {
+    const dates = new Map<number, Date>();
+    for (const companyId of companyIds) {
+      const review = await this.prisma.runInTenant(companyId, (tx) =>
+        tx.companyReview.findFirst({
+          where: { companyId, decision: 'approved' },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true },
+        }),
+      );
+      if (review) dates.set(companyId, review.createdAt);
+    }
+    return dates;
   }
 
   async getDetail(companyId: number): Promise<PlatformCompanyDetailRow | null> {
@@ -111,7 +149,13 @@ export class PlatformCompanyRepository {
           select: {
             name: true,
             department: true,
-            companies: { where: { status: 'active' }, select: { companyId: true }, take: 2 },
+            daneCode: true,
+            status: true,
+            companies: {
+              where: { status: 'active' },
+              select: { companyId: true, legalName: true },
+              orderBy: { companyId: 'asc' },
+            },
           },
         },
       },
@@ -121,6 +165,9 @@ export class PlatformCompanyRepository {
       ...this.mapListRow(row),
       legalForm: row.type,
       municipalityDepartment: row.municipality.department,
+      otherActiveCompanies: row.municipality.companies
+        .filter((c) => c.companyId !== row.companyId)
+        .map((c) => ({ companyId: c.companyId, legalName: c.legalName })),
       contactFirstName: row.contactFirstName,
       contactLastName: row.contactLastName,
       contactPhone: row.contactPhone,
@@ -193,13 +240,15 @@ export class PlatformCompanyRepository {
         contact_last_name: string | null;
         contact_phone: string | null;
         vehicle_count: number | null;
+        service_types: ServiceType[];
       }>
     >`
       UPDATE tenancy.company
          SET status = 'active'
        WHERE company_id = ${companyId} AND status = 'pending'
       RETURNING company_id, municipality_id, legal_name, tax_id, contact_email,
-                contact_first_name, contact_last_name, contact_phone, vehicle_count
+                contact_first_name, contact_last_name, contact_phone, vehicle_count,
+                service_types::text[] AS service_types
     `;
     const row = rows[0];
     if (!row) return null;
@@ -213,6 +262,7 @@ export class PlatformCompanyRepository {
       contactLastName: row.contact_last_name,
       contactPhone: row.contact_phone,
       vehicleCount: row.vehicle_count,
+      serviceTypes: row.service_types,
     };
   }
 
@@ -355,7 +405,16 @@ export class PlatformCompanyRepository {
       vehicleCount: true,
       contactEmail: true,
       registeredAt: true,
-      municipality: { select: { name: true, companies: { where: { status: 'active' }, select: { companyId: true }, take: 2 } } },
+      publicName: true,
+      serviceTypes: true,
+      municipality: {
+        select: {
+          name: true,
+          daneCode: true,
+          status: true,
+          companies: { where: { status: 'active' }, select: { companyId: true, legalName: true }, orderBy: { companyId: 'asc' } },
+        },
+      },
     } as const;
   }
 
@@ -368,7 +427,14 @@ export class PlatformCompanyRepository {
     vehicleCount: number | null;
     contactEmail: string | null;
     registeredAt: Date;
-    municipality: { name: string; companies: Array<{ companyId: number }> };
+    publicName: string | null;
+    serviceTypes: ServiceType[];
+    municipality: {
+      name: string;
+      daneCode: string | null;
+      status: string;
+      companies: Array<{ companyId: number; legalName: string }>;
+    };
   }): PlatformCompanyListRow {
     const otherActive = row.municipality.companies.filter((c) => c.companyId !== row.companyId);
     return {
@@ -379,6 +445,10 @@ export class PlatformCompanyRepository {
       municipalityId: row.municipalityId,
       municipalityName: row.municipality.name,
       municipalityAlreadyCovered: otherActive.length > 0,
+      municipalityDaneCode: row.municipality.daneCode,
+      municipalityCoverageActive: row.municipality.status === 'active',
+      publicName: row.publicName,
+      serviceTypes: row.serviceTypes,
       vehicleCount: row.vehicleCount,
       contactEmail: row.contactEmail,
       submittedAt: row.registeredAt,

@@ -1,6 +1,9 @@
 import type { EnvService } from '../../config/env.service';
 import type { Hasher } from '../auth/hasher.service';
-import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
+import type { CompanyCommissionReader } from '../service-config/company-commission.reader';
+import type { MunicipalityFareReader } from '../service-config/municipality-fare.reader';
+import type { ServiceCatalog } from '../service-config/service-catalog';
+import type { ServiceConfigProvisioner } from '../service-config/service-config-provisioner';
 import type { CompanyProvisioningService } from '../tenancy/company-provisioning.service';
 import type { AffiliationLinkService } from './affiliation-link.service';
 import type { DocumentDownloadTokenService } from './document-download-token.service';
@@ -24,6 +27,11 @@ const detailRow: PlatformCompanyDetailRow = {
   municipalityId: 1,
   municipalityName: 'Yarumal',
   municipalityAlreadyCovered: false,
+  municipalityDaneCode: '05887',
+  municipalityCoverageActive: true,
+  publicName: null,
+  serviceTypes: ['taxi'],
+  otherActiveCompanies: [],
   vehicleCount: 10,
   contactEmail: 'contacto@cootrayal.test',
   submittedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -49,17 +57,17 @@ const documentRow: CompanyDocumentRow = {
   verifiedAt: null,
 };
 
-function create(overrides: { conflictCompanyId?: number | null } = {}) {
+function create(overrides: { otherActive?: Array<{ companyId: number; legalName: string }> } = {}) {
   const repo = {
-    getDetail: jest.fn().mockResolvedValue(detailRow),
-    runTransaction: jest.fn((fn: (tx: unknown) => unknown) => fn({})),
+    getDetail: jest.fn().mockResolvedValue({ ...detailRow, otherActiveCompanies: overrides.otherActive ?? [] }),
+    runAsPlatform: jest.fn((fn: (tx: unknown) => unknown) => fn({})),
+    findApprovalDates: jest.fn().mockResolvedValue(new Map()),
     setTenantSession: jest.fn().mockResolvedValue(undefined),
     listDocuments: jest.fn().mockResolvedValue([documentRow]),
     listReviews: jest.fn().mockResolvedValue([] as CompanyReviewRow[]),
   };
-  const dispatchCompanies = {
-    resolveFirst: jest.fn().mockResolvedValue(overrides.conflictCompanyId ?? null),
-  };
+  const fares = { getCurrent: jest.fn().mockResolvedValue(null) };
+  const commissions = { getCurrent: jest.fn().mockResolvedValue(null) };
   const downloadTokens = {
     buildUrl: jest.fn((companyDocumentId: number, companyId: number, _mintedBy: number) =>
       `https://api.voyya.test/documents/token-${companyId}-${companyDocumentId}`,
@@ -69,8 +77,11 @@ function create(overrides: { conflictCompanyId?: number | null } = {}) {
 
   const service = new PlatformCompanyService(
     repo as unknown as PlatformCompanyRepository,
-    dispatchCompanies as unknown as DispatchCompaniesResolver,
     {} as CompanyProvisioningService,
+    {} as ServiceConfigProvisioner,
+    {} as ServiceCatalog,
+    fares as unknown as MunicipalityFareReader,
+    commissions as unknown as CompanyCommissionReader,
     {} as AffiliationLinkService,
     downloadTokens as unknown as DocumentDownloadTokenService,
     env,
@@ -78,7 +89,7 @@ function create(overrides: { conflictCompanyId?: number | null } = {}) {
     {} as Hasher,
   );
 
-  return { service, repo, dispatchCompanies, downloadTokens };
+  return { service, repo, fares, commissions, downloadTokens };
 }
 
 describe('PlatformCompanyService.detail', () => {
@@ -104,14 +115,22 @@ describe('PlatformCompanyService.detail', () => {
     expect(repo.getDetail).toHaveBeenCalledWith(COMPANY_ID);
   });
 
-  it('surfaces the disputed municipality by re-reading the conflicting company name', async () => {
-    const { service, repo } = create({ conflictCompanyId: 9 });
-    repo.getDetail.mockImplementation((id: number) =>
-      Promise.resolve(id === 9 ? { ...detailRow, companyId: 9, legalName: 'Otra Empresa' } : detailRow),
-    );
+  it('lists the other active companies of the municipality without blocking anything', async () => {
+    const { service } = create({ otherActive: [{ companyId: 9, legalName: 'Otra Empresa' }] });
 
     const result = await service.detail(COMPANY_ID, PLATFORM_ADMIN_USER_ID);
 
+    expect(result.municipality_active_companies).toEqual([{ company_id: 9, legal_name: 'Otra Empresa' }]);
     expect(result.municipality_active_company_name).toBe('Otra Empresa');
+  });
+
+  it('shows the current municipality fare per declared service and null when there is none', async () => {
+    const { service, fares } = create();
+
+    const result = await service.detail(COMPANY_ID, PLATFORM_ADMIN_USER_ID);
+
+    expect(fares.getCurrent).toHaveBeenCalledWith(1, 'taxi', expect.anything());
+    expect(result.municipality_fares).toEqual([{ service_type: 'taxi', fare: null }]);
+    expect(result.commission).toBeNull();
   });
 });

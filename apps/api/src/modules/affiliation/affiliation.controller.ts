@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   Param,
   ParseIntPipe,
@@ -37,6 +38,8 @@ export class AffiliationController {
   ) {}
 
   @Get('municipalities')
+  @Header('Cache-Control', 'public, max-age=300')
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
   listMunicipalities(): Promise<AffiliationMunicipalityListResponse> {
     return this.service.listMunicipalities();
   }
