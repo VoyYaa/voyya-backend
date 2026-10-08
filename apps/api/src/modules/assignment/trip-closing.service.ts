@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { TRIP_STATUS_TRANSITIONS, type TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
+import { setTenantSession } from '../../shared/tenant-session';
 import { AssignmentRepository } from './assignment.repository';
 
 export type TripClosingTarget =
@@ -14,12 +14,17 @@ export type TripClosingTarget =
 export interface CloseTripInput {
   tripRequestId: number;
   to: TripClosingTarget;
-  companyId?: number;
   driverId?: number;
   cashCollected?: boolean;
   penaltyRecorded?: boolean;
   cancellationReason?: string | null;
   noShowGraceMin?: number;
+}
+
+export interface ClosePassengerTripInput {
+  tripRequestId: number;
+  passengerId: number;
+  penaltyRecorded: boolean;
 }
 
 export type CloseTripRejectionReason = 'invalid_status' | 'not_arrived' | 'grace_pending';
@@ -55,17 +60,28 @@ export class TripClosingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly repo: AssignmentRepository,
-    private readonly dispatchCompanies: DispatchCompaniesResolver,
   ) {}
 
-  async closeTrip(input: CloseTripInput): Promise<CloseTripOutcome> {
-    const companyId = input.companyId ?? (await this.resolveCompanyId(input.tripRequestId));
+  async closeTrip(companyId: number, input: CloseTripInput): Promise<CloseTripOutcome> {
     return this.prisma.runInTenant(companyId, (tx) => this.closeTripInTx(tx, companyId, input));
+  }
+
+  async closePassengerTrip(input: ClosePassengerTripInput): Promise<CloseTripOutcome> {
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await this.repo.lockTripForPassenger(tx, input.tripRequestId, input.passengerId);
+      if (!locked) return { kind: 'rejected', reason: 'invalid_status', status: 'expired' };
+      if (locked.companyId !== null) await setTenantSession(tx, locked.companyId);
+      return this.closeTripInTx(tx, locked.companyId, {
+        tripRequestId: input.tripRequestId,
+        to: 'cancelled_by_passenger',
+        penaltyRecorded: input.penaltyRecorded,
+      });
+    });
   }
 
   async closeTripInTx(
     tx: Prisma.TransactionClient,
-    companyId: number,
+    companyId: number | null,
     input: CloseTripInput,
   ): Promise<CloseTripOutcome> {
     const from = sourceStatusesFor(input.to);
@@ -76,6 +92,7 @@ export class TripClosingService {
       cashCollected: input.cashCollected ?? false,
       penaltyRecorded: input.penaltyRecorded ?? false,
       noShowGraceMin: input.noShowGraceMin,
+      unownedOnly: companyId === null,
     });
 
     const resolution = applied
@@ -84,15 +101,17 @@ export class TripClosingService {
 
     if (resolution.kind === 'rejected') return resolution;
 
-    const closedAssignment = await this.repo.closeAssignmentsForTrip(tx, {
-      tripRequestId: input.tripRequestId,
-      companyId,
-      status: ASSIGNMENT_STATUS_BY_TARGET[input.to],
-      reason: input.cancellationReason ?? null,
-      driverId: input.driverId,
-    });
-    if (closedAssignment) {
-      await this.repo.releaseDriver(tx, closedAssignment.driverId, companyId);
+    if (companyId !== null) {
+      const closedAssignment = await this.repo.closeAssignmentsForTrip(tx, {
+        tripRequestId: input.tripRequestId,
+        companyId,
+        status: ASSIGNMENT_STATUS_BY_TARGET[input.to],
+        reason: input.cancellationReason ?? null,
+        driverId: input.driverId,
+      });
+      if (closedAssignment) {
+        await this.repo.releaseDriver(tx, closedAssignment.driverId, companyId);
+      }
     }
 
     return { kind: resolution.kind, ...resolution.row };
@@ -122,17 +141,5 @@ export class TripClosingService {
       return { kind: 'rejected', reason: 'grace_pending', status: current.status, remainingSeconds };
     }
     return { kind: 'rejected', reason: 'invalid_status', status: current.status };
-  }
-
-  private async resolveCompanyId(tripRequestId: number): Promise<number> {
-    const info = await this.repo.getTripRequestInfo(tripRequestId);
-    if (!info) {
-      throw new Error(`Trip request ${tripRequestId} not found while closing`);
-    }
-    const companyId = await this.dispatchCompanies.resolveFirst(info.municipalityId);
-    if (companyId === null) {
-      throw new Error(`No active company for municipality ${info.municipalityId}`);
-    }
-    return companyId;
   }
 }

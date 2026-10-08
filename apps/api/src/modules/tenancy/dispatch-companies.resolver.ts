@@ -33,9 +33,4 @@ export class DispatchCompaniesResolver {
     });
     return companies.map((company) => company.companyId);
   }
-
-  async resolveFirst(municipalityId: number, options?: DispatchCompaniesOptions): Promise<number | null> {
-    const [first] = await this.resolve(municipalityId, options);
-    return first ?? null;
-  }
 }

@@ -10,6 +10,7 @@ export interface DbCandidate {
 
 export interface CandidateSearch {
   companyId: number;
+  tripRequestId: number;
   lat: number;
   lng: number;
   radiusKm: number;
@@ -57,9 +58,46 @@ export class CandidateRepository {
             AND (d.location_updated_at AT TIME ZONE 'UTC') > now() - (${q.locationStaleMin} * interval '1 minute')
           )
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM assignment.assignment o
+          WHERE o.driver_id = d.driver_id
+            AND o.status IN ('created', 'notified')
+            AND o.expires_at > (now() AT TIME ZONE 'UTC')
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM assignment.assignment r
+          WHERE r.driver_id = d.driver_id
+            AND r.trip_request_id = ${q.tripRequestId}
+            AND r.status IN ('rejected', 'timeout', 'cancelled')
+        )
         ${exclusion}
       ORDER BY "distanceM" ASC, "tripsLast3h" ASC
       LIMIT ${q.limit}
     `);
+  }
+
+  async hasAvailableDrivers(
+    tx: Prisma.TransactionClient,
+    companyId: number,
+    locationStaleMin: number,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ available: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM fleet.driver d
+        WHERE d.company_id = ${companyId}
+          AND d.status = 'available'
+          AND d.pin_must_change = false
+          AND d.current_vehicle_id IS NOT NULL
+          AND d.current_location IS NOT NULL
+          AND (
+            ${locationStaleMin} <= 0
+            OR (
+              d.location_updated_at IS NOT NULL
+              AND (d.location_updated_at AT TIME ZONE 'UTC') > now() - (${locationStaleMin} * interval '1 minute')
+            )
+          )
+      ) AS available
+    `;
+    return rows[0]?.available === true;
   }
 }

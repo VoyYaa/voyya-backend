@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Assignment, Prisma } from '@prisma/client';
-import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
+import type { AssignmentStatus, ServiceType, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
 
@@ -14,6 +14,9 @@ export interface TripRequestInfo {
   pickupLng: number;
   fare: number;
   status: string;
+  serviceType: ServiceType;
+  requestedCompanyId: number | null;
+  companyId: number | null;
 }
 
 export interface PassengerData {
@@ -42,6 +45,18 @@ export interface PendingOffer {
   fare: number;
 }
 
+export interface TripTake {
+  tripRequestId: number;
+  assignmentId: number;
+  driverId: number;
+  companyId: number;
+}
+
+export interface LockedTrip {
+  companyId: number | null;
+  status: TripStatus;
+}
+
 export interface CreateAssignmentData {
   tripRequestId: number;
   driverId: number;
@@ -68,6 +83,9 @@ export class AssignmentRepository {
         pickupLng: true,
         fare: true,
         status: true,
+        serviceType: true,
+        requestedCompanyId: true,
+        companyId: true,
       },
     });
     if (!t) return null;
@@ -81,8 +99,11 @@ export class AssignmentRepository {
     };
   }
 
-  async getPassengerData(tripRequestId: number): Promise<PassengerData | null> {
-    const t = await this.prisma.tripRequest.findUnique({
+  async getPassengerData(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+  ): Promise<PassengerData | null> {
+    const t = await tx.tripRequest.findUnique({
       where: { tripRequestId },
       select: {
         pickupAddress: true,
@@ -100,10 +121,29 @@ export class AssignmentRepository {
     };
   }
 
-  async createNotifiedAssignment(
+  async createOfferIfDriverFree(
     tx: Prisma.TransactionClient,
     data: CreateAssignmentData,
-  ): Promise<Assignment> {
+  ): Promise<Assignment | null> {
+    const locked = await tx.$queryRaw<Array<{ driver_id: number }>>`
+      SELECT driver_id FROM fleet.driver
+       WHERE driver_id = ${data.driverId}
+         AND company_id = ${data.companyId}
+         AND status = 'available'
+       FOR UPDATE
+    `;
+    if (locked.length === 0) return null;
+
+    const live = await tx.$queryRaw<Array<{ has_live_offer: boolean }>>`
+      SELECT EXISTS (
+        SELECT 1 FROM assignment.assignment o
+         WHERE o.driver_id = ${data.driverId}
+           AND o.status IN ('created', 'notified')
+           AND o.expires_at > (now() AT TIME ZONE 'UTC')
+      ) AS has_live_offer
+    `;
+    if (live[0]?.has_live_offer !== false) return null;
+
     return tx.assignment.create({
       data: {
         tripRequestId: data.tripRequestId,
@@ -184,41 +224,40 @@ export class AssignmentRepository {
     driverId: number,
     companyId: number,
   ): Promise<PendingOffer[]> {
-    const rows = await tx.assignment.findMany({
-      where: {
-        driverId,
-        companyId,
-        status: { in: ['created', 'notified'] },
-        expiresAt: { gt: new Date() },
-      },
-      orderBy: { assignedAt: 'desc' },
-      select: {
-        assignmentId: true,
-        tripRequestId: true,
-        expiresAt: true,
-        tripRequest: {
-          select: {
-            pickupAddress: true,
-            dropoffAddress: true,
-            pickupLat: true,
-            pickupLng: true,
-            fare: true,
-          },
-        },
-      },
-    });
-    return rows
-      .filter((r): r is typeof r & { expiresAt: Date } => r.expiresAt !== null)
-      .map((r) => ({
-        assignmentId: r.assignmentId,
-        tripRequestId: r.tripRequestId,
-        expiresAt: r.expiresAt,
-        pickupAddress: requireTripLocation(r.tripRequest.pickupAddress),
-        dropoffAddress: requireTripLocation(r.tripRequest.dropoffAddress),
-        pickupLat: requireTripLocation(r.tripRequest.pickupLat),
-        pickupLng: requireTripLocation(r.tripRequest.pickupLng),
-        fare: Number(r.tripRequest.fare),
-      }));
+    const rows = await tx.$queryRaw<
+      Array<{
+        assignment_id: number;
+        trip_request_id: number;
+        expires_at: Date;
+        pickup_address: string | null;
+        dropoff_address: string | null;
+        pickup_lat: number | null;
+        pickup_lng: number | null;
+        fare: number;
+      }>
+    >`
+      SELECT a.assignment_id, a.trip_request_id, a.expires_at,
+             t.pickup_address, t.dropoff_address, t.pickup_lat, t.pickup_lng,
+             t.fare::float8 AS fare
+        FROM assignment.assignment a
+        JOIN trips.trip_request t ON t.trip_request_id = a.trip_request_id
+       WHERE a.driver_id = ${driverId}
+         AND a.company_id = ${companyId}
+         AND a.status IN ('created', 'notified')
+         AND a.expires_at > (now() AT TIME ZONE 'UTC')
+         AND t.status = 'pending_assignment'
+       ORDER BY a.assigned_at DESC
+    `;
+    return rows.map((r) => ({
+      assignmentId: r.assignment_id,
+      tripRequestId: r.trip_request_id,
+      expiresAt: r.expires_at,
+      pickupAddress: requireTripLocation(r.pickup_address),
+      dropoffAddress: requireTripLocation(r.dropoff_address),
+      pickupLat: requireTripLocation(r.pickup_lat),
+      pickupLng: requireTripLocation(r.pickup_lng),
+      fare: r.fare,
+    }));
   }
 
   async getDriverLocation(
@@ -285,16 +324,36 @@ export class AssignmentRepository {
 
   async markTripRequestAssigned(
     tx: Prisma.TransactionClient,
-    tripRequestId: number,
+    take: TripTake,
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
-      UPDATE trips.trip_request
+      UPDATE trips.trip_request t
          SET status = 'assigned',
              assigned_at = (now() AT TIME ZONE 'UTC'),
-             updated_at = (now() AT TIME ZONE 'UTC')
-       WHERE trip_request_id = ${tripRequestId}
-         AND status = 'pending_assignment'
-      RETURNING trip_request_id
+             updated_at = (now() AT TIME ZONE 'UTC'),
+             company_id = ${take.companyId},
+             commission_pct = k.commission_pct,
+             commission = round(t.fare * k.commission_pct / 100)
+        FROM tenancy.company_commission k
+       WHERE t.trip_request_id = ${take.tripRequestId}
+         AND t.status = 'pending_assignment'
+         AND (t.requested_company_id IS NULL OR t.requested_company_id = ${take.companyId})
+         AND k.company_id = ${take.companyId}
+         AND k.valid_to IS NULL
+         AND EXISTS (
+           SELECT 1 FROM tenancy.company c
+            WHERE c.company_id = ${take.companyId} AND c.status = 'active'
+         )
+         AND EXISTS (
+           SELECT 1 FROM assignment.assignment a
+            WHERE a.assignment_id = ${take.assignmentId}
+              AND a.trip_request_id = t.trip_request_id
+              AND a.driver_id = ${take.driverId}
+              AND a.company_id = ${take.companyId}
+              AND a.status = 'notified'
+              AND a.expires_at > (now() AT TIME ZONE 'UTC')
+         )
+      RETURNING t.trip_request_id
     `;
     return rows.length === 1;
   }
@@ -351,13 +410,34 @@ export class AssignmentRepository {
     return rows.length === 1;
   }
 
+  async cancelOffer(
+    tx: Prisma.TransactionClient,
+    assignmentId: number,
+    companyId: number,
+  ): Promise<boolean> {
+    const rows = await tx.$queryRaw<Array<{ assignment_id: number }>>`
+      UPDATE assignment.assignment
+         SET status = 'cancelled', responded_at = (now() AT TIME ZONE 'UTC')
+       WHERE assignment_id = ${assignmentId}
+         AND company_id = ${companyId}
+         AND status = 'notified'
+      RETURNING assignment_id
+    `;
+    return rows.length === 1;
+  }
+
   async reopenTripRequest(
     tx: Prisma.TransactionClient,
     tripRequestId: number,
   ): Promise<boolean> {
     const rows = await tx.$queryRaw<Array<{ trip_request_id: number }>>`
       UPDATE trips.trip_request
-         SET status = 'pending_assignment', arrived_at = NULL, updated_at = (now() AT TIME ZONE 'UTC')
+         SET status = 'pending_assignment',
+             arrived_at = NULL,
+             company_id = NULL,
+             commission = 0,
+             commission_pct = NULL,
+             updated_at = (now() AT TIME ZONE 'UTC')
        WHERE trip_request_id = ${tripRequestId}
          AND status = 'assigned'
       RETURNING trip_request_id
@@ -365,11 +445,28 @@ export class AssignmentRepository {
     return rows.length === 1;
   }
 
+  async lockTripForPassenger(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+    passengerId: number,
+  ): Promise<LockedTrip | null> {
+    const rows = await tx.$queryRaw<Array<{ company_id: number | null; status: TripStatus }>>`
+      SELECT company_id, status
+        FROM trips.trip_request
+       WHERE trip_request_id = ${tripRequestId}
+         AND passenger_id = ${passengerId}
+       FOR UPDATE
+    `;
+    const row = rows[0];
+    return row ? { companyId: row.company_id, status: row.status } : null;
+  }
+
   async closeTripRequest(
     tx: Prisma.TransactionClient,
     params: CloseTripRequestParams,
   ): Promise<TripClosingRow | null> {
     const graceMin = params.noShowGraceMin ?? 0;
+    const unownedOnly = params.unownedOnly === true;
     const rows = await tx.$queryRaw<
       Array<{
         status: TripStatus;
@@ -389,6 +486,7 @@ export class AssignmentRepository {
              penalty_recorded = penalty_recorded OR ${params.penaltyRecorded}
        WHERE trip_request_id = ${params.tripRequestId}
          AND status = ANY(${[...params.from]}::trips."TripStatus"[])
+         AND (NOT ${unownedOnly} OR company_id IS NULL)
          AND (
            ${params.to} <> 'no_show'
            OR (
@@ -499,6 +597,7 @@ export interface CloseTripRequestParams {
   cashCollected: boolean;
   penaltyRecorded: boolean;
   noShowGraceMin?: number;
+  unownedOnly?: boolean;
 }
 
 export interface TripClosingRow {

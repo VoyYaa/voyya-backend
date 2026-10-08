@@ -1,5 +1,6 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import type { Prisma } from '@prisma/client';
 import type {
   AssignmentStatus,
   ServiceType,
@@ -10,18 +11,27 @@ import type {
   TripTransitionResult,
 } from '@voyyaa/shared';
 import { TRIPS_EVENTS } from '@voyyaa/shared';
+import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { CloseTripOutcome } from '../assignment/trip-closing.service';
 import { AssignmentService } from '../assignment/assignment.service';
 import { OperationalParamsService } from '../service-config/operational-params.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
+import { TRIPS_MESSAGES } from './trips.messages';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
 
 const CLOSED_ASSIGNMENT_STATUSES: readonly AssignmentStatus[] = ['completed'];
 
+interface TripSubject {
+  passengerId: number;
+  municipalityId: number;
+  serviceType: ServiceType;
+}
+
 @Injectable()
 export class TripLifecycleService {
   constructor(
+    private readonly prisma: PrismaService,
     private readonly repo: TripsRepository,
     private readonly assignment: AssignmentService,
     private readonly tripClosing: TripClosingService,
@@ -34,8 +44,9 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
-    const outcome = await this.repo.markEnRoute(tripRequestId);
+    const outcome = await this.inOwnedTrip(tripRequestId, driverId, companyId, ['accepted'], (tx) =>
+      this.repo.markEnRoute(tx, tripRequestId),
+    );
     return this.fromTransitionOutcome(tripRequestId, 'driver_en_route', outcome, {});
   }
 
@@ -44,15 +55,24 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
-    const outcome = await this.repo.markArrived(tripRequestId);
+    const { outcome, graceMin } = await this.inOwnedTrip(
+      tripRequestId,
+      driverId,
+      companyId,
+      ['accepted'],
+      async (tx) => {
+        const marked = await this.repo.markArrived(tx, tripRequestId);
+        if (marked.kind === 'rejected') return { outcome: marked, graceMin: 0 };
+        const trip = await this.getTripRequestOrThrow(tripRequestId, tx);
+        return { outcome: marked, graceMin: await this.noShowGraceMinOf(trip, tx) };
+      },
+    );
     if (outcome.kind === 'rejected') {
       throw new ConflictException({
         code: 'INVALID_TRIP_TRANSITION',
-        message: `No puedes marcar la llegada: el viaje está en ${outcome.status}`,
+        message: TRIPS_MESSAGES.cannotMarkArrival(outcome.status),
       });
     }
-    const graceMin = await this.noShowGraceMinFor(tripRequestId);
     const arrivedAt = outcome.row.arrivedAt;
     return {
       trip_request_id: tripRequestId,
@@ -68,8 +88,9 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
-    const outcome = await this.repo.markStarted(tripRequestId);
+    const outcome = await this.inOwnedTrip(tripRequestId, driverId, companyId, ['accepted'], (tx) =>
+      this.repo.markStarted(tx, tripRequestId),
+    );
     return this.fromTransitionOutcome(tripRequestId, 'in_progress', outcome, {});
   }
 
@@ -78,12 +99,13 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId, ['completed']);
-    const outcome = await this.repo.markCashCollected(tripRequestId);
+    const outcome = await this.inOwnedTrip(tripRequestId, driverId, companyId, ['completed'], (tx) =>
+      this.repo.markCashCollected(tx, tripRequestId),
+    );
     if (outcome.kind === 'rejected') {
       throw new ConflictException({
         code: 'INVALID_TRIP_TRANSITION',
-        message: `No puedes confirmar el cobro: el viaje está en ${outcome.status}`,
+        message: TRIPS_MESSAGES.cannotConfirmCash(outcome.status),
       });
     }
     return {
@@ -100,19 +122,25 @@ export class TripLifecycleService {
     companyId: number,
     dto: CompleteTripDTO,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
-    const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    const outcome = await this.tripClosing.closeTrip({
+    const { trip, outcome } = await this.inOwnedTrip(
       tripRequestId,
-      to: 'completed',
-      companyId,
       driverId,
-      cashCollected: dto.cash_collected,
-    });
+      companyId,
+      ['accepted'],
+      async (tx) => ({
+        trip: await this.getTripRequestOrThrow(tripRequestId, tx),
+        outcome: await this.tripClosing.closeTripInTx(tx, companyId, {
+          tripRequestId,
+          to: 'completed',
+          driverId,
+          cashCollected: dto.cash_collected,
+        }),
+      }),
+    );
     if (outcome.kind === 'applied') {
       const ev: TripRequestCompletedEvent = {
         trip_request_id: tripRequestId,
-        passenger_id: tripRequest.passengerId,
+        passenger_id: trip.passengerId,
         driver_id: driverId,
         company_id: companyId,
         net_earnings: outcome.netEarnings ?? 0,
@@ -129,20 +157,28 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    await this.assertOwnership(tripRequestId, driverId, companyId);
-    const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    const graceMin = (await this.params.get(tripRequest.municipalityId, tripRequest.serviceType)).noShowGraceMin;
-    const outcome = await this.tripClosing.closeTrip({
+    const { trip, outcome } = await this.inOwnedTrip(
       tripRequestId,
-      to: 'no_show',
-      companyId,
       driverId,
-      noShowGraceMin: graceMin,
-    });
+      companyId,
+      ['accepted'],
+      async (tx) => {
+        const subject = await this.getTripRequestOrThrow(tripRequestId, tx);
+        return {
+          trip: subject,
+          outcome: await this.tripClosing.closeTripInTx(tx, companyId, {
+            tripRequestId,
+            to: 'no_show',
+            driverId,
+            noShowGraceMin: await this.noShowGraceMinOf(subject, tx),
+          }),
+        };
+      },
+    );
     if (outcome.kind === 'applied') {
       const ev: TripRequestNoShowEvent = {
         trip_request_id: tripRequestId,
-        passenger_id: tripRequest.passengerId,
+        passenger_id: trip.passengerId,
         driver_id: driverId,
         company_id: companyId,
         arrived_at: outcome.arrivedAt ? outcome.arrivedAt.toISOString() : new Date().toISOString(),
@@ -153,51 +189,60 @@ export class TripLifecycleService {
     return this.fromCloseOutcome(tripRequestId, outcome);
   }
 
-  private async assertOwnership(
+  private inOwnedTrip<T>(
     tripRequestId: number,
     driverId: number,
     companyId: number,
-    allow: readonly AssignmentStatus[] = ['accepted'],
+    allow: readonly AssignmentStatus[],
+    run: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.prisma.runInTenant(companyId, async (tx) => {
+      await this.assertOwnership(tx, tripRequestId, driverId, companyId, allow);
+      return run(tx);
+    });
+  }
+
+  private async assertOwnership(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+    driverId: number,
+    companyId: number,
+    allow: readonly AssignmentStatus[],
   ): Promise<void> {
-    const owned = await this.assignment.getAcceptedAssignment(
+    const owned = await this.assignment.getOwnedAssignment(tx, tripRequestId, driverId, companyId, allow);
+    if (owned) return;
+    const closed = await this.assignment.getOwnedAssignment(
+      tx,
       tripRequestId,
       driverId,
       companyId,
-      allow,
+      CLOSED_ASSIGNMENT_STATUSES,
     );
-    if (!owned) {
-      const closed = await this.assignment.getAcceptedAssignment(
-        tripRequestId,
-        driverId,
-        companyId,
-        CLOSED_ASSIGNMENT_STATUSES,
-      );
-      if (closed) {
-        throw new ConflictException({
-          code: 'INVALID_TRIP_TRANSITION',
-          message: 'No puedes hacer esta transición: el viaje ya está cerrado',
-        });
-      }
-      throw new ForbiddenException({
-        code: 'NOT_THE_DRIVER',
-        message: 'No eres el conductor asignado a este viaje',
+    if (closed) {
+      throw new ConflictException({
+        code: 'INVALID_TRIP_TRANSITION',
+        message: TRIPS_MESSAGES.tripAlreadyClosed,
       });
     }
+    throw new ForbiddenException({
+      code: 'NOT_THE_DRIVER',
+      message: TRIPS_MESSAGES.notAssignedDriver,
+    });
   }
 
-  private async noShowGraceMinFor(tripRequestId: number): Promise<number> {
-    const tripRequest = await this.getTripRequestOrThrow(tripRequestId);
-    return (await this.params.get(tripRequest.municipalityId, tripRequest.serviceType)).noShowGraceMin;
+  private async noShowGraceMinOf(trip: TripSubject, tx: Prisma.TransactionClient): Promise<number> {
+    return (await this.params.get(trip.municipalityId, trip.serviceType, tx)).noShowGraceMin;
   }
 
   private async getTripRequestOrThrow(
     tripRequestId: number,
-  ): Promise<{ passengerId: number; municipalityId: number; serviceType: ServiceType }> {
-    const tripRequest = await this.repo.getTripRequest(tripRequestId);
+    tx: Prisma.TransactionClient,
+  ): Promise<TripSubject> {
+    const tripRequest = await this.repo.getTripRequest(tripRequestId, tx);
     if (!tripRequest) {
       throw new NotFoundException({
         code: 'TRIP_REQUEST_NOT_FOUND',
-        message: 'La solicitud no existe',
+        message: TRIPS_MESSAGES.tripNotFound,
       });
     }
     return tripRequest;
@@ -212,7 +257,7 @@ export class TripLifecycleService {
     if (outcome.kind === 'rejected') {
       throw new ConflictException({
         code: 'INVALID_TRIP_TRANSITION',
-        message: `No puedes hacer esta transición: el viaje está en ${outcome.status}`,
+        message: TRIPS_MESSAGES.invalidTransition(outcome.status),
       });
     }
     return {
@@ -231,19 +276,19 @@ export class TripLifecycleService {
       if (outcome.reason === 'not_arrived') {
         throw new ConflictException({
           code: 'ARRIVAL_NOT_MARKED',
-          message: 'Primero marca tu llegada al punto de recogida',
+          message: TRIPS_MESSAGES.arrivalNotMarked,
         });
       }
       if (outcome.reason === 'grace_pending') {
         throw new ConflictException({
           code: 'NO_SHOW_GRACE_PENDING',
-          message: 'Aún no pasa la cortesía de espera',
+          message: TRIPS_MESSAGES.noShowGracePending,
           remaining_seconds: outcome.remainingSeconds,
         });
       }
       throw new ConflictException({
         code: 'INVALID_TRIP_TRANSITION',
-        message: `No puedes hacer esta transición: el viaje está en ${outcome.status}`,
+        message: TRIPS_MESSAGES.invalidTransition(outcome.status),
       });
     }
     return {

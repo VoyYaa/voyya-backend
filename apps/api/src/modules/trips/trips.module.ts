@@ -4,6 +4,7 @@ import { ColombiaHolidaysService } from './holidays/colombia-holidays.service';
 import { HOLIDAYS_PROVIDER } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripCoordinatesPurgeService } from './trip-coordinates-purge.service';
+import { TripServiceOptionsService } from './trip-service-options.service';
 import { TripLifecycleController } from './trip-lifecycle.controller';
 import { TripLifecycleService } from './trip-lifecycle.service';
 import { TripsController } from './trips.controller';
@@ -15,6 +16,7 @@ import { TripsService } from './trips.service';
   controllers: [TripsController, TripLifecycleController],
   providers: [
     TripsService,
+    TripServiceOptionsService,
     TripsRepository,
     QuoteTokenService,
     TripLifecycleService,

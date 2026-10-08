@@ -6,6 +6,8 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
 import {
   CancelTripRequestDTO,
@@ -16,16 +18,31 @@ import {
   type TripRequestStatus,
   type TripRequestCancelled,
   type TripRequestCreated,
+  TripServiceOptionsQuery,
+  type TripServiceOptionsResponse,
 } from '@voyyaa/shared';
+import { UserThrottlerGuard } from '../../shared/user-throttler.guard';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUserId } from '../tenancy/identity.decorators';
+import { TripServiceOptionsService } from './trip-service-options.service';
 import { TripsService } from './trips.service';
 
 @Controller('trips')
 @Roles('passenger')
 export class TripsController {
-  constructor(private readonly trips: TripsService) {}
+  constructor(
+    private readonly trips: TripsService,
+    private readonly serviceOptions: TripServiceOptionsService,
+  ) {}
+
+  @Get('service-options')
+  @UseGuards(UserThrottlerGuard)
+  getServiceOptions(
+    @Query(new ZodValidationPipe(TripServiceOptionsQuery)) query: TripServiceOptionsQuery,
+  ): Promise<TripServiceOptionsResponse> {
+    return this.serviceOptions.getOptions(query);
+  }
 
   @Post('quote')
   @HttpCode(200)
