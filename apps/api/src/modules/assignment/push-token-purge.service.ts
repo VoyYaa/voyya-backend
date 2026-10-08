@@ -1,7 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
 import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
+import { cronOptions, SCHEDULED_JOBS } from '../../infrastructure/observability/scheduled-jobs';
+import { runWithAdvisoryLock } from '../../infrastructure/prisma/advisory-lock';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { PushTokenRepository } from './push-token.repository';
 
@@ -17,31 +19,18 @@ export class PushTokenPurgeService {
     private readonly env: EnvService,
   ) {}
 
-  @Cron(CronExpression.EVERY_DAY_AT_3AM)
+  @Cron(SCHEDULED_JOBS.pushTokenPurge.cron, cronOptions(SCHEDULED_JOBS.pushTokenPurge))
   async purge(): Promise<void> {
-    await runMonitoredJob('push-token-purge', () => this.run());
+    await runMonitoredJob(SCHEDULED_JOBS.pushTokenPurge, () => this.run());
   }
 
   private async run(): Promise<void> {
     const ttlDays = this.env.get('PUSH_TOKEN_TTL_DAYS');
     if (ttlDays === 0) return;
 
-    try {
-      if (!(await this.acquireLock())) return;
-
-      const purged = await this.tokens.purgeStale(ttlDays);
+    await runWithAdvisoryLock(this.prisma, LOCK_KEY, async (tx) => {
+      const purged = await this.tokens.purgeStale(tx, ttlDays);
       this.logger.log(`Push token purge: purged=${purged}`);
-    } catch (e) {
-      this.logger.error(`Push token purge failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  private async acquireLock(): Promise<boolean> {
-    const rows = await this.prisma.$transaction(
-      (tx) => tx.$queryRaw<Array<{ locked: boolean }>>`
-        SELECT pg_try_advisory_xact_lock(${LOCK_KEY}) AS locked
-      `,
-    );
-    return rows[0]?.locked === true;
+    });
   }
 }

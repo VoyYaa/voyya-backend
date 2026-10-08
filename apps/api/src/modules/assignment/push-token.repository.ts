@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { Prisma } from '@prisma/client';
 import type { PushTokenPlatform } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 
@@ -47,8 +48,8 @@ export class PushTokenRepository {
     await this.prisma.pushToken.deleteMany({ where: { token } });
   }
 
-  async purgeStale(ttlDays: number): Promise<number> {
-    const rows = await this.prisma.$queryRaw<Array<{ push_token_id: number }>>`
+  async purgeStale(tx: Prisma.TransactionClient, ttlDays: number): Promise<number> {
+    const rows = await tx.$queryRaw<Array<{ push_token_id: number }>>`
       DELETE FROM auth.push_token
        WHERE last_seen_at < (now() AT TIME ZONE 'UTC') - (${ttlDays} * interval '1 day')
       RETURNING push_token_id

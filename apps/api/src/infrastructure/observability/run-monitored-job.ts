@@ -2,17 +2,30 @@ import { randomUUID } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import { captureError, Sentry } from './sentry';
 import { requestContext } from './request-context.service';
+import { JOB_TIMEZONE, type ScheduledJob } from './scheduled-jobs';
 
 const logger = new Logger('Cron');
 
-export async function runMonitoredJob(slug: string, fn: () => Promise<void>): Promise<void> {
+type MonitorConfig = NonNullable<Parameters<typeof Sentry.withMonitor>[2]>;
+
+function monitorConfig(job: ScheduledJob): MonitorConfig {
+  return {
+    schedule: { type: 'crontab', value: job.cron },
+    checkinMargin: job.checkinMarginMin,
+    maxRuntime: job.maxRuntimeMin,
+    timezone: JOB_TIMEZONE,
+  };
+}
+
+export async function runMonitoredJob(job: ScheduledJob, fn: () => Promise<void>): Promise<void> {
+  const { slug } = job;
   await requestContext.run({ requestId: `cron-${slug}-${randomUUID()}`, job: slug }, async () => {
     const start = process.hrtime.bigint();
     logger.log({ msg: 'job.start', job: slug });
 
     try {
       if (Sentry.getClient()) {
-        await Sentry.withMonitor(slug, () => fn());
+        await Sentry.withMonitor(slug, () => fn(), monitorConfig(job));
       } else {
         await fn();
       }

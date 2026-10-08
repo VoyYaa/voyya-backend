@@ -1,8 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Cron } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
 import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
+import { cronOptions, SCHEDULED_JOBS } from '../../infrastructure/observability/scheduled-jobs';
+import { runWithAdvisoryLock } from '../../infrastructure/prisma/advisory-lock';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { setTenantSession } from '../../shared/tenant-session';
 import { DriverRepository } from './driver.repository';
 
 const LOCK_KEY = 91_002;
@@ -17,37 +20,26 @@ export class DriverLocationPurgeService {
     private readonly env: EnvService,
   ) {}
 
-  @Cron(CronExpression.EVERY_HOUR)
+  @Cron(
+    SCHEDULED_JOBS.driverLocationPurge.cron,
+    cronOptions(SCHEDULED_JOBS.driverLocationPurge),
+  )
   async purge(): Promise<void> {
-    await runMonitoredJob('driver-location-purge', () => this.run());
+    await runMonitoredJob(SCHEDULED_JOBS.driverLocationPurge, () => this.run());
   }
 
   private async run(): Promise<void> {
     const purgeHours = this.env.get('LOCATION_PURGE_HOURS');
     if (purgeHours === 0) return;
 
-    try {
-      if (!(await this.acquireLock())) return;
-
+    await runWithAdvisoryLock(this.prisma, LOCK_KEY, async (tx) => {
       const companyIds = await this.drivers.listCompanyIds();
       let purged = 0;
       for (const companyId of companyIds) {
-        purged += await this.prisma.runInTenant(companyId, (tx) =>
-          this.drivers.purgeStaleLocations(tx, companyId, purgeHours),
-        );
+        await setTenantSession(tx, companyId);
+        purged += await this.drivers.purgeStaleLocations(tx, companyId, purgeHours);
       }
       this.logger.log(`Location purge: companies=${companyIds.length} purged=${purged}`);
-    } catch (e) {
-      this.logger.error(`Location purge failed: ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  private async acquireLock(): Promise<boolean> {
-    const rows = await this.prisma.$transaction(
-      (tx) => tx.$queryRaw<Array<{ locked: boolean }>>`
-        SELECT pg_try_advisory_xact_lock(${LOCK_KEY}) AS locked
-      `,
-    );
-    return rows[0]?.locked === true;
+    });
   }
 }
