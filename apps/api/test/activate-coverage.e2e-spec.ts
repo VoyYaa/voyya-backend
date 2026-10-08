@@ -7,6 +7,7 @@ import {
 } from '../scripts/activate-coverage';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
+const HOOK_TIMEOUT_MS = 60_000;
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
 
@@ -89,14 +90,14 @@ suite('activate-coverage against real Postgres (ADR-031 section 5.2)', () => {
     prisma = new Client({ datasources: { db: { url } } });
     await prisma.$connect();
     await purgeMunicipalitiesByNamePrefix(prisma, PREFIX, { daneCodePrefix: DANE_PREFIX });
-  });
+  }, HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     if (prisma) {
       await purgeMunicipalitiesByNamePrefix(prisma, PREFIX, { daneCodePrefix: DANE_PREFIX });
       await prisma.$disconnect();
     }
-  });
+  }, HOOK_TIMEOUT_MS);
 
   async function stateOf(daneCode: string): Promise<{ status: string; hasPolygon: boolean; hasCoverage: boolean }> {
     const rows = await prisma.$queryRaw<Array<{ status: string; polygon: boolean; coverage: boolean }>>`

@@ -6,6 +6,7 @@ import type { EnvService } from '../src/config/env.service';
 import { createFreshPassenger } from './support/fresh-passenger';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
+const HOOK_TIMEOUT_MS = 60_000;
 const url = process.env.PG_TEST_URL;
 const ownerUrl = process.env.PG_TEST_OWNER_URL;
 const suite = url ? describe : describe.skip;
@@ -246,7 +247,7 @@ suite('ADR-032 data layer against real Postgres as app_voyya (B1)', () => {
     companySingleId = await createCompany(municipalitySingleId, 'D');
     driverA = await createDriver(companyAId, 'DA');
     driverB = await createDriver(companyBId, 'DB');
-  });
+  }, HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     if (single) await single.$disconnect();
@@ -260,7 +261,7 @@ suite('ADR-032 data layer against real Postgres as app_voyya (B1)', () => {
       await prisma.$disconnect();
     }
     if (owner) await owner.$disconnect();
-  });
+  }, HOOK_TIMEOUT_MS);
 
   describe('the test role', () => {
     it('is not a superuser and does not bypass RLS', async () => {
