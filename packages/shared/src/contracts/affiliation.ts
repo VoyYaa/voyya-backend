@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   BaseFareCop,
+  CommissionPct,
   IsoDate,
   OPS_LIST_DEFAULT_LIMIT,
   OPS_LIST_MAX_LIMIT,
@@ -8,6 +9,13 @@ import {
 } from './admin';
 import { Phone } from './auth';
 import { DocumentStorageKey, DocumentVerificationStatus, NotificationDelivery } from './documents';
+import { CompanyCommission, MunicipalityFare } from './service-config';
+import {
+  ActivatableServiceType,
+  ActiveServiceTypes,
+  CompanyPublicName,
+  ServiceType,
+} from './trips';
 
 export const TaxId = z
   .string()
@@ -22,6 +30,9 @@ export const CompanyProfile = z.object({
   company_id: z.number().int().positive(),
   tax_id: z.string(),
   status: CompanyStatus,
+  municipality_coverage_active: z.boolean(),
+  display_name: z.string(),
+  service_types: z.array(ServiceType),
 });
 export type CompanyProfile = z.infer<typeof CompanyProfile>;
 
@@ -56,16 +67,33 @@ export const CompanyDecision = z.enum([
 ]);
 export type CompanyDecision = z.infer<typeof CompanyDecision>;
 
+export const DaneCode = z.string().regex(/^\d{5}$/, 'Código DIVIPOLA inválido (5 dígitos)');
+export type DaneCode = z.infer<typeof DaneCode>;
+
 export const AffiliationMunicipality = z.object({
   municipality_id: z.number().int().positive(),
+  dane_code: DaneCode,
+  department_code: z.string().regex(/^\d{2}$/),
   name: z.string(),
   department: z.string(),
   already_covered: z.boolean(),
+  has_active_companies: z.boolean(),
+  coverage_active: z.boolean(),
 });
 export type AffiliationMunicipality = z.infer<typeof AffiliationMunicipality>;
 
+export const MunicipalityCatalogSource = z.object({
+  name: z.string(),
+  cut_date: IsoDate,
+  attribution: z.string(),
+  license: z.string(),
+});
+export type MunicipalityCatalogSource = z.infer<typeof MunicipalityCatalogSource>;
+
 export const AffiliationMunicipalityListResponse = z.object({
   rows: z.array(AffiliationMunicipality),
+  source: MunicipalityCatalogSource,
+  active_service_types: ActiveServiceTypes,
 });
 export type AffiliationMunicipalityListResponse = z.infer<
   typeof AffiliationMunicipalityListResponse
@@ -79,18 +107,25 @@ export const AffiliationDocumentInput = z.object({
 });
 export type AffiliationDocumentInput = z.infer<typeof AffiliationDocumentInput>;
 
-export const CreateAffiliationApplicationDTO = z.object({
-  legal_name: z.string().trim().min(3).max(150),
-  tax_id: TaxId,
-  legal_form: CompanyLegalForm,
-  municipality_id: z.number().int().positive(),
-  vehicle_count: z.number().int().min(1).max(1000),
-  contact_first_name: z.string().trim().min(1).max(80),
-  contact_last_name: z.string().trim().min(1).max(80),
-  contact_email: z.string().trim().toLowerCase().email().max(254),
-  contact_phone: Phone,
-  documents: z.array(AffiliationDocumentInput).min(1).max(4),
-});
+export const CreateAffiliationApplicationDTO = z
+  .object({
+    legal_name: z.string().trim().min(3).max(150),
+    public_name: CompanyPublicName.optional(),
+    tax_id: TaxId,
+    legal_form: CompanyLegalForm,
+    municipality_id: z.number().int().positive(),
+    vehicle_count: z.number().int().min(1).max(1000),
+    contact_first_name: z.string().trim().min(1).max(80),
+    contact_last_name: z.string().trim().min(1).max(80),
+    contact_email: z.string().trim().toLowerCase().email().max(254),
+    contact_phone: Phone,
+    service_types: z.array(ActivatableServiceType).min(1).max(3).default(['taxi']),
+    documents: z.array(AffiliationDocumentInput).min(1).max(4),
+  })
+  .refine((d) => new Set(d.service_types).size === d.service_types.length, {
+    message: 'Los servicios no pueden repetirse',
+    path: ['service_types'],
+  });
 export type CreateAffiliationApplicationDTO = z.infer<typeof CreateAffiliationApplicationDTO>;
 
 export const AffiliationApplicationCreated = z.object({
@@ -127,6 +162,7 @@ export type PlatformCompanyStatusFilter = z.infer<typeof PlatformCompanyStatusFi
 
 export const PlatformCompanyQuery = z.object({
   status: PlatformCompanyStatusFilter.default('pending'),
+  municipality_id: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().positive().max(OPS_LIST_MAX_LIMIT).default(OPS_LIST_DEFAULT_LIMIT),
 });
 export type PlatformCompanyQuery = z.infer<typeof PlatformCompanyQuery>;
@@ -139,6 +175,11 @@ export const PlatformCompanyRow = z.object({
   municipality_id: z.number().int().positive(),
   municipality_name: z.string(),
   municipality_already_covered: z.boolean(),
+  municipality_dane_code: DaneCode.nullable(),
+  municipality_coverage_active: z.boolean(),
+  display_name: z.string(),
+  service_types: z.array(ServiceType),
+  coverage_pending_since: z.string().datetime().nullable(),
   vehicle_count: z.number().int().nullable(),
   contact_email: z.string().nullable(),
   submitted_at: z.string().datetime(),
@@ -175,6 +216,14 @@ export const PlatformCompanyDetail = PlatformCompanyRow.extend({
   legal_form: z.string(),
   municipality_department: z.string(),
   municipality_active_company_name: z.string().nullable(),
+  public_name: z.string().nullable(),
+  municipality_active_companies: z.array(
+    z.object({ company_id: z.number().int().positive(), legal_name: z.string() }),
+  ),
+  municipality_fares: z.array(
+    z.object({ service_type: ServiceType, fare: MunicipalityFare.nullable() }),
+  ),
+  commission: CompanyCommission.nullable(),
   contact_first_name: z.string().nullable(),
   contact_last_name: z.string().nullable(),
   contact_phone: z.string().nullable(),
@@ -187,14 +236,13 @@ export const ApproveCompanyInitialFare = z.object({
   base_fare: BaseFareCop,
   night_surcharge_pct: SurchargePct.optional(),
   holiday_surcharge_pct: SurchargePct.optional(),
-  commission_pct: SurchargePct.optional(),
 });
 export type ApproveCompanyInitialFare = z.infer<typeof ApproveCompanyInitialFare>;
 
 export const ApproveCompanyDTO = z.object({
-  initial_fare: ApproveCompanyInitialFare,
+  initial_fare: ApproveCompanyInitialFare.optional(),
+  commission_pct: CommissionPct,
   note: z.string().trim().max(500).optional(),
-  acknowledge_routing_limitation: z.literal(true).optional(),
 });
 export type ApproveCompanyDTO = z.infer<typeof ApproveCompanyDTO>;
 
@@ -217,7 +265,15 @@ export const CompanyNotificationResult = z.object({
 export type CompanyNotificationResult = z.infer<typeof CompanyNotificationResult>;
 
 export const CompanyProvisioningResult = z.object({
-  fare_config_id: z.number().int().positive(),
+  fare_config_id: z.number().int().positive().nullable(),
+  municipality_fares: z.array(
+    z.object({
+      service_type: ServiceType,
+      municipality_fare_id: z.number().int().positive(),
+      created: z.boolean(),
+    }),
+  ),
+  company_commission_id: z.number().int().positive(),
   admin_user_id: z.number().int().positive(),
   admin_email: z.string(),
 });
@@ -229,6 +285,7 @@ export const CompanyDecisionResponse = z.object({
   decision: CompanyDecision,
   decided_at: z.string().datetime(),
   acknowledged_routing_limitation: z.boolean(),
+  municipality_coverage_active: z.boolean(),
   notification: CompanyNotificationResult,
   provisioning: CompanyProvisioningResult.nullable(),
 });
@@ -255,6 +312,7 @@ export const AffiliationErrorCode = z.enum([
   'AFFILIATION_LINK_INVALID',
   'AFFILIATION_LINK_EXPIRED',
   'DOCUMENT_STORAGE_UNAVAILABLE',
+  'SERVICE_NOT_AVAILABLE',
 ]);
 export type AffiliationErrorCode = z.infer<typeof AffiliationErrorCode>;
 
@@ -272,6 +330,8 @@ export const PlatformErrorCode = z.enum([
   'MUNICIPALITY_ALREADY_COVERED',
   'CONTACT_ACCOUNT_CONFLICT',
   'NO_DECISION_TO_RESEND',
+  'MUNICIPALITY_FARE_REQUIRED',
+  'SERVICE_NOT_AVAILABLE',
 ]);
 export type PlatformErrorCode = z.infer<typeof PlatformErrorCode>;
 

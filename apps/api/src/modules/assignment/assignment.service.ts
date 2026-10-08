@@ -375,6 +375,7 @@ export class AssignmentService {
         model: row.model,
         contact_phone: null,
         eta: null,
+        company: { company_id: companyId, display_name: '' },
       };
     }
 
@@ -396,6 +397,7 @@ export class AssignmentService {
       model: row.model,
       contact_phone: row.phone,
       eta,
+      company: { company_id: companyId, display_name: '' },
     };
   }
 

@@ -55,6 +55,11 @@ export class PlatformCompanyService {
         municipality_id: r.municipalityId,
         municipality_name: r.municipalityName,
         municipality_already_covered: r.municipalityAlreadyCovered,
+        municipality_dane_code: null,
+        municipality_coverage_active: true,
+        display_name: r.legalName,
+        service_types: ['taxi'],
+        coverage_pending_since: null,
         vehicle_count: r.vehicleCount,
         contact_email: r.contactEmail,
         submitted_at: r.submittedAt.toISOString(),
@@ -106,6 +111,11 @@ export class PlatformCompanyService {
       municipality_id: row.municipalityId,
       municipality_name: row.municipalityName,
       municipality_already_covered: row.municipalityAlreadyCovered,
+      municipality_dane_code: null,
+      municipality_coverage_active: true,
+      display_name: row.legalName,
+      service_types: ['taxi'],
+      coverage_pending_since: null,
       vehicle_count: row.vehicleCount,
       contact_email: row.contactEmail,
       submitted_at: row.submittedAt.toISOString(),
@@ -113,6 +123,10 @@ export class PlatformCompanyService {
       legal_form: row.legalForm,
       municipality_department: row.municipalityDepartment,
       municipality_active_company_name: conflictName,
+      public_name: null,
+      municipality_active_companies: [],
+      municipality_fares: [],
+      commission: null,
       contact_first_name: row.contactFirstName,
       contact_last_name: row.contactLastName,
       contact_phone: row.contactPhone,
@@ -151,26 +165,13 @@ export class PlatformCompanyService {
         });
       }
 
-      const conflictCompanyId = await this.activeCompanies.resolve(activated.municipalityId, {
-        tx,
-        excludeCompanyId: activated.companyId,
-      });
-
-      let conflictName: string | null = null;
-      if (conflictCompanyId !== null) {
-        const conflict = await tx.company.findUnique({
-          where: { companyId: conflictCompanyId },
-          select: { legalName: true },
+      if (!dto.initial_fare) {
+        throw new ConflictException({
+          code: 'MUNICIPALITY_FARE_REQUIRED',
+          message: 'El municipio no tiene tarifa: indica la tarifa inicial',
         });
-        conflictName = conflict?.legalName ?? null;
-        if (!dto.acknowledge_routing_limitation) {
-          throw new ConflictException({
-            code: 'MUNICIPALITY_ALREADY_COVERED',
-            message: `Este municipio ya tiene una empresa activa (${conflictName ?? 'otra empresa'})`,
-            municipality_active_company_name: conflictName ?? undefined,
-          });
-        }
       }
+      const initialFare = dto.initial_fare;
 
       await this.repo.setTenantSession(tx, activated.companyId);
       await this.repo.markAllDocumentsVerified(tx, activated.companyId, platformAdminUserId);
@@ -181,10 +182,10 @@ export class PlatformCompanyService {
           tx,
           activated.companyId,
           {
-            baseFare: dto.initial_fare.base_fare,
-            nightSurchargePct: dto.initial_fare.night_surcharge_pct,
-            holidaySurchargePct: dto.initial_fare.holiday_surcharge_pct,
-            commissionPct: dto.initial_fare.commission_pct,
+            baseFare: initialFare.base_fare,
+            nightSurchargePct: initialFare.night_surcharge_pct,
+            holidaySurchargePct: initialFare.holiday_surcharge_pct,
+            commissionPct: dto.commission_pct,
           },
           defaultParams,
           {
@@ -206,19 +207,18 @@ export class PlatformCompanyService {
         throw error;
       }
 
-      const acknowledged = conflictCompanyId !== null && dto.acknowledge_routing_limitation === true;
       const review = await this.repo.createReview(tx, {
         companyId: activated.companyId,
         decision: 'approved',
         note: dto.note ?? null,
-        acknowledgedRoutingLimitation: acknowledged,
-        municipalityActiveCompanyId: conflictCompanyId,
-        municipalityActiveCompanyName: conflictName,
+        acknowledgedRoutingLimitation: false,
+        municipalityActiveCompanyId: null,
+        municipalityActiveCompanyName: null,
         requestedDocumentTypes: [],
         reviewedBy: platformAdminUserId,
       });
 
-      return { activated, finished, review, acknowledged };
+      return { activated, finished, review };
     });
 
     const delivery = await this.sendSafely(() =>
@@ -234,10 +234,13 @@ export class PlatformCompanyService {
       status: 'active',
       decision: 'approved',
       decided_at: outcome.review.createdAt.toISOString(),
-      acknowledged_routing_limitation: outcome.acknowledged,
+      acknowledged_routing_limitation: false,
+      municipality_coverage_active: true,
       notification: { channel: 'email', to: outcome.finished.adminEmail, delivery },
       provisioning: {
         fare_config_id: outcome.finished.fareConfigId,
+        municipality_fares: [],
+        company_commission_id: 0,
         admin_user_id: outcome.finished.adminUserId,
         admin_email: outcome.finished.adminEmail,
       },
@@ -289,6 +292,7 @@ export class PlatformCompanyService {
       decision: 'documents_requested',
       decided_at: outcome.review.createdAt.toISOString(),
       acknowledged_routing_limitation: false,
+      municipality_coverage_active: true,
       notification: { channel: 'email', to: outcome.company.contactEmail ?? '', delivery },
       provisioning: null,
     };
@@ -337,6 +341,7 @@ export class PlatformCompanyService {
       decision: 'rejected',
       decided_at: outcome.review.createdAt.toISOString(),
       acknowledged_routing_limitation: false,
+      municipality_coverage_active: true,
       notification: { channel: 'email', to: outcome.rejected.contactEmail ?? '', delivery },
       provisioning: null,
     };

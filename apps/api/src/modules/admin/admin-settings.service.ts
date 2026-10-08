@@ -194,6 +194,17 @@ export class AdminSettingsService {
       expansion_radius_km: resolved.expansionRadiusKm.value,
       acceptance_timeout_sec: resolved.acceptanceTimeoutSec.value,
       updated_at: lastChangeMs === 0 ? null : new Date(lastChangeMs).toISOString(),
+      read_only: true,
+      service_type: 'taxi',
+      fare_is_official: false,
+      fare_official_reference: null,
+      fare_valid_from: null,
+      max_auto_retries: this.env.get('MAX_AUTO_RETRIES'),
+      tiebreak_window_hours: this.env.get('TIEBREAK_WINDOW_HOURS'),
+      location_stale_min: this.env.get('LOCATION_STALE_MIN'),
+      avg_speed_kmh: this.env.get('AVG_SPEED_KMH'),
+      cancellation_window_min: this.env.get('CANCELLATION_WINDOW_MIN'),
+      no_show_grace_min: this.env.get('NO_SHOW_GRACE_MIN'),
     };
   }
 }

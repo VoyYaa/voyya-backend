@@ -45,7 +45,13 @@ export class AffiliationService {
         name: r.name,
         department: r.department,
         already_covered: r.alreadyCovered,
+        has_active_companies: r.alreadyCovered,
+        dane_code: '00000',
+        department_code: '00',
+        coverage_active: true,
       })),
+      source: { name: 'pending', cut_date: '1970-01-01', attribution: '', license: '' },
+      active_service_types: ['taxi'],
     };
   }
 

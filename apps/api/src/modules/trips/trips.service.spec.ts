@@ -317,6 +317,7 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
     model: 'Logan',
     contact_phone: '3001234567',
     eta: null,
+    company: { company_id: 1, display_name: 'Cootrayal' },
   };
 
   it('pending -> driver null, ui "searching", closed fare', async () => {
@@ -416,6 +417,7 @@ describe('TripsService.getActive (GET /trips/active)', () => {
     model: 'Logan',
     contact_phone: '3001234567',
     eta: null,
+    company: { company_id: 1, display_name: 'Cootrayal' },
   };
 
   it('no active trip -> { active_trip: null }', async () => {

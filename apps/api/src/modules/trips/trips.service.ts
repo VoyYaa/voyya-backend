@@ -288,6 +288,8 @@ export class TripsService {
       trip_request_id: t.tripRequestId,
       status: t.status,
       ui: passengerUiState(t.status, t.arrivedAt),
+      service_type: t.serviceType,
+      requested_company: null,
       fare: await this.rebuildFare(t),
       driver,
       arrived_at: t.arrivedAt ? t.arrivedAt.toISOString() : null,

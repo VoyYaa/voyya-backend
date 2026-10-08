@@ -22,6 +22,7 @@ function dto(overrides: Partial<CreateAffiliationApplicationDTO> = {}): CreateAf
     contact_last_name: 'Pérez',
     contact_email: 'contacto@cootrayal.test',
     contact_phone: '3001234567',
+    service_types: ['taxi'],
     documents: REQUIRED_COMPANY_DOCUMENT_TYPES.map((type) => ({
       type,
       storage_key: `staging/2026/01/01/${type}-uuid.pdf`,
