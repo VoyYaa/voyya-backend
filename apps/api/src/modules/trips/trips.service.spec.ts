@@ -5,7 +5,6 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
-import { Prisma } from '@prisma/client';
 import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
@@ -53,15 +52,12 @@ interface FakeTripRequest {
 interface FakeState {
   covered?: boolean;
   active?: boolean;
-  activeRow?: FakeTripRequest | null;
-  createRaces?: boolean;
   tripRequest?: FakeTripRequest | null;
   summary?: AssignedDriverSummary | null;
   tripClosingRejected?: boolean;
 }
 
 function fakeRepo(state: FakeState): TripsRepository {
-  let activeLookups = 0;
   return {
     async isPointInCoverage(): Promise<boolean> {
       return state.covered ?? true;
@@ -74,19 +70,10 @@ function fakeRepo(state: FakeState): TripsRepository {
         commissionPct: 8,
       };
     },
-    async findActiveTripRequest(): Promise<unknown> {
-      activeLookups += 1;
-      if (state.createRaces && activeLookups === 1) return null;
-      if (state.activeRow) return state.activeRow;
-      return state.active ? { tripRequestId: 77, status: 'driver_en_route' } : null;
+    async hasActiveTripRequest(): Promise<boolean> {
+      return state.active ?? false;
     },
     async createTripRequest(): Promise<unknown> {
-      if (state.createRaces) {
-        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
-          code: 'P2002',
-          clientVersion: 'test',
-        });
-      }
       return {
         tripRequestId: 123,
         passengerId: 1,
@@ -220,48 +207,10 @@ describe('TripsService.create', () => {
     expect(emitter.emit).toHaveBeenCalledWith('trip_request.created', expect.anything());
   });
 
-  it('idempotency: active trip request already exists -> 409 ACTIVE_TRIP_REQUEST_EXISTS with the active_trip reference', async () => {
+  it('idempotency: active trip request already exists -> 409 ACTIVE_TRIP_REQUEST_EXISTS', async () => {
     const { service } = createService({ covered: true, active: true });
-    const error = await service
-      .create(dtoWith(await validToken(service)), 1)
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ConflictException);
-    expect((error as ConflictException).getResponse()).toEqual({
-      code: 'ACTIVE_TRIP_REQUEST_EXISTS',
-      message: 'Ya tienes un viaje en curso',
-      active_trip: { trip_request_id: 77, status: 'driver_en_route' },
-    });
-  });
-
-  it('race: the unique index rejects the insert -> same 409 with the winner reference, never a 500', async () => {
-    const { service, emitter } = createService({
-      covered: true,
-      createRaces: true,
-      activeRow: {
-        tripRequestId: 88,
-        passengerId: 1,
-        status: 'pending_assignment',
-        assignedAt: null,
-        updatedAt: new Date(),
-      },
-    });
-    const error = await service
-      .create(dtoWith(await validToken(service)), 1)
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(ConflictException);
-    expect((error as ConflictException).getResponse()).toMatchObject({
-      code: 'ACTIVE_TRIP_REQUEST_EXISTS',
-      active_trip: { trip_request_id: 88, status: 'pending_assignment' },
-    });
-    expect(emitter.emit).not.toHaveBeenCalled();
-  });
-
-  it('a unique violation with no visible winner is rethrown, not disguised as a conflict', async () => {
-    const { service } = createService({ covered: true });
-    const token = await validToken(service);
-    const failing = createService({ covered: true, createRaces: true, activeRow: null });
-    await expect(failing.service.create(dtoWith(token), 1)).rejects.toBeInstanceOf(
-      Prisma.PrismaClientKnownRequestError,
+    await expect(service.create(dtoWith(await validToken(service)), 1)).rejects.toBeInstanceOf(
+      ConflictException,
     );
   });
 
@@ -395,86 +344,6 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
   });
 });
 
-describe('TripsService.getActive (GET /trips/active)', () => {
-  const activeRow = (over: Partial<FakeTripRequest> = {}): FakeTripRequest => ({
-    tripRequestId: 9,
-    passengerId: 1,
-    status: 'driver_en_route',
-    assignedAt: new Date(),
-    arrivedAt: null,
-    updatedAt: new Date(),
-    municipalityId: 1,
-    serviceType: 'taxi',
-    fare: 8000,
-    commission: 640,
-    requestedAt: new Date(),
-    ...over,
-  });
-  const SUMMARY: AssignedDriverSummary = {
-    name: 'Carlos Ruiz',
-    plate: 'ABC123',
-    model: 'Logan',
-    contact_phone: '3001234567',
-    eta: null,
-  };
-
-  it('no active trip -> { active_trip: null }', async () => {
-    const { service } = createService({});
-    await expect(service.getActive(1)).resolves.toEqual({ active_trip: null });
-  });
-
-  it('active trip -> the same TripRequestStatus as GET /trips/:id', async () => {
-    const { service, assignment } = createService({ activeRow: activeRow(), summary: SUMMARY });
-    const r = await service.getActive(1);
-    expect(r.active_trip).toMatchObject({
-      trip_request_id: 9,
-      status: 'driver_en_route',
-      ui: 'driver_en_route',
-      driver: SUMMARY,
-    });
-    expect(assignment.getAssignedDriverSummary).toHaveBeenCalledWith(9, true);
-  });
-
-  it('active trip carries free_cancellation_until (assignedAt + window) and server_time', async () => {
-    const assignedAt = new Date(Date.now() - 30_000);
-    const { service } = createService({
-      activeRow: activeRow({ assignedAt, updatedAt: new Date() }),
-      summary: SUMMARY,
-    });
-    const r = await service.getActive(1);
-    expect(r.active_trip?.free_cancellation_until).toBe(
-      new Date(assignedAt.getTime() + 2 * 60_000).toISOString(),
-    );
-    expect(Math.abs(Date.now() - new Date(r.active_trip?.server_time ?? 0).getTime())).toBeLessThan(5_000);
-  });
-
-  it('pending trip -> free_cancellation_until is null', async () => {
-    const { service } = createService({
-      activeRow: activeRow({ status: 'pending_assignment', assignedAt: null }),
-    });
-    const r = await service.getActive(1);
-    expect(r.active_trip?.free_cancellation_until).toBeNull();
-  });
-
-  it('in_progress trip -> free_cancellation_until is null', async () => {
-    const { service } = createService({
-      activeRow: activeRow({ status: 'in_progress' }),
-      summary: SUMMARY,
-    });
-    const r = await service.getActive(1);
-    expect(r.active_trip?.free_cancellation_until).toBeNull();
-  });
-
-  it('pending trip -> ui searching and no driver lookup', async () => {
-    const { service, assignment } = createService({
-      activeRow: activeRow({ status: 'pending_assignment', assignedAt: null }),
-    });
-    const r = await service.getActive(1);
-    expect(r.active_trip?.ui).toBe('searching');
-    expect(assignment.getAssignedDriverSummary).not.toHaveBeenCalled();
-  });
-});
-
 describe('TripsService.cancel (free window from assignedAt)', () => {
   const minutesAgo = (m: number): Date => new Date(Date.now() - m * 60_000);
   const tr = (over: Partial<FakeTripRequest>): FakeTripRequest => ({
@@ -533,26 +402,5 @@ describe('TripsService.cancel (free window from assignedAt)', () => {
       tripClosingRejected: true,
     });
     await expect(service.cancel(5, 1, {})).rejects.toBeInstanceOf(ConflictException);
-  });
-  describe('boundary matches free_cancellation_until', () => {
-    const ASSIGNED = new Date('2026-10-08T15:00:00.000Z');
-    const DEADLINE_MS = ASSIGNED.getTime() + 2 * 60_000;
-
-    beforeEach(() => jest.useFakeTimers());
-    afterEach(() => jest.useRealTimers());
-
-    it.each([
-      ['exactly at the deadline', DEADLINE_MS, true],
-      ['1 ms before the deadline', DEADLINE_MS - 1, true],
-      ['1 ms after the deadline', DEADLINE_MS + 1, false],
-    ])('cancel %s -> free_of_charge=%s', async (_label, nowMs, expectedFree) => {
-      jest.setSystemTime(nowMs);
-      const { service } = createService({
-        tripRequest: tr({ assignedAt: ASSIGNED, updatedAt: ASSIGNED }),
-      });
-      const r = await service.cancel(5, 1, {});
-      expect(r.free_of_charge).toBe(expectedFree);
-      expect(r.penalty_recorded).toBe(!expectedFree);
-    });
   });
 });

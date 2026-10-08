@@ -1,7 +1,3 @@
-import {
-  DRIVER_LOCATION_RETENTION_MAX_HOURS,
-  TRIP_COORDINATES_RETENTION_DAYS,
-} from '@voyyaa/shared';
 import { z } from 'zod';
 import { isHttpsOrigin, parseCorsOrigins } from './cors-origins';
 
@@ -39,7 +35,7 @@ const BaseEnvSchema = z.object({
 
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_BLOCK_MINUTES: z.coerce.number().int().positive().default(15),
-  DRIVER_TEMPORARY_PIN_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(72),
+  DRIVER_PIN_LENGTH: z.coerce.number().int().min(4).max(6).default(6),
 
   AUTH_DEV_HEADERS: z
     .enum(['true', 'false'])
@@ -76,11 +72,6 @@ const BaseEnvSchema = z.object({
   NO_SHOW_GRACE_MIN: z.coerce.number().positive().default(5),
   LOCATION_STALE_MIN: z.coerce.number().nonnegative().default(15),
   LOCATION_PURGE_HOURS: z.coerce.number().nonnegative().default(12),
-  TRIP_COORDINATES_RETENTION_DAYS: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .default(TRIP_COORDINATES_RETENTION_DAYS),
 
   DOCUMENT_STORAGE_ROOT: z.string().min(1).optional(),
   API_PUBLIC_URL: z.string().url(),
@@ -135,21 +126,6 @@ export const EnvSchema = BaseEnvSchema.superRefine((env, ctx) => {
   }
 
   if (isProduction) {
-    const maxPurgeHours = DRIVER_LOCATION_RETENTION_MAX_HOURS - 1;
-    if (env.LOCATION_PURGE_HOURS < 1 || env.LOCATION_PURGE_HOURS > maxPurgeHours) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['LOCATION_PURGE_HOURS'],
-        message: `LOCATION_PURGE_HOURS debe estar entre 1 y ${maxPurgeHours} en producción (el aviso promete borrar a más tardar ${DRIVER_LOCATION_RETENTION_MAX_HOURS} horas)`,
-      });
-    }
-    if (env.TRIP_COORDINATES_RETENTION_DAYS !== TRIP_COORDINATES_RETENTION_DAYS) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['TRIP_COORDINATES_RETENTION_DAYS'],
-        message: `TRIP_COORDINATES_RETENTION_DAYS debe ser ${TRIP_COORDINATES_RETENTION_DAYS} en producción (el aviso promete ese plazo)`,
-      });
-    }
     const origins = parseCorsOrigins(env.CORS_ORIGINS);
     if (origins.length === 0 || !origins.every(isHttpsOrigin)) {
       ctx.addIssue({

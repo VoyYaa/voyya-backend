@@ -46,7 +46,6 @@ export class CandidateRepository {
       FROM fleet.driver d
       WHERE d.company_id = ${q.companyId}
         AND d.status = 'available'
-        AND d.pin_must_change = false
         AND d.current_vehicle_id IS NOT NULL
         AND d.current_location IS NOT NULL
         AND ST_DWithin(d.current_location, ${point}, ${radiusMeters})

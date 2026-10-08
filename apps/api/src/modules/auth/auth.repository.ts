@@ -26,14 +26,6 @@ export interface AuthDriver {
   lastName: string;
   accountStatus: string;
   pinDeliveredAt: Date | null;
-  pinMustChange: boolean;
-  temporaryPinExpiresAt: Date | null;
-}
-
-export interface DriverSessionState {
-  companyId: number;
-  status: string;
-  pinMustChange: boolean;
 }
 
 export interface CompanyIdentity {
@@ -105,8 +97,6 @@ export class AuthRepository {
             failedAttempts: true,
             blockedUntil: true,
             pinDeliveredAt: true,
-            pinMustChange: true,
-            temporaryPinExpiresAt: true,
             user: { select: { firstName: true, lastName: true, accountStatus: true } },
           },
         }),
@@ -123,20 +113,18 @@ export class AuthRepository {
           lastName: d.user.lastName,
           accountStatus: d.user.accountStatus,
           pinDeliveredAt: d.pinDeliveredAt,
-          pinMustChange: d.pinMustChange,
-          temporaryPinExpiresAt: d.temporaryPinExpiresAt,
         };
       }
     }
     return null;
   }
 
-  async getDriverCompany(driverId: number): Promise<DriverSessionState | null> {
+  async getDriverCompany(driverId: number): Promise<{ companyId: number; status: string } | null> {
     for (const companyId of await this.activeCompanyIds()) {
       const d = await this.prisma.runInTenant(companyId, (tx) =>
         tx.driver.findFirst({
           where: { driverId, companyId },
-          select: { companyId: true, status: true, pinMustChange: true },
+          select: { companyId: true, status: true },
         }),
       );
       if (d) return d;

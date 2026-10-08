@@ -72,7 +72,7 @@ export const PendingCashTrip = z.object({
   trip_request_id: z.number().int().positive(),
   finished_at: z.string().datetime(),
   fare: AmountCop,
-  dropoff_address: z.string().nullable(),
+  dropoff_address: z.string(),
 });
 export type PendingCashTrip = z.infer<typeof PendingCashTrip>;
 
@@ -84,7 +84,6 @@ export const DriverErrorCode = z.enum([
   'DRIVER_NOT_ELIGIBLE',
   'ACTIVE_TRIP_IN_PROGRESS',
   'NOT_ON_SHIFT',
-  'LOCATION_CONSENT_REQUIRED',
 ]);
 export type DriverErrorCode = z.infer<typeof DriverErrorCode>;
 

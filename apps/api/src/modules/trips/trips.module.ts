@@ -3,7 +3,6 @@ import { AssignmentModule } from '../assignment/assignment.module';
 import { ColombiaHolidaysService } from './holidays/colombia-holidays.service';
 import { HOLIDAYS_PROVIDER } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
-import { TripCoordinatesPurgeService } from './trip-coordinates-purge.service';
 import { TripLifecycleController } from './trip-lifecycle.controller';
 import { TripLifecycleService } from './trip-lifecycle.service';
 import { TripsController } from './trips.controller';
@@ -18,7 +17,6 @@ import { TripsService } from './trips.service';
     TripsRepository,
     QuoteTokenService,
     TripLifecycleService,
-    TripCoordinatesPurgeService,
     { provide: HOLIDAYS_PROVIDER, useClass: ColombiaHolidaysService },
   ],
   exports: [TripsService],

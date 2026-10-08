@@ -1,7 +1,5 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
-import type { Prisma } from '@prisma/client';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import type {
-  ConsentStatus,
   DriverHomeState,
   DriverShiftState,
   DriverTripView,
@@ -10,7 +8,6 @@ import type {
   UpdateDriverShiftDTO,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { ConsentQueryService } from '../auth/consent-query.service';
 import { DriverRepository, type DriverShiftRow } from './driver.repository';
 import { OperationalParamsService } from './operational-params.service';
 
@@ -20,7 +17,6 @@ export class DriverShiftService {
     private readonly prisma: PrismaService,
     private readonly repo: DriverRepository,
     private readonly params: OperationalParamsService,
-    private readonly consents: ConsentQueryService,
   ) {}
 
   async updateShift(
@@ -39,7 +35,7 @@ export class DriverShiftService {
     companyId: number,
     dto: ReportDriverLocationDTO,
   ): Promise<void> {
-    const ok = await this.withLocationConsent(driverId, companyId, { currentVersion: false }, (tx) =>
+    const ok = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.reportLocation(tx, driverId, companyId, dto.lat, dto.lng),
     );
     if (!ok) {
@@ -97,7 +93,7 @@ export class DriverShiftService {
     lat: number,
     lng: number,
   ): Promise<DriverShiftState> {
-    const row = await this.withLocationConsent(driverId, companyId, { currentVersion: true }, (tx) =>
+    const row = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.startShift(tx, driverId, companyId, lat, lng),
     );
     if (row) return toShiftState(row);
@@ -115,7 +111,7 @@ export class DriverShiftService {
       });
     }
     if (current.status === 'on_trip') {
-      const refreshed = await this.withLocationConsent(driverId, companyId, { currentVersion: true }, (tx) =>
+      const refreshed = await this.prisma.runInTenant(companyId, (tx) =>
         this.repo.refreshLocationWhileOnTrip(tx, driverId, companyId, lat, lng),
       );
       return toShiftState(refreshed ?? current);
@@ -147,33 +143,11 @@ export class DriverShiftService {
     return toShiftState(current);
   }
 
-  private withLocationConsent<T>(
-    driverId: number,
-    companyId: number,
-    options: { currentVersion: boolean },
-    write: (tx: Prisma.TransactionClient) => Promise<T>,
-  ): Promise<T> {
-    return this.prisma.runInTenant(companyId, async (tx) => {
-      const status = await this.consents.locationStatusLocked(tx, driverId);
-      if (!isLocationConsentAccepted(status, options.currentVersion)) {
-        throw new ForbiddenException({
-          code: 'LOCATION_CONSENT_REQUIRED',
-          message: 'Acepta el aviso de ubicación para poder compartirla.',
-        });
-      }
-      return write(tx);
-    });
-  }
-
   private async noShowGraceMinFor(companyId: number): Promise<number> {
     const municipalityId = await this.repo.getCompanyMunicipality(companyId);
     if (municipalityId === null) return 0;
     return (await this.params.get(municipalityId)).noShowGraceMin;
   }
-}
-
-function isLocationConsentAccepted(status: ConsentStatus, currentVersion: boolean): boolean {
-  return status.state === 'granted' && !(currentVersion && status.requires_acceptance);
 }
 
 function toShiftState(row: DriverShiftRow): DriverShiftState {

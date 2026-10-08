@@ -5,7 +5,6 @@ export interface AuthenticatedUser {
   userId: number;
   role: Role;
   companyId?: number;
-  pinChangeRequired?: boolean;
 }
 
 export interface RequestWithTenant extends Request {

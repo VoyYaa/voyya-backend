@@ -11,12 +11,9 @@ export interface ResolveActiveCompanyOptions {
   excludeCompanyId?: number;
 }
 
-const MULTIPLE_ACTIVE_WARN_WINDOW_MS = 60 * 60_000;
-
 @Injectable()
 export class ActiveCompanyResolver {
   private readonly logger = new Logger(ActiveCompanyResolver.name);
-  private readonly lastWarnedAt = new Map<number, number>();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -35,18 +32,11 @@ export class ActiveCompanyResolver {
       take: 2,
     });
     if (companies.length > 1) {
-      this.warnOncePerWindow(municipalityId, companies.map((c) => c.companyId));
+      this.logger.error(
+        `Multiple active companies in municipality=${municipalityId}: ` +
+          companies.map((c) => c.companyId).join(','),
+      );
     }
     return companies[0]?.companyId ?? null;
-  }
-
-  private warnOncePerWindow(municipalityId: number, companyIds: number[]): void {
-    const now = Date.now();
-    const last = this.lastWarnedAt.get(municipalityId);
-    if (last !== undefined && now - last < MULTIPLE_ACTIVE_WARN_WINDOW_MS) return;
-    this.lastWarnedAt.set(municipalityId, now);
-    this.logger.warn(
-      `Multiple active companies in municipality=${municipalityId}: ${companyIds.join(',')}`,
-    );
   }
 }

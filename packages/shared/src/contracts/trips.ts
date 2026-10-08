@@ -158,22 +158,9 @@ export const TripRequestStatus = z.object({
   fare: FareBreakdown,
   driver: AssignedDriverSummary.nullable(),
   arrived_at: z.string().datetime().nullable(),
-  free_cancellation_until: z.string().datetime().nullable(),
   updated_at: z.string().datetime(),
-  server_time: z.string().datetime(),
 });
 export type TripRequestStatus = z.infer<typeof TripRequestStatus>;
-
-export const ActiveTripRef = z.object({
-  trip_request_id: z.number().int().positive(),
-  status: TripStatus,
-});
-export type ActiveTripRef = z.infer<typeof ActiveTripRef>;
-
-export const ActiveTripResponse = z.object({
-  active_trip: TripRequestStatus.nullable(),
-});
-export type ActiveTripResponse = z.infer<typeof ActiveTripResponse>;
 
 export const TripErrorCode = z.enum([
   'OUT_OF_COVERAGE',
@@ -196,7 +183,6 @@ export const TripError = z.object({
   code: TripErrorCode,
   message: z.string(),
   remaining_seconds: z.number().int().nonnegative().optional(),
-  active_trip: ActiveTripRef.optional(),
 });
 export type TripError = z.infer<typeof TripError>;
 

@@ -3,7 +3,6 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
-import { grantLocationConsent } from './support/grant-location-consent';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -115,8 +114,6 @@ suite('Driver + trip lifecycle over real HTTP (TenantGuard + Roles + Zod + Postg
       create: { firstName: '_Http', lastName: 'Driver2', phone: `_http-${runId}-d2`, role: 'driver' },
     });
     driver2Id = driver2User.userId;
-    await grantLocationConsent(prisma, driver1Id);
-    await grantLocationConsent(prisma, driver2Id);
 
     await prisma.runInTenant(companyId, (tx) =>
       tx.driver.upsert({

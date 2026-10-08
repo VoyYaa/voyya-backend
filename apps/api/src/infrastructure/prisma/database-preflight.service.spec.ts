@@ -10,7 +10,6 @@ function baseResult(overrides: Partial<Record<string, boolean>> = {}): Record<st
     hasGeoColumns: true,
     hasSingleTakeIndex: true,
     hasForcedRls: true,
-    hasSafeTripProbe: true,
     ...overrides,
   };
 }
@@ -58,27 +57,6 @@ describe('DatabasePreflightService — hasForcedRls threshold (ADR-018: 3 -> 5 t
   it('non-production + hasForcedRls=false -> does not throw, but reports unhealthy', async () => {
     const service = new DatabasePreflightService(
       fakePrisma(baseResult({ hasForcedRls: false })),
-      fakeEnv('development'),
-    );
-
-    await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
-    expect(service.isHealthy()).toBe(false);
-  });
-});
-
-describe('DatabasePreflightService — hasSafeTripProbe (CM-14)', () => {
-  it('unsafe trip probe in production -> aborts startup naming the invariant', async () => {
-    const service = new DatabasePreflightService(
-      fakePrisma(baseResult({ hasSafeTripProbe: false })),
-      fakeEnv('production'),
-    );
-
-    await expect(service.onApplicationBootstrap()).rejects.toThrow(/has_safe_trip_probe/);
-  });
-
-  it('unsafe trip probe outside production -> reports unhealthy without throwing', async () => {
-    const service = new DatabasePreflightService(
-      fakePrisma(baseResult({ hasSafeTripProbe: false })),
       fakeEnv('development'),
     );
 

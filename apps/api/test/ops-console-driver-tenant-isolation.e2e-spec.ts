@@ -62,10 +62,10 @@ suite('Ops/Admin console — driver reads and writes never cross company_id, eve
     jwt = moduleRef.get(JwtService, { strict: false });
 
     const municipality = await prisma.municipality.upsert({
-      where: { municipalityId: 9213 },
+      where: { municipalityId: 9161 },
       update: {},
       create: {
-        municipalityId: 9213,
+        municipalityId: 9161,
         name: '_TenantDriverMuni',
         department: 'Test',
         coveragePolygon: poly,

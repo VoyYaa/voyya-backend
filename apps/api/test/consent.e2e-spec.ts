@@ -70,7 +70,7 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
     expect(res.body).toMatchObject({ code: 'SESSION_REQUIRED' });
   });
 
-  it('POST /consents grants a consent and returns its status as 200 (idempotent, not 201)', async () => {
+  it('POST /consents grants a consent and returns it as 200 (idempotent, not 201)', async () => {
     const res = await request(app.getHttpServer())
       .post('/consents')
       .set(headers(passengerAId))
@@ -79,11 +79,7 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       purpose: 'location',
-      state: 'granted',
       notice_version: LOCATION_NOTICE_VERSION,
-      current_notice_version: LOCATION_NOTICE_VERSION,
-      requires_acceptance: false,
-      revoked_at: null,
     });
     expect(res.body.granted_at).toEqual(expect.any(String));
   });
@@ -102,11 +98,6 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
     expect(second.status).toBe(200);
 
     expect(second.body.granted_at).toBe(first.body.granted_at);
-
-    const ledger = await prisma.consentRecord.count({
-      where: { userId: passengerBId, purpose: 'location', noticeVersion: LOCATION_NOTICE_VERSION },
-    });
-    expect(ledger).toBe(1);
   });
 
   it('GET /consents returns only the requesting user consents', async () => {
@@ -118,7 +109,6 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
     expect(res.body).toHaveLength(1);
     expect(res.body[0]).toMatchObject({
       purpose: 'location',
-      state: 'granted',
       notice_version: LOCATION_NOTICE_VERSION,
     });
   });
@@ -145,38 +135,41 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
       create: { passengerId: userE.userId },
     });
 
+    const versionD = `${LOCATION_NOTICE_VERSION}-d`;
+    const versionE = `${LOCATION_NOTICE_VERSION}-e`;
+
     const grantD = await request(app.getHttpServer())
       .post('/consents')
       .set(headers(userD.userId))
-      .send({ purpose: 'location', notice_version: LOCATION_NOTICE_VERSION });
+      .send({ purpose: 'location', notice_version: versionD });
     expect(grantD.status).toBe(200);
 
     const grantE = await request(app.getHttpServer())
       .post('/consents')
       .set(headers(userE.userId))
-      .send({ purpose: 'location', notice_version: LOCATION_NOTICE_VERSION });
+      .send({ purpose: 'location', notice_version: versionE });
     expect(grantE.status).toBe(200);
-
-    const revokeD = await request(app.getHttpServer())
-      .post('/consents/revoke')
-      .set(headers(userD.userId))
-      .send({ purpose: 'location' });
-    expect(revokeD.status).toBe(200);
 
     const listD = await request(app.getHttpServer()).get('/consents').set(headers(userD.userId));
     const listE = await request(app.getHttpServer()).get('/consents').set(headers(userE.userId));
 
     expect(listD.status).toBe(200);
     expect(listD.body).toHaveLength(1);
-    expect(listD.body[0].state).toBe('revoked');
+    expect(listD.body[0].notice_version).toBe(versionD);
 
     expect(listE.status).toBe(200);
     expect(listE.body).toHaveLength(1);
-    expect(listE.body[0].state).toBe('granted');
-    expect(listE.body[0].revoked_at).toBeNull();
+    expect(listE.body[0].notice_version).toBe(versionE);
+
+    for (const record of listD.body) {
+      expect(record.notice_version).not.toBe(versionE);
+    }
+    for (const record of listE.body) {
+      expect(record.notice_version).not.toBe(versionD);
+    }
   });
 
-  it('GET /consents for a user with no consents yet reports state none and requires acceptance', async () => {
+  it('GET /consents for a user with no consents yet returns an empty list', async () => {
     const userC = await prisma.user.upsert({
       where: { phone: `_consent-${runId}-c` },
       update: {},
@@ -193,17 +186,7 @@ suite('POST/GET /consents over real HTTP (ADR-019 §6/§9.3)', () => {
       .set(headers(userC.userId));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([
-      {
-        purpose: 'location',
-        state: 'none',
-        notice_version: null,
-        granted_at: null,
-        revoked_at: null,
-        current_notice_version: LOCATION_NOTICE_VERSION,
-        requires_acceptance: true,
-      },
-    ]);
+    expect(res.body).toEqual([]);
   });
 
   it('POST /consents with an invalid notice_version -> 400 INVALID_DATA', async () => {
