@@ -19,6 +19,7 @@ const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   USER_TABLE,
 ]);
 const SAFE_DANE_PREFIX = /^00[0-9]*$/;
+const PURGE_TRANSACTION_TIMEOUT_MS = 60_000;
 const REVERSALS_FIRST = "kind = 'reversal'";
 
 type OwnerDelete = (table: string, where: string) => Promise<void>;
@@ -87,10 +88,13 @@ async function withTenant<T>(
   companyId: string,
   fn: (tx: Prisma.TransactionClient) => Promise<T>,
 ): Promise<T> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config('app.current_company', ${companyId}, true)`;
-    return fn(tx);
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT set_config('app.current_company', ${companyId}, true)`;
+      return fn(tx);
+    },
+    { timeout: PURGE_TRANSACTION_TIMEOUT_MS, maxWait: PURGE_TRANSACTION_TIMEOUT_MS },
+  );
 }
 
 interface OwnerSession {

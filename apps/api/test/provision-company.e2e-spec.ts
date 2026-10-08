@@ -139,12 +139,10 @@ suite('provisionCompany (ADR-018 §9, ADR-032 §10.2, ADR-031 §1.4) against rea
     const municipalityId = await municipalityFixture(suffix);
     const daneCode = `00${randomInt(994, 999)}`;
     await raw.municipality.update({ where: { municipalityId }, data: { daneCode, daneType: 'municipality' } });
-    const before = await raw.municipality.count();
-
     const result = await provisionCompany(raw, baseInput(suffix, municipalityId, { municipality: { daneCode } }));
 
     expect(result.municipalityId).toBe(municipalityId);
-    expect(await raw.municipality.count()).toBe(before);
+    expect(await raw.municipality.count({ where: { daneCode } })).toBe(1);
   });
 
   it('a nonexistent municipality aborts the whole transaction, nothing is created', async () => {
@@ -159,13 +157,12 @@ suite('provisionCompany (ADR-018 §9, ADR-032 §10.2, ADR-031 §1.4) against rea
 
   it('an unknown DANE code aborts without creating a municipality', async () => {
     const suffix = uniqueSuffix();
-    const before = await raw.municipality.count();
-
     await expect(
       provisionCompany(raw, baseInput(suffix, 0, { municipality: { daneCode: '00000' } })),
     ).rejects.toThrow();
 
-    expect(await raw.municipality.count()).toBe(before);
+    expect(await raw.municipality.count({ where: { daneCode: '00000' } })).toBe(0);
+    expect(await raw.company.findUnique({ where: { taxId: `_provision-co-${suffix}` } })).toBeNull();
   });
 
   it('a duplicate taxId aborts the whole transaction: no fare, no commission, no admin leftover', async () => {

@@ -75,7 +75,7 @@ suite('Affiliation: DANE catalog, application with service types and public name
   }, 30_000);
 
   afterAll(async () => {
-    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, PREFIX, { daneCodePrefix: '00' });
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, PREFIX);
     if (poster) await poster.app.close();
     if (app) await app.close();
   }, 60_000);
