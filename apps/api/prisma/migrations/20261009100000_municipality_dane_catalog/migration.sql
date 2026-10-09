@@ -1205,6 +1205,12 @@ UPDATE tenancy.municipality m
  WHERE m.dane_code IS NULL
    AND upper(s.name) = upper(m.name) AND upper(s.department) = upper(m.department);
 
+SELECT setval(
+  pg_get_serial_sequence('tenancy.municipality', 'municipality_id'),
+  GREATEST((SELECT coalesce(max(municipality_id), 0) FROM tenancy.municipality), 1),
+  (SELECT count(*) > 0 FROM tenancy.municipality)
+);
+
 INSERT INTO tenancy.municipality
   (name, department, dane_code, dane_type, reference_lat, reference_lng, status, coverage_polygon)
 SELECT s.name, s.department, s.dane_code, s.dane_type, s.reference_lat, s.reference_lng, 'catalog', NULL
