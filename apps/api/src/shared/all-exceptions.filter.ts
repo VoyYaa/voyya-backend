@@ -10,6 +10,7 @@ import type { Request, Response } from 'express';
 import { resolveRoute } from '../infrastructure/observability/route-pattern';
 import { requestContext } from '../infrastructure/observability/request-context.service';
 import { captureError } from '../infrastructure/observability/sentry';
+import { type SafeErrorFields, toSafeErrorFields } from '../infrastructure/observability/safe-error';
 
 const INTERNAL_ERROR_CODE = 'INTERNAL_ERROR';
 
@@ -35,7 +36,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
           status,
           error_code: errorCode,
           route: resolveRoute(req),
-          stack: exception.stack,
+          ...logFieldsOf(exception),
         });
         captureError(exception);
       } else {
@@ -51,13 +52,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       return;
     }
 
-    const stack = exception instanceof Error ? exception.stack : undefined;
     flagErrorCode(res, INTERNAL_ERROR_CODE);
     this.logger.error({
       msg: 'unhandled_error',
       error_code: INTERNAL_ERROR_CODE,
       route: resolveRoute(req),
-      stack,
+      ...logFieldsOf(exception),
     });
     captureError(exception);
 
@@ -67,6 +67,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       request_id: requestContext.get()?.requestId,
     });
   }
+}
+
+function logFieldsOf(exception: unknown): Omit<SafeErrorFields, 'name'> & { error_name: string } {
+  const { name, ...rest } = toSafeErrorFields(exception);
+  return { error_name: name, ...rest };
 }
 
 function flagErrorCode(res: Response, errorCode: string | undefined): void {

@@ -47,6 +47,7 @@ import { CandidateRepository } from './candidate.repository';
 import { type CompanyCandidate, pickNearest } from './nearest-candidate';
 import { PUSH_PROVIDER, type PushProvider } from './ports/push-provider.port';
 import { TripClosingService } from './trip-closing.service';
+import { summarizeError } from '../../infrastructure/observability/safe-error';
 
 export class TripRequestAlreadyTakenError extends Error {
   constructor() {
@@ -112,7 +113,7 @@ export class AssignmentService {
     try {
       await this.start(ev.trip_request_id, ev.municipality_id, ev.origin);
     } catch (e) {
-      this.logger.error(`Failed to start assignment tripRequest=${ev.trip_request_id}: ${msg(e)}`);
+      this.logger.error(`Failed to start assignment tripRequest=${ev.trip_request_id}: ${summarizeError(e)}`);
     }
   }
 
@@ -284,7 +285,7 @@ export class AssignmentService {
       this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_EXPIRED, ev);
       await this.tryNext(ctx);
     } catch (e) {
-      this.logger.error(`Expiration failed assignment=${assignmentId}: ${msg(e)}`);
+      this.logger.error(`Expiration failed assignment=${assignmentId}: ${summarizeError(e)}`);
     }
   }
 
@@ -620,7 +621,7 @@ export class AssignmentService {
         this.repo.cancelOffer(tx, offer.assignmentId, offer.companyId),
       );
     } catch (e) {
-      this.logger.error(`Offer cancellation failed assignment=${offer.assignmentId}: ${msg(e)}`);
+      this.logger.error(`Offer cancellation failed assignment=${offer.assignmentId}: ${summarizeError(e)}`);
     }
   }
 }
@@ -628,8 +629,4 @@ export class AssignmentService {
 function neighborhoodOf(address: string): string {
   const first = address.split(',')[0]?.trim();
   return first && first.length > 0 ? first : 'Zona destino';
-}
-
-function msg(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

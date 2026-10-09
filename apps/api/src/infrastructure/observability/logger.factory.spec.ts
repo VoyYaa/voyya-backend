@@ -1,4 +1,5 @@
 import { Writable } from 'node:stream';
+import { Prisma } from '@prisma/client';
 import { buildLogger } from './logger.factory';
 import { PinoLoggerService } from './pino-logger.service';
 
@@ -85,5 +86,68 @@ describe('buildLogger redaction', () => {
 
     expect(output()).toContain('"error_code":"NO_COMPANY_AVAILABLE"');
     expect(output()).not.toContain('[redacted]');
+  });
+
+  describe('PostgreSQL error detail', () => {
+    const ROW = 'Failing row contains (41, Carrera 21 #14-33, 6.96123417, -75.41759902, 482913)';
+
+    it('redacts the failing row inside object arguments, nested objects and arrays', () => {
+      const { logger, output } = capture();
+
+      logger.error({ msg: 'failed', detail: `DETAIL: ${ROW}`, nested: { list: [`x ${ROW}`] } });
+
+      expect(output()).not.toContain('Carrera 21');
+      expect(output()).not.toContain('6.96123417');
+      expect(output()).not.toContain('482913');
+    });
+
+    it('serializes an Error under err without its message, stack or meta when it comes from Prisma', () => {
+      const { logger, output } = capture();
+      const error = new Prisma.PrismaClientKnownRequestError(`DETAIL: ${ROW}`, {
+        code: 'P2010',
+        clientVersion: '5.22.0',
+        meta: { code: '23514', message: `violates check constraint "c_x"
+DETAIL: ${ROW}` },
+      });
+
+      logger.error({ err: error, msg: 'failed' });
+
+      const entry = JSON.parse(output()) as { err: Record<string, unknown> };
+      expect(entry.err).toEqual({
+        name: 'PrismaClientKnownRequestError',
+        prisma_code: 'P2010',
+        sqlstate: '23514',
+        constraint: 'c_x',
+      });
+      expect(output()).not.toContain('Carrera 21');
+    });
+
+    it('redacts the message and stack of a generic Error passed as the first argument', () => {
+      const { logger, output } = capture();
+
+      logger.error(new Error('call 300 111 2233'), 'failed');
+
+      expect(output()).not.toContain('300 111 2233');
+      expect(output()).toContain('[phone]');
+    });
+
+    it('redacts sensitive keys added by ADR-033', () => {
+      const { logger, output } = capture();
+
+      logger.info({ ctx: { start_code: '482913', startCode: '482913', driver_tracking: 'x', position: 'y' } });
+
+      expect(output()).not.toContain('482913');
+      expect(output()).not.toContain('"x"');
+      expect(output()).not.toContain('"y"');
+    });
+
+    it('keeps dates and numbers of a logged object', () => {
+      const { logger, output } = capture();
+
+      logger.info({ at: new Date('2026-10-09T00:00:00.000Z'), assignment: 412 });
+
+      expect(output()).toContain('"at":"2026-10-09T00:00:00.000Z"');
+      expect(output()).toContain('"assignment":412');
+    });
   });
 });

@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { EnvService } from '../../config/env.service';
+import { summarizeError } from '../observability/safe-error';
 
 @Injectable()
 export class PrismaService
@@ -31,13 +32,13 @@ export class PrismaService
         if (attempt >= maxAttempts) {
           this.logger.fatal(
             `Prisma could not connect after ${maxAttempts} attempts to ` +
-              `${describeTarget(this.env.get('DATABASE_URL'))}: ${errorMessage(error)}`,
+              `${describeTarget(this.env.get('DATABASE_URL'))}: ${summarizeError(error)}`,
           );
           throw error;
         }
         const delayMs = baseDelayMs * 2 ** (attempt - 1);
         this.logger.warn(
-          `Prisma connect attempt ${attempt}/${maxAttempts} failed (${errorMessage(error)}), retrying in ${delayMs}ms`,
+          `Prisma connect attempt ${attempt}/${maxAttempts} failed (${summarizeError(error)}), retrying in ${delayMs}ms`,
         );
         await sleep(delayMs);
       }
@@ -80,6 +81,3 @@ function describeTarget(databaseUrl: string): string {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

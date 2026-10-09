@@ -3,8 +3,10 @@ import pino, {
   type Logger as PinoLogger,
   type LoggerOptions,
 } from 'pino';
-import { redactPii } from '@voyyaa/shared';
+import { redactPii, redactPiiDeep } from '@voyyaa/shared';
 import { requestContext } from './request-context.service';
+import { toSafeErrorFields } from './safe-error';
+import { SENSITIVE_KEYS } from './sensitive-keys';
 
 export interface LoggerFactoryConfig {
   level: string;
@@ -13,40 +15,12 @@ export interface LoggerFactoryConfig {
   release?: string;
 }
 
-const REDACT_KEYS = [
-  'password',
-  'password_hash',
-  'pin',
-  'current_pin',
-  'new_pin',
-  'otp',
-  'otp_code',
-  'otpCode',
-  'token',
-  'phone',
-  'contact_phone',
-  'email',
-  'contact_email',
-  'national_id',
-  'license',
-  'plate',
-  'address',
-  'pickup_address',
-  'dropoff_address',
-  'first_name',
-  'last_name',
-  'lat',
-  'lng',
-  'current_lat',
-  'current_lng',
-];
-
 const REQUEST_BODY_PATHS = ['body', '*.body', '*.*.body'];
 
 const OTP_CODE_PATHS = ['otp.code', 'verification.code'];
 
 function redactPaths(): string[] {
-  const withWildcard = REDACT_KEYS.map((key) => `*.${key}`);
+  const withWildcard = SENSITIVE_KEYS.map((key) => `*.${key}`);
   const otpWithWildcard = OTP_CODE_PATHS.map((path) => `*.${path}`);
   return [
     'req.headers.authorization',
@@ -55,8 +29,23 @@ function redactPaths(): string[] {
     ...OTP_CODE_PATHS,
     ...otpWithWildcard,
     ...withWildcard,
-    ...REDACT_KEYS,
+    ...SENSITIVE_KEYS,
   ];
+}
+
+function sanitizeArg(arg: unknown): unknown {
+  if (typeof arg === 'string') return redactPii(arg);
+  if (arg instanceof Error) return arg;
+  if (arg !== null && typeof arg === 'object' && !Array.isArray(arg)) {
+    const withSafeErrors = Object.fromEntries(
+      Object.entries(arg).map(([key, value]) => [
+        key,
+        value instanceof Error ? toSafeErrorFields(value) : value,
+      ]),
+    );
+    return redactPiiDeep(withSafeErrors);
+  }
+  return redactPiiDeep(arg);
 }
 
 export function buildLogger(
@@ -76,15 +65,16 @@ export function buildLogger(
       paths: redactPaths(),
       censor: '[redacted]',
     },
+    serializers: {
+      err: (error: unknown) => (error instanceof Error ? toSafeErrorFields(error) : error),
+    },
     mixin() {
       return requestContext.get() ?? {};
     },
     hooks: {
       logMethod(inputArgs, method) {
         for (let i = 0; i < inputArgs.length; i += 1) {
-          if (typeof inputArgs[i] === 'string') {
-            inputArgs[i] = redactPii(inputArgs[i] as string);
-          }
+          inputArgs[i] = sanitizeArg(inputArgs[i]);
         }
         return method.apply(this, inputArgs as Parameters<typeof method>);
       },
