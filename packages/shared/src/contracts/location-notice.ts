@@ -55,34 +55,44 @@ const DRIVER_LOCATION_NOTICE: LocationNotice = {
       key: 'data',
       label: 'Qué usamos',
       value:
-        'La ubicación de tu teléfono, con una precisión de hasta 100 metros, solo mientras estás en turno y con ' +
-        'la app abierta. No la seguimos en segundo plano.',
+        'La ubicación de tu teléfono, con una precisión de hasta 100 metros, mientras estás en turno. Desde que ' +
+        'aceptas un viaje hasta que lo inicias, la enviamos cada 10 a 15 segundos; en Android sigue aunque VoyYa ' +
+        'no esté en pantalla, con una notificación visible de VoyYa, y en iPhone solo con VoyYa en pantalla. Fuera ' +
+        'de esa ventana no la seguimos en segundo plano.',
     },
     {
       key: 'purpose',
       label: 'Para qué',
       value:
-        'Para ofrecerte primero los viajes más cercanos, calcular el tiempo de llegada que ve el pasajero y que ' +
-        'tu empresa vea si tu ubicación está al día durante el turno.',
+        'Para ofrecerte primero los viajes más cercanos, calcular el tiempo estimado de llegada, que el pasajero ' +
+        'de cada viaje vea dónde vienes mientras llegas a recogerlo y que tu empresa vea si tu ubicación está al ' +
+        'día durante el turno.',
     },
     {
       key: 'optional',
       label: 'Si no la compartes',
-      value: 'Compartirla es voluntario. Sin ella no puedes ponerte en turno ni recibir viajes.',
+      value:
+        'Sin aceptar este aviso no puedes ponerte en turno ni recibir viajes, porque mostrar al pasajero dónde ' +
+        'vienes es parte del servicio. Durante un viaje no puedes apagar solo el seguimiento: si no quieres ' +
+        'compartir, no aceptes el viaje.',
     },
     {
       key: 'sharing',
       label: 'Con quién se comparte',
       value:
-        'Tu empresa afiliada solo ve si tu ubicación está al día, no dónde estás. El pasajero tampoco ve dónde ' +
-        'estás: solo ve el tiempo estimado en que llegas. Nuestro proveedor de alojamiento (Railway) guarda los ' +
-        'datos por cuenta nuestra, como explica la política.',
+        'El pasajero de cada viaje que aceptas ve en un mapa dónde estás, y hace cuánto se tomó esa ubicación, ' +
+        'desde que aceptas hasta que inicias el viaje; después ya no la ve. Tu empresa afiliada solo ve si tu ' +
+        'ubicación está al día, no dónde estás. Si tocas el botón de ruta, la app que elijas (Google Maps o Waze) ' +
+        'recibe las coordenadas del punto de recogida o del destino y las trata según sus propias políticas; no ' +
+        'le enviamos tu nombre ni el del pasajero. Nuestro proveedor de alojamiento (Railway) guarda los datos y ' +
+        'Mapbox dibuja el mapa del pasajero, por cuenta nuestra, como explica la política.',
     },
     {
       key: 'retention',
       label: 'Cuánto la guardamos',
       value:
-        'Guardamos solo tu última ubicación, no un historial. Se borra cuando cierras turno; si no lo cierras, ' +
+        'Guardamos solo tu última ubicación, no tu recorrido: cada envío reemplaza al anterior. Se borra cuando ' +
+        'cierras turno; si no lo cierras, ' +
         `se borra a más tardar ${DRIVER_LOCATION_RETENTION_MAX_HOURS} horas después de tu último reporte.`,
     },
     {
@@ -90,7 +100,7 @@ const DRIVER_LOCATION_NOTICE: LocationNotice = {
       label: 'Cómo dejas de compartirla',
       value:
         'En «Privacidad de mi ubicación», con «Dejar de compartir mi ubicación»: borramos tu última ubicación ' +
-        'al instante y sales de turno. Si tienes un viaje en curso, el viaje sigue y sales de turno al terminarlo. ' +
+        'al instante, el pasajero deja de verte y sales de turno. Si tienes un viaje en curso, el viaje sigue y sales de turno al terminarlo. ' +
         'Para volver a turno tendrás que aceptar este aviso otra vez. Si en cambio quitas el permiso en los ' +
         'ajustes del teléfono, dejamos de recibir tu ubicación y la que quedó guardada se borra a más tardar ' +
         `${DRIVER_LOCATION_RETENTION_MAX_HOURS} horas después de tu último reporte.`,
@@ -118,7 +128,8 @@ const PASSENGER_LOCATION_NOTICE: LocationNotice = {
       label: 'Para qué',
       value:
         'Para comprobar que estás dentro de la zona de servicio, ubicarte en el mapa, calcular tu tarifa y el ' +
-        'tiempo estimado, y darle tu punto de recogida al conductor.',
+        'tiempo estimado, darle tu punto de recogida al conductor y mostrarte dónde viene tu conductor hasta que ' +
+        'empieza el viaje.',
     },
     {
       key: 'optional',
@@ -130,11 +141,15 @@ const PASSENGER_LOCATION_NOTICE: LocationNotice = {
       key: 'sharing',
       label: 'Con quién se comparte',
       value:
-        'Los conductores a quienes se les ofrece tu viaje ven tu punto de recogida y el barrio de destino. El que ' +
-        'lo acepta ve además tu destino y tu número de teléfono mientras dura el viaje. La empresa de taxis que ' +
-        'atiende tu viaje también ve tus puntos de recogida y destino. Nuestro proveedor de alojamiento (Railway) ' +
-        'guarda los datos por cuenta nuestra y Mapbox, que dibuja el mapa, puede recibir la zona que estás ' +
-        'mirando (puede coincidir con tu ubicación), como explica la política.',
+        'En tu municipio puede haber varias empresas de taxis. Los conductores a quienes se les ofrece tu viaje, ' +
+        'de una o de varias empresas, ven tu punto de recogida y el barrio de destino. El que lo acepta ve además ' +
+        'tu destino y tu número de teléfono mientras dura el viaje, y su empresa ve tus puntos de recogida y ' +
+        'destino; las demás empresas no ven tu viaje. El conductor puede abrir tu punto de recogida o tu destino ' +
+        'en Google Maps o Waze para llegar: esas apps reciben solo las coordenadas, sin tu nombre ni tu teléfono. ' +
+        'Desde que un conductor acepta tu viaje hasta que lo inicia, ves en el mapa dónde viene; no guardamos su ' +
+        'recorrido. Nuestro proveedor de alojamiento (Railway) guarda los datos por cuenta nuestra, y Mapbox, que ' +
+        'dibuja el mapa, puede recibir la zona que estás mirando (puede coincidir con tu ubicación), como explica ' +
+        'la política.',
     },
     {
       key: 'retention',

@@ -318,6 +318,9 @@ export class TripsService {
         freeCancellationDeadline(t, cancellationWindowMin)?.toISOString() ?? null,
       updated_at: t.updatedAt.toISOString(),
       server_time: new Date().toISOString(),
+      start_code: null,
+      start_code_state: 'not_applicable',
+      driver_tracking: null,
     };
   }
 

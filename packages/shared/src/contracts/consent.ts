@@ -10,7 +10,8 @@ export const NoticeVersion = z
   .regex(/^[a-z0-9-]{3,40}$/, 'Versión de aviso inválida');
 export type NoticeVersion = z.infer<typeof NoticeVersion>;
 
-export const LOCATION_NOTICE_VERSION = 'location-notice-v2';
+export const LOCATION_NOTICE_VERSION = 'location-notice-v3';
+export const DRIVER_LOCATION_SHARING_NOTICE_VERSIONS = ['location-notice-v3'] as const;
 
 export const NoticeAudience = z.enum(['driver', 'passenger']);
 export type NoticeAudience = z.infer<typeof NoticeAudience>;

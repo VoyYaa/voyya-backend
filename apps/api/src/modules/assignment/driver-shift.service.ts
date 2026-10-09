@@ -70,6 +70,12 @@ export class DriverShiftService {
         arrived_at: activeTrip.arrivedAt ? activeTrip.arrivedAt.toISOString() : null,
         no_show_available_at: noShowAvailableAt(activeTrip.arrivedAt, graceMin),
         cash_collected_at: activeTrip.cashCollectedAt ? activeTrip.cashCollectedAt.toISOString() : null,
+        start_code_required: false,
+        start_attempts_remaining: null,
+        start_blocked: false,
+        pickup_location: null,
+        dropoff_location: null,
+        location_sharing: null,
       };
     }
 
