@@ -12,6 +12,7 @@ import { buildLogger } from './infrastructure/observability/logger.factory';
 import { PinoLoggerService } from './infrastructure/observability/pino-logger.service';
 import { createRequestContextMiddleware } from './infrastructure/observability/request-context.middleware';
 import { RequestContextService } from './infrastructure/observability/request-context.service';
+import { safeStack } from './infrastructure/observability/safe-error';
 import { captureError, initSentry, Sentry } from './infrastructure/observability/sentry';
 import { AllExceptionsFilter } from './shared/all-exceptions.filter';
 
@@ -37,14 +38,14 @@ export function configureApp(
 
 function registerProcessHandlers(): void {
   process.on('uncaughtException', (error) => {
-    new Logger('Bootstrap').fatal(`uncaughtException: ${error.stack ?? error.message}`);
+    new Logger('Bootstrap').fatal(`uncaughtException: ${safeStack(error)}`);
     captureError(error);
     void Sentry.flush(2000).finally(() => process.exit(1));
   });
 
   process.on('unhandledRejection', (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));
-    new Logger('Bootstrap').fatal(`unhandledRejection: ${error.stack ?? error.message}`);
+    new Logger('Bootstrap').fatal(`unhandledRejection: ${safeStack(error)}`);
     captureError(error);
   });
 }
@@ -90,7 +91,7 @@ export async function runBootstrap(
     await start();
   } catch (reason) {
     const error = reason instanceof Error ? reason : new Error(String(reason));
-    new Logger('Bootstrap').fatal(`bootstrap failed: ${error.stack ?? error.message}`);
+    new Logger('Bootstrap').fatal(`bootstrap failed: ${safeStack(error)}`);
     captureError(error);
     await Sentry.flush(FATAL_FLUSH_TIMEOUT_MS).catch(() => false);
     exit(1);

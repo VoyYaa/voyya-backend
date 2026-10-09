@@ -1,5 +1,6 @@
 import type { ErrorEvent, Event } from '@sentry/node';
 import { redactPiiDeep } from '@voyyaa/shared';
+import { redactSensitiveKeys } from './sensitive-keys';
 import { toRoutePattern } from './route-pattern';
 
 const ALLOWED_HEADERS = new Set(['user-agent', 'content-type', 'x-request-id']);
@@ -38,22 +39,19 @@ function hasDiagnosticContent(event: Event): boolean {
   return Boolean(event.exception) || Boolean(event.message);
 }
 
+function scrub<T>(value: T): T {
+  return redactSensitiveKeys(redactPiiDeep(value)) as T;
+}
+
 export function scrubEvent(event: ErrorEvent): ErrorEvent | null {
   scrubRequest(event);
   scrubUser(event);
 
-  if (event.exception) {
-    event.exception = redactPiiDeep(event.exception) as Event['exception'];
-  }
-  if (event.message) {
-    event.message = redactPiiDeep(event.message) as string;
-  }
-  if (event.extra) {
-    event.extra = redactPiiDeep(event.extra) as Event['extra'];
-  }
-  if (event.breadcrumbs) {
-    event.breadcrumbs = redactPiiDeep(event.breadcrumbs) as Event['breadcrumbs'];
-  }
+  if (event.exception) event.exception = scrub(event.exception);
+  if (event.message) event.message = scrub(event.message);
+  if (event.extra) event.extra = scrub(event.extra);
+  if (event.contexts) event.contexts = scrub(event.contexts);
+  if (event.breadcrumbs) event.breadcrumbs = scrub(event.breadcrumbs);
 
   return hasDiagnosticContent(event) ? event : null;
 }

@@ -1,5 +1,6 @@
 import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { EnvService } from '../../config/env.service';
+import { summarizeError } from '../observability/safe-error';
 import { PrismaService } from './prisma.service';
 
 export interface DatabasePreflightResult {
@@ -178,7 +179,7 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
       if (!row) return null;
       return { ...row, hasTripCompanyScope: row.hasTripCompanyScope && (await this.survivesResidualGuc()) };
     } catch (error) {
-      this.logger.warn(`Database preflight query failed: ${errorMessage(error)}`);
+      this.logger.warn(`Database preflight query failed: ${summarizeError(error)}`);
       return null;
     }
   }
@@ -188,7 +189,7 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
       await this.prisma.$executeRawUnsafe(GUC_RESIDUAL_PROBE);
       return true;
     } catch (error) {
-      this.logger.warn(`Residual GUC probe on trips.trip_request failed: ${errorMessage(error)}`);
+      this.logger.warn(`Residual GUC probe on trips.trip_request failed: ${summarizeError(error)}`);
       return false;
     }
   }
@@ -217,6 +218,3 @@ export class DatabasePreflightService implements OnApplicationBootstrap {
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

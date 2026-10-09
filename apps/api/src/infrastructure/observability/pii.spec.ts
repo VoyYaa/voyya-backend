@@ -120,3 +120,83 @@ describe('redactPii 0.8.1 case table', () => {
     expect(redactPii(once)).toBe(once);
   });
 });
+
+describe('redactPii PostgreSQL error detail', () => {
+  const ROW =
+    'Failing row contains (41, 7, Calle 50 #12-34 (Barrio El Centro), 6.9612, -75.4175, 482913, taxi)';
+
+  it('redacts the failing row of a check violation and keeps the rest of the message', () => {
+    const message = `Raw query failed. Code: \`23514\`. Message: \`ERROR: new row for relation "trip_request" violates check constraint "trip_request_no_motorcycle"\nDETAIL: ${ROW}.\``;
+    const out = redactPii(message);
+    expect(out).toContain('violates check constraint "trip_request_no_motorcycle"');
+    expect(out).toContain('DETAIL: [redacted]');
+    expect(out).not.toContain('Calle 50');
+    expect(out).not.toContain('6.9612');
+    expect(out).not.toContain('482913');
+  });
+
+  it('redacts a failing row that is not inside a DETAIL line', () => {
+    expect(redactPii(`x ${ROW}.`)).toBe('x Failing row contains ([redacted])');
+  });
+
+  it('redacts the duplicated value of a unique violation', () => {
+    expect(redactPii('Key (start_code)=(482913) already exists.')).toBe(
+      'Key ([redacted])=([redacted]) already exists.',
+    );
+  });
+
+  it('redacts a key value that contains parentheses', () => {
+    expect(redactPii('Key (address)=(Calle 5 (esq) 10) already exists.')).toBe(
+      'Key ([redacted])=([redacted]) already exists.',
+    );
+  });
+
+  it('redacts the referenced key of a foreign key violation', () => {
+    expect(
+      redactPii('Key (driver_id)=(99) is not present in table "driver".'),
+    ).toBe('Key ([redacted])=([redacted]) is not present in table "driver".');
+  });
+
+  it('removes a DETAIL line without eating the stack that follows', () => {
+    const out = redactPii('ERROR: boom\nDETAIL: Failing row contains (1, secret)\n    at foo (bar.ts:1:1)');
+    expect(out).toBe('ERROR: boom\nDETAIL: [redacted]\n    at foo (bar.ts:1:1)');
+  });
+
+  it('stops at an escaped newline inside a JSON-encoded message', () => {
+    const out = redactPii('{"m":"ERROR: x\nDETAIL: Failing row contains (1, secret)\n    at foo"}');
+    expect(out).not.toContain('secret');
+    expect(out).toContain('\n    at foo"}');
+  });
+
+  it('is idempotent on PostgreSQL detail', () => {
+    const once = redactPii(`ERROR: x\nDETAIL: ${ROW}.\nKey (a)=(b) already exists.`);
+    expect(redactPii(once)).toBe(once);
+  });
+});
+
+describe('redactPiiDeep PostgreSQL error detail and error objects', () => {
+  const ROW = 'Failing row contains (41, Calle 50 #12-34, 6.9612, -75.4175, 482913)';
+
+  it('redacts the detail inside an Error: message, stack and own properties', () => {
+    const error = Object.assign(new Error(`ERROR: x\nDETAIL: ${ROW}.`), {
+      code: 'P2010',
+      meta: { code: '23514', message: `ERROR: x\nDETAIL: ${ROW}.` },
+    });
+    const out = JSON.stringify(redactPiiDeep({ err: error }));
+    expect(out).not.toContain('Calle 50');
+    expect(out).not.toContain('6.9612');
+    expect(out).not.toContain('482913');
+    expect(out).toContain('"code":"P2010"');
+    expect(out).toContain('"code":"23514"');
+  });
+
+  it('redacts the detail nested in objects and arrays', () => {
+    const out = JSON.stringify(redactPiiDeep({ a: [{ b: `DETAIL: ${ROW}` }] }));
+    expect(out).not.toContain('Calle 50');
+  });
+
+  it('keeps dates and other non-plain values intact', () => {
+    const date = new Date('2026-10-09T00:00:00.000Z');
+    expect(redactPiiDeep({ at: date, n: 3, flag: true })).toEqual({ at: date, n: 3, flag: true });
+  });
+});

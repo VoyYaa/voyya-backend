@@ -2,6 +2,7 @@ import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { EnvService } from '../../config/env.service';
 import { runMonitoredJob } from '../../infrastructure/observability/run-monitored-job';
+import { summarizeError } from '../../infrastructure/observability/safe-error';
 import { cronOptions, SCHEDULED_JOBS } from '../../infrastructure/observability/scheduled-jobs';
 import { runWithAdvisoryLock } from '../../infrastructure/prisma/advisory-lock';
 import { withSavepoint } from '../../infrastructure/prisma/savepoint';
@@ -55,7 +56,7 @@ export class DriverLocationPurgeService implements OnModuleInit {
         } catch (error) {
           failedCompanyIds.push(companyId);
           this.logger.error(
-            `Location purge failed for company ${companyId}: ${error instanceof Error ? error.message : 'unknown error'}`,
+            `Location purge failed for company ${companyId}: ${summarizeError(error)}`,
           );
         }
       }

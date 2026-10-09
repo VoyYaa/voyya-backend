@@ -1,4 +1,5 @@
 import { type ArgumentsHost, ConflictException, Logger } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { AllExceptionsFilter } from './all-exceptions.filter';
 
 interface FakeResponse {
@@ -77,5 +78,39 @@ describe('AllExceptionsFilter', () => {
     const logged = errorSpy.mock.calls[0][0] as Record<string, unknown>;
     expect(logged.error_code).toBe('INTERNAL_ERROR');
     expect(res.locals.errorCode).toBe('INTERNAL_ERROR');
+  });
+
+  it('logs a Prisma error with only its code, SQLSTATE and constraint, never message, meta or stack', () => {
+    const { host } = buildHost();
+    const row = 'Failing row contains (41, Carrera 21 #14-33, 6.96123417, 482913)';
+    const error = new Prisma.PrismaClientKnownRequestError(`Raw query failed. DETAIL: ${row}`, {
+      code: 'P2010',
+      clientVersion: '5.22.0',
+      meta: { code: '23514', message: `violates check constraint "trip_request_x"
+DETAIL: ${row}` },
+    });
+
+    new AllExceptionsFilter().catch(error, host);
+
+    const logged = errorSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(logged).toMatchObject({
+      msg: 'unhandled_error',
+      error_name: 'PrismaClientKnownRequestError',
+      prisma_code: 'P2010',
+      sqlstate: '23514',
+      constraint: 'trip_request_x',
+    });
+    expect(logged).not.toHaveProperty('stack');
+    expect(logged).not.toHaveProperty('message');
+    expect(JSON.stringify(logged)).not.toContain('Carrera 21');
+  });
+
+  it('redacts personal data in the stack of a generic error', () => {
+    const { host } = buildHost();
+
+    new AllExceptionsFilter().catch(new Error('boom for 300 111 2233'), host);
+
+    const logged = errorSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(JSON.stringify(logged)).not.toContain('300 111 2233');
   });
 });
