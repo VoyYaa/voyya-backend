@@ -100,6 +100,10 @@ const BaseEnvSchema = z.object({
     .min(1)
     .default(TRIP_COORDINATES_RETENTION_DAYS),
 
+  DRIVER_LOCATION_SHARE_INTERVAL_SEC: z.coerce.number().int().min(10).max(15).default(15),
+  DRIVER_LOCATION_SHARE_STALE_SEC: z.coerce.number().int().min(30).max(120).default(45),
+  DRIVER_LOCATION_SHARE_HIDE_SEC: z.coerce.number().int().min(120).max(600).default(300),
+
   DOCUMENT_STORAGE_ROOT: z.string().min(1).optional(),
   API_PUBLIC_URL: z.string().url(),
   DOCUMENT_MAX_BYTES: z.coerce.number().int().positive().default(5 * 1024 * 1024),
@@ -150,6 +154,21 @@ export const EnvSchema = BaseEnvSchema.superRefine((env, ctx) => {
         });
       }
     }
+  }
+
+  if (env.DRIVER_LOCATION_SHARE_STALE_SEC < 3 * env.DRIVER_LOCATION_SHARE_INTERVAL_SEC) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['DRIVER_LOCATION_SHARE_STALE_SEC'],
+      message: 'DRIVER_LOCATION_SHARE_STALE_SEC debe ser al menos 3 veces DRIVER_LOCATION_SHARE_INTERVAL_SEC',
+    });
+  }
+  if (env.DRIVER_LOCATION_SHARE_HIDE_SEC < 2 * env.DRIVER_LOCATION_SHARE_STALE_SEC) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['DRIVER_LOCATION_SHARE_HIDE_SEC'],
+      message: 'DRIVER_LOCATION_SHARE_HIDE_SEC debe ser al menos 2 veces DRIVER_LOCATION_SHARE_STALE_SEC',
+    });
   }
 
   if (isProduction) {

@@ -11,6 +11,7 @@ import { DriverRepository } from './driver.repository';
 import { ConsentRevokedListener } from './consent-revoked.listener';
 import { DriverLocationPurgeService } from './driver-location-purge.service';
 import { DriverShiftService } from './driver-shift.service';
+import { DriverTrackingService } from './driver-tracking.service';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
 import { SMS_PROVIDER } from './ports/sms-provider.port';
 import { createPushProvider } from './providers/push.factory';
@@ -29,6 +30,7 @@ import { TripClosingService } from './trip-closing.service';
     CandidateRepository,
     TripClosingService,
     DriverShiftService,
+    DriverTrackingService,
     DriverAvailabilityService,
     DriverRepository,
     DriverLocationPurgeService,
@@ -38,6 +40,6 @@ import { TripClosingService } from './trip-closing.service';
     { provide: PUSH_PROVIDER, useFactory: createPushProvider, inject: [EnvService, PushTokenRepository] },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
-  exports: [AssignmentService, TripClosingService, DriverAvailabilityService],
+  exports: [AssignmentService, TripClosingService, DriverAvailabilityService, DriverTrackingService],
 })
 export class AssignmentModule {}

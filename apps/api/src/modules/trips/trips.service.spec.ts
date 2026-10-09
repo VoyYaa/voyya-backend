@@ -6,10 +6,11 @@ import {
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import type { AssignedDriverSummary, CreateTripRequestDTO } from '@voyyaa/shared';
+import type { AssignedDriverSummary, CreateTripRequestDTO, DriverTracking } from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import type { AssignmentService } from '../assignment/assignment.service';
+import type { DriverTrackingService } from '../assignment/driver-tracking.service';
 import type {
   ClosePassengerTripInput,
   CloseTripOutcome,
@@ -86,6 +87,10 @@ interface FakeTripRequest {
   requestedAt?: Date;
   requestedCompanyId?: number | null;
   municipalityFareId?: number | null;
+  companyId?: number | null;
+  startCode?: string | null;
+  startCodeBlockedAt?: Date | null;
+  startCodeExempt?: boolean;
 }
 interface FakeState {
   covered?: boolean;
@@ -101,6 +106,7 @@ interface FakeState {
   createError?: Error;
   noDriverApplied?: boolean;
   windowMin?: number;
+  tracking?: DriverTracking | null;
 }
 
 interface FakeRepoCalls {
@@ -142,6 +148,9 @@ function fakeRepo(state: FakeState, calls: FakeRepoCalls): TripsRepository {
     async getTripRequest(): Promise<unknown> {
       return state.tripRequest ?? null;
     },
+    async getTripRequestForPassenger(): Promise<unknown> {
+      return state.tripRequest ?? state.activeRow ?? null;
+    },
     async markNoDriverIfUnassigned(tripRequestId: number): Promise<boolean> {
       calls.noDriver.push(tripRequestId);
       return state.noDriverApplied ?? true;
@@ -155,6 +164,12 @@ function fakeAssignment(
   return {
     getAssignedDriverSummary: jest.fn(async () => summary),
   } as unknown as AssignmentService & { getAssignedDriverSummary: jest.Mock };
+}
+
+function fakeTracking(tracking: DriverTracking | null = null): DriverTrackingService & { forPassenger: jest.Mock } {
+  return { forPassenger: jest.fn(async () => tracking) } as unknown as DriverTrackingService & {
+    forPassenger: jest.Mock;
+  };
 }
 
 function fakeTripClosing(rejected = false): TripClosingService {
@@ -188,6 +203,7 @@ function createService(
   assignment: AssignmentService & { getAssignedDriverSummary: jest.Mock };
   calls: FakeRepoCalls;
   dispatch: DispatchCompaniesResolver & { resolve: jest.Mock };
+  tracking: DriverTrackingService & { forPassenger: jest.Mock };
 } {
   const env = fakeEnv(ttl);
   const quote = new QuoteTokenService(env);
@@ -195,6 +211,7 @@ function createService(
   const assignment = fakeAssignment(state.summary ?? null);
   const calls: FakeRepoCalls = { created: [], noDriver: [] };
   const dispatch = fakeDispatchCompaniesResolver(state.companyIds);
+  const tracking = fakeTracking(state.tracking ?? null);
   const service = new TripsService(
     fakeRepo(state, calls),
     quote,
@@ -208,8 +225,9 @@ function createService(
     fakeParams(state.windowMin),
     fakeCatalog(state.activeServices),
     fakeDirectory(),
+    tracking,
   );
-  return { service, emitter, assignment, calls, dispatch };
+  return { service, emitter, assignment, calls, dispatch, tracking };
 }
 
 describe('TripsService.quote', () => {
@@ -875,5 +893,142 @@ describe('TripsService.onNoDriver (MD-05)', () => {
         occurred_at: new Date().toISOString(),
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe('TripsService.getStatus · start code and driver tracking (ADR-033 sections 2 and 3.2)', () => {
+  const row = (over: Partial<FakeTripRequest>): FakeTripRequest => ({
+    tripRequestId: 9,
+    passengerId: 1,
+    status: 'assigned',
+    assignedAt: new Date(),
+    arrivedAt: null,
+    updatedAt: new Date(),
+    municipalityId: 1,
+    serviceType: 'taxi',
+    fare: 8000,
+    commission: 640,
+    requestedAt: new Date(),
+    companyId: 3,
+    startCode: '4821',
+    startCodeBlockedAt: null,
+    startCodeExempt: false,
+    ...over,
+  });
+
+  it.each(['assigned', 'driver_en_route'])('%s with a code -> active and the code', async (status) => {
+    const { service } = createService({ tripRequest: row({ status }) });
+    const r = await service.getStatus(9, 1);
+    expect(r.start_code).toBe('4821');
+    expect(r.start_code_state).toBe('active');
+  });
+
+  it('blocked -> state blocked and no code', async () => {
+    const { service } = createService({
+      tripRequest: row({ status: 'driver_en_route', startCode: null, startCodeBlockedAt: new Date() }),
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.start_code).toBeNull();
+    expect(r.start_code_state).toBe('blocked');
+  });
+
+  it('inherited trip in the window -> not_required and no code', async () => {
+    const { service } = createService({
+      tripRequest: row({ status: 'driver_en_route', startCode: null, startCodeExempt: true }),
+    });
+    const r = await service.getStatus(9, 1);
+    expect(r.start_code).toBeNull();
+    expect(r.start_code_state).toBe('not_required');
+  });
+
+  it.each(['pending_assignment', 'in_progress', 'completed', 'cancelled_by_passenger', 'no_show'])(
+    '%s -> not_applicable and no code, even if a stale value were read',
+    async (status) => {
+      const { service } = createService({ tripRequest: row({ status, startCode: '4821' }) });
+      const r = await service.getStatus(9, 1);
+      expect(r.start_code).toBeNull();
+      expect(r.start_code_state).toBe('not_applicable');
+    },
+  );
+
+  it('active trip endpoint carries the same code as GET /trips/:id', async () => {
+    const { service } = createService({ activeRow: row({ status: 'driver_en_route' }) });
+    const r = await service.getActive(1);
+    expect(r.active_trip?.start_code).toBe('4821');
+    expect(r.active_trip?.start_code_state).toBe('active');
+  });
+
+  it('passes the trip company and status to the tracking service and returns its answer', async () => {
+    const tracking: DriverTracking = {
+      window_age_sec: 20,
+      stale_after_sec: 45,
+      hide_after_sec: 300,
+      position: { lat: 6.96, lng: -75.41, age_sec: 8 },
+    };
+    const { service, tracking: trackingService } = createService({
+      tripRequest: row({ status: 'driver_en_route' }),
+      tracking,
+    });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(trackingService.forPassenger).toHaveBeenCalledWith({
+      tripRequestId: 9,
+      companyId: 3,
+      status: 'driver_en_route',
+    });
+    expect(r.driver_tracking).toEqual(tracking);
+  });
+
+  it('the status read for the passenger is the only one that asks for the code', async () => {
+    const asked: string[] = [];
+    const { service } = createService({ tripRequest: row({}) });
+    const original = service as unknown as { repo: TripsRepository };
+    original.repo = {
+      ...original.repo,
+      async getTripRequest() {
+        asked.push('getTripRequest');
+        return null;
+      },
+      async getTripRequestForPassenger() {
+        asked.push('getTripRequestForPassenger');
+        return row({});
+      },
+    } as unknown as TripsRepository;
+
+    await service.getStatus(9, 1);
+
+    expect(asked).toEqual(['getTripRequestForPassenger']);
+  });
+});
+
+describe('TripsService.cancel · inherits the penalty decision of the database (ADR-033 section 1.6)', () => {
+  it('reports free_of_charge from the persisted penalty, not from the local window', async () => {
+    const { service } = createService({
+      tripRequest: {
+        tripRequestId: 9,
+        passengerId: 1,
+        status: 'driver_en_route',
+        assignedAt: new Date(Date.now() - 20 * 60_000),
+        updatedAt: new Date(),
+        municipalityId: 1,
+        serviceType: 'taxi',
+      },
+    });
+    const closing = (service as unknown as { tripClosing: TripClosingService }).tripClosing;
+    jest.spyOn(closing, 'closePassengerTrip').mockResolvedValue({
+      kind: 'applied',
+      status: 'cancelled_by_passenger',
+      arrivedAt: null,
+      finishedAt: new Date(),
+      netEarnings: null,
+      cashCollectedAt: null,
+      penaltyRecorded: false,
+    });
+
+    const r = await service.cancel(9, 1, {});
+
+    expect(r.free_of_charge).toBe(true);
+    expect(r.penalty_recorded).toBe(false);
   });
 });

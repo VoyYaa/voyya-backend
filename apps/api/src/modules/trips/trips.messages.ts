@@ -16,6 +16,14 @@ export const TRIPS_MESSAGES = {
   noShowGracePending: 'Aún no pasa la cortesía de espera',
   invalidTransition: (status: string): string =>
     `No puedes hacer esta transición: el viaje está en ${status}`,
+  startCodeRequired:
+    'Para iniciar este viaje pídele el código al pasajero y actualiza la app de conductor',
+  startCodeInvalid: (attemptsRemaining: number): string =>
+    attemptsRemaining === 1
+      ? 'Código incorrecto. Último intento.'
+      : `Código incorrecto. Te quedan ${attemptsRemaining} intentos.`,
+  startCodeBlocked:
+    'El inicio de este viaje quedó bloqueado. Llama al pasajero, declara que no se presentó o cancela el viaje.',
   cannotMarkArrival: (status: string): string => `No puedes marcar la llegada: el viaje está en ${status}`,
   cannotConfirmCash: (status: string): string => `No puedes confirmar el cobro: el viaje está en ${status}`,
 } as const;

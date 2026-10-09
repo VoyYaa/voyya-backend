@@ -31,6 +31,7 @@ import {
 import type { TripRequest } from '@prisma/client';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
+import { isInTripWindow } from '../../shared/trip-window';
 import { isUniqueViolation } from '../../shared/unique-violation';
 import { MunicipalityFareReader } from '../service-config/municipality-fare.reader';
 import { OperationalParamsService } from '../service-config/operational-params.service';
@@ -38,6 +39,7 @@ import { ServiceCatalog } from '../service-config/service-catalog';
 import { CompanyDirectory } from '../tenancy/company-directory';
 import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
+import { DriverTrackingService } from '../assignment/driver-tracking.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import type { MunicipalityFareRow } from '../service-config/service-config.types';
 import { calculateFare, type FareParams } from './domain/fare.calculator';
@@ -77,6 +79,7 @@ export class TripsService {
     private readonly params: OperationalParamsService,
     private readonly catalog: ServiceCatalog,
     private readonly companyDirectory: CompanyDirectory,
+    private readonly tracking: DriverTrackingService,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
@@ -275,7 +278,7 @@ export class TripsService {
   }
 
   async getStatus(tripRequestId: number, passengerId: number): Promise<TripRequestStatus> {
-    const t = await this.repo.getTripRequest(tripRequestId);
+    const t = await this.repo.getTripRequestForPassenger(tripRequestId);
     if (!t) {
       throw new NotFoundException({
         code: 'TRIP_REQUEST_NOT_FOUND',
@@ -290,7 +293,9 @@ export class TripsService {
 
   async getActive(passengerId: number): Promise<ActiveTripResponse> {
     const active = await this.repo.findActiveTripRequest(passengerId);
-    return { active_trip: active ? await this.toStatusResponse(active) : null };
+    if (!active) return { active_trip: null };
+    const withCode = await this.repo.getTripRequestForPassenger(active.tripRequestId);
+    return { active_trip: withCode ? await this.toStatusResponse(withCode) : null };
   }
 
   private async toStatusResponse(t: TripRequest): Promise<TripRequestStatus> {
@@ -304,6 +309,12 @@ export class TripsService {
     const requestedCompany =
       t.requestedCompanyId === null ? null : await this.companyDirectory.getRef(t.requestedCompanyId);
     const { cancellationWindowMin } = await this.params.get(t.municipalityId, t.serviceType);
+    const tracking = await this.tracking.forPassenger({
+      tripRequestId,
+      companyId: t.companyId,
+      status: t.status,
+    });
+    const code = startCodeView(t);
 
     return {
       trip_request_id: t.tripRequestId,
@@ -318,9 +329,9 @@ export class TripsService {
         freeCancellationDeadline(t, cancellationWindowMin)?.toISOString() ?? null,
       updated_at: t.updatedAt.toISOString(),
       server_time: new Date().toISOString(),
-      start_code: null,
-      start_code_state: 'not_applicable',
-      driver_tracking: null,
+      start_code: code.start_code,
+      start_code_state: code.start_code_state,
+      driver_tracking: tracking,
     };
   }
 
@@ -405,6 +416,15 @@ export class TripsService {
       almostEqual(payload.destination.lng, dto.destination.lng)
     );
   }
+}
+
+function startCodeView(
+  t: Pick<TripRequest, 'status' | 'startCode' | 'startCodeBlockedAt' | 'startCodeExempt'>,
+): Pick<TripRequestStatus, 'start_code' | 'start_code_state'> {
+  if (!isInTripWindow(t.status)) return { start_code: null, start_code_state: 'not_applicable' };
+  if (t.startCodeBlockedAt !== null) return { start_code: null, start_code_state: 'blocked' };
+  if (t.startCode !== null) return { start_code: t.startCode, start_code_state: 'active' };
+  return { start_code: null, start_code_state: t.startCodeExempt ? 'not_required' : 'not_applicable' };
 }
 
 function activeTripConflict(active: Pick<TripRequest, 'tripRequestId' | 'status'>): ConflictException {

@@ -19,6 +19,8 @@ export interface OpsQueueDbRow {
   dropoffAddress: string;
   fareTotal: number;
   driver: OpsAssignedDriverRow | null;
+  startFailedAttempts: number;
+  startBlockedAt: Date | null;
 }
 
 export interface OpsTripDetailRow {
@@ -35,8 +37,11 @@ export interface OpsTripDetailRow {
   requestedAt: Date;
   assignedAt: Date | null;
   arrivedAt: Date | null;
+  startedAt: Date | null;
   finishedAt: Date | null;
   cashCollectedAt: Date | null;
+  startFailedAttempts: number;
+  startBlockedAt: Date | null;
 }
 
 export interface OpsDriverVehicleRow {
@@ -104,6 +109,8 @@ export class OpsConsoleRepository {
         pickupAddress: true,
         dropoffAddress: true,
         fare: true,
+        startCodeFailedAttempts: true,
+        startCodeBlockedAt: true,
         passenger: { select: { user: { select: { firstName: true, lastName: true } } } },
         assignments: {
           where: { status: 'accepted' },
@@ -128,6 +135,8 @@ export class OpsConsoleRepository {
       dropoffAddress: requireTripLocation(r.dropoffAddress),
       fareTotal: Number(r.fare),
       driver: toAssignedDriver(r.assignments[0]),
+      startFailedAttempts: r.startCodeFailedAttempts,
+      startBlockedAt: r.startCodeBlockedAt,
     }));
   }
 
@@ -145,7 +154,10 @@ export class OpsConsoleRepository {
         requestedAt: true,
         assignedAt: true,
         arrivedAt: true,
+        startedAt: true,
         finishedAt: true,
+        startCodeFailedAttempts: true,
+        startCodeBlockedAt: true,
         pickupAddress: true,
         dropoffAddress: true,
         fare: true,
@@ -183,8 +195,11 @@ export class OpsConsoleRepository {
       requestedAt: t.requestedAt,
       assignedAt: t.assignedAt,
       arrivedAt: t.arrivedAt,
+      startedAt: t.startedAt,
       finishedAt: t.finishedAt,
       cashCollectedAt: t.cashCollectedAt,
+      startFailedAttempts: t.startCodeFailedAttempts,
+      startBlockedAt: t.startCodeBlockedAt,
     };
   }
 

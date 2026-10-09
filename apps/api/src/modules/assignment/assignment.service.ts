@@ -42,7 +42,12 @@ import {
   type OperationalParams,
 } from '../service-config/operational-params.service';
 import { ASSIGNMENT_MESSAGES } from './assignment.messages';
-import { AssignmentRepository, type PassengerData, type TripRequestInfo } from './assignment.repository';
+import {
+  AssignmentRepository,
+  type AssignedDriverRow,
+  type PassengerData,
+  type TripRequestInfo,
+} from './assignment.repository';
 import { CandidateRepository } from './candidate.repository';
 import { type CompanyCandidate, pickNearest } from './nearest-candidate';
 import { PUSH_PROVIDER, type PushProvider } from './ports/push-provider.port';
@@ -432,16 +437,7 @@ export class AssignmentService {
     }
 
     const params = await this.paramsService.get(info.municipalityId, info.serviceType);
-    const eta =
-      row.lat !== null && row.lng !== null
-        ? calculateEta(
-            haversineKm(
-              { lat: row.lat, lng: row.lng },
-              { lat: info.pickupLat, lng: info.pickupLng },
-            ),
-            params.avgSpeedKmh,
-          )
-        : null;
+    const eta = this.frozenOrCurrentEta(info, row, params.avgSpeedKmh);
 
     return {
       name: row.name,
@@ -451,6 +447,21 @@ export class AssignmentService {
       eta,
       company,
     };
+  }
+
+  private frozenOrCurrentEta(
+    info: TripRequestInfo,
+    row: AssignedDriverRow,
+    avgSpeedKmh: number,
+  ): AssignedDriverSummary['eta'] {
+    if (info.pickupDistanceAtAssignmentM !== null) {
+      return calculateEta(info.pickupDistanceAtAssignmentM / 1000, avgSpeedKmh);
+    }
+    if (row.lat === null || row.lng === null) return null;
+    return calculateEta(
+      haversineKm({ lat: row.lat, lng: row.lng }, { lat: info.pickupLat, lng: info.pickupLng }),
+      avgSpeedKmh,
+    );
   }
 
   getOwnedAssignment(

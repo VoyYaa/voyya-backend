@@ -18,9 +18,7 @@ import { RolesGuard } from './modules/auth/guards/roles.guard';
 import { ServiceConfigModule } from './modules/service-config/service-config.module';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
-import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from './shared/throttlers';
-import { skipUnlessOptedIn } from './shared/opt-in-throttle';
-import { SERVICE_OPTIONS_PER_USER, SERVICE_OPTIONS_PER_USER_LIMIT } from './shared/user-throttler.guard';
+import { buildThrottlers } from './shared/throttlers';
 
 @Module({
   imports: [
@@ -30,11 +28,8 @@ import { SERVICE_OPTIONS_PER_USER, SERVICE_OPTIONS_PER_USER_LIMIT } from './shar
     ScheduleModule.forRoot(),
     ThrottlerModule.forRootAsync({
       inject: [EnvService],
-      useFactory: (env: EnvService) => [
-        { name: 'default', ttl: env.get('THROTTLE_TTL_SECONDS') * 1000, limit: env.get('THROTTLE_LIMIT') },
-        { name: AFFILIATION_DOCS_HOURLY, ...AFFILIATION_DOCS_HOURLY_LIMIT, skipIf: skipUnlessOptedIn(AFFILIATION_DOCS_HOURLY) },
-        { name: SERVICE_OPTIONS_PER_USER, ...SERVICE_OPTIONS_PER_USER_LIMIT, skipIf: () => true },
-      ],
+      useFactory: (env: EnvService) =>
+        buildThrottlers({ ttlMs: env.get('THROTTLE_TTL_SECONDS') * 1000, limit: env.get('THROTTLE_LIMIT') }),
     }),
     PrismaModule,
     TenancyModule,

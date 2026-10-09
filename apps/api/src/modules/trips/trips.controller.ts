@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   HttpCode,
   Param,
   ParseIntPipe,
@@ -21,7 +22,7 @@ import {
   TripServiceOptionsQuery,
   type TripServiceOptionsResponse,
 } from '@voyyaa/shared';
-import { UserThrottlerGuard } from '../../shared/user-throttler.guard';
+import { PER_USER_LIMITS, PerUserLimit, UserThrottlerGuard } from '../../shared/user-throttler.guard';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentUserId } from '../tenancy/identity.decorators';
@@ -61,11 +62,15 @@ export class TripsController {
   }
 
   @Get('active')
+  @PerUserLimit(PER_USER_LIMITS.tripStatus)
+  @Header('Cache-Control', 'no-store')
   getActive(@CurrentUserId() passengerId: number): Promise<ActiveTripResponse> {
     return this.trips.getActive(passengerId);
   }
 
   @Get(':id')
+  @PerUserLimit(PER_USER_LIMITS.tripStatus)
+  @Header('Cache-Control', 'no-store')
   getStatus(
     @Param('id', ParseIntPipe) tripRequestId: number,
     @CurrentUserId() passengerId: number,

@@ -47,6 +47,8 @@ describe('OpsConsoleService.listTripRequests', () => {
         dropoffAddress: 'B',
         fareTotal: 10000,
         driver: null,
+        startFailedAttempts: 0,
+        startBlockedAt: null,
       },
     ]);
 
@@ -61,6 +63,47 @@ describe('OpsConsoleService.listTripRequests', () => {
       fare_total: 10000,
       driver: null,
     });
+  });
+
+  it('puts the failed attempts and the block time on each queue row', async () => {
+    const { service, repo } = create();
+    const blockedAt = new Date('2026-10-09T15:00:00.000Z');
+    repo.listTripRequests.mockResolvedValue([
+      {
+        tripRequestId: 1,
+        status: 'driver_en_route',
+        requestedAt: new Date(),
+        statusSince: new Date(),
+        passengerName: 'Ana Pérez',
+        pickupAddress: 'A',
+        dropoffAddress: 'B',
+        fareTotal: 10000,
+        driver: null,
+        startFailedAttempts: 5,
+        startBlockedAt: blockedAt,
+      },
+      {
+        tripRequestId: 2,
+        status: 'driver_en_route',
+        requestedAt: new Date(),
+        statusSince: new Date(),
+        passengerName: 'Luis Gómez',
+        pickupAddress: 'A',
+        dropoffAddress: 'B',
+        fareTotal: 10000,
+        driver: null,
+        startFailedAttempts: 2,
+        startBlockedAt: null,
+      },
+    ]);
+
+    const result = await service.listTripRequests(COMPANY_ID, { status: 'all', limit: 100 });
+
+    expect(result.rows.map((r) => [r.start_failed_attempts, r.start_blocked_at])).toEqual([
+      [5, blockedAt.toISOString()],
+      [2, null],
+    ]);
+    expect(JSON.stringify(result)).not.toMatch(/start_code|startCode/);
   });
 
   it('translates the status filter chip into the underlying TripStatus set', async () => {
@@ -129,8 +172,11 @@ describe('OpsConsoleService.getTripRequest', () => {
       requestedAt: new Date(),
       assignedAt: null,
       arrivedAt: null,
+      startedAt: null,
       finishedAt: null,
       cashCollectedAt: null,
+      startFailedAttempts: 0,
+      startBlockedAt: null,
     });
 
     const result = await service.getTripRequest(COMPANY_ID, 1);
@@ -161,14 +207,50 @@ describe('OpsConsoleService.getTripRequest', () => {
       requestedAt: new Date(),
       assignedAt: null,
       arrivedAt: null,
+      startedAt: null,
       finishedAt: null,
       cashCollectedAt: null,
+      startFailedAttempts: 0,
+      startBlockedAt: null,
     });
 
     const result = await service.getTripRequest(COMPANY_ID, 1);
 
     expect(result.fare.commission).toBe(expected);
     expect(result.fare.total).toBe(10000);
+  });
+
+  it('exposes the start attempts, the block time and started_at, and never a code (HU-CI-11)', async () => {
+    const { service, repo } = create();
+    const blockedAt = new Date('2026-10-09T15:00:00.000Z');
+    const startedAt = new Date('2026-10-09T15:10:00.000Z');
+    repo.getTripRequest.mockResolvedValue({
+      tripRequestId: 1,
+      status: 'driver_en_route',
+      statusSince: new Date(),
+      pickupAddress: 'A',
+      dropoffAddress: 'B',
+      fareTotal: 10000,
+      commission: 0,
+      passengerName: 'Ana Pérez',
+      passengerPhone: null,
+      driver: null,
+      requestedAt: new Date(),
+      assignedAt: null,
+      arrivedAt: null,
+      startedAt,
+      finishedAt: null,
+      cashCollectedAt: null,
+      startFailedAttempts: 5,
+      startBlockedAt: blockedAt,
+    });
+
+    const result = await service.getTripRequest(COMPANY_ID, 1);
+
+    expect(result.start_failed_attempts).toBe(5);
+    expect(result.start_blocked_at).toBe(blockedAt.toISOString());
+    expect(result.timeline.started_at).toBe(startedAt.toISOString());
+    expect(JSON.stringify(result)).not.toMatch(/start_code|startCode/);
   });
 
   it('trip request not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {

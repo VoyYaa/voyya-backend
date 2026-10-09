@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, Param, ParseIntPipe, Post, UseGuards } from '@nestjs/common';
-import { CompleteTripDTO, type TripTransitionResult } from '@voyyaa/shared';
+import { CompleteTripDTO, StartTripDTO, type TripTransitionResult } from '@voyyaa/shared';
+import { PER_USER_LIMITS, PerUserLimit } from '../../shared/user-throttler.guard';
 import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
 import { Roles } from '../auth/decorators/roles.decorator';
 import { CurrentTenant, CurrentUserId } from '../tenancy/identity.decorators';
@@ -33,13 +34,15 @@ export class TripLifecycleController {
   }
 
   @Post(':id/start')
+  @PerUserLimit(PER_USER_LIMITS.tripStart)
   @HttpCode(200)
   markStarted(
     @Param('id', ParseIntPipe) tripRequestId: number,
+    @Body(new ZodValidationPipe(StartTripDTO)) dto: StartTripDTO,
     @CurrentUserId() driverId: number,
     @CurrentTenant() companyId: number,
   ): Promise<TripTransitionResult> {
-    return this.lifecycle.markStarted(tripRequestId, driverId, companyId);
+    return this.lifecycle.markStarted(tripRequestId, driverId, companyId, dto);
   }
 
   @Post(':id/complete')

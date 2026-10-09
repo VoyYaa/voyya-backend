@@ -1,17 +1,21 @@
 import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import type {
-  ConsentStatus,
-  DriverHomeState,
-  DriverShiftState,
-  DriverTripView,
-  PendingCashTripsResponse,
-  ReportDriverLocationDTO,
-  UpdateDriverShiftDTO,
+import {
+  type ConsentStatus,
+  type DriverHomeState,
+  type DriverShiftState,
+  type DriverTripView,
+  type PendingCashTripsResponse,
+  type ReportDriverLocationDTO,
+  type ReportDriverLocationResult,
+  type UpdateDriverShiftDTO,
+  START_CODE_MAX_FAILED_ATTEMPTS,
 } from '@voyyaa/shared';
+import { isInTripWindow } from '../../shared/trip-window';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { ConsentQueryService } from '../auth/consent-query.service';
-import { DriverRepository, type DriverShiftRow } from './driver.repository';
+import { DriverRepository, type ActiveTripRow, type DriverShiftRow } from './driver.repository';
+import { DriverTrackingService } from './driver-tracking.service';
 import { OperationalParamsService } from '../service-config/operational-params.service';
 
 @Injectable()
@@ -21,6 +25,7 @@ export class DriverShiftService {
     private readonly repo: DriverRepository,
     private readonly params: OperationalParamsService,
     private readonly consents: ConsentQueryService,
+    private readonly tracking: DriverTrackingService,
   ) {}
 
   async updateShift(
@@ -38,13 +43,22 @@ export class DriverShiftService {
     driverId: number,
     companyId: number,
     dto: ReportDriverLocationDTO,
-  ): Promise<void> {
-    const ok = await this.withLocationConsent(driverId, companyId, { currentVersion: false }, (tx) =>
-      this.repo.reportLocation(tx, driverId, companyId, dto.lat, dto.lng),
+  ): Promise<ReportDriverLocationResult> {
+    const reported = await this.withLocationConsent(
+      driverId,
+      companyId,
+      { currentVersion: false },
+      async (tx, consent) => {
+        const written = await this.repo.reportLocation(tx, driverId, companyId, dto.lat, dto.lng);
+        if (!written) return null;
+        const windowTripId = await this.repo.getWindowTripOfDriver(tx, driverId, companyId);
+        return { sharing: this.tracking.sharingFor(windowTripId, consent) };
+      },
     );
-    if (!ok) {
+    if (reported === null) {
       throw new ConflictException({ code: 'NOT_ON_SHIFT', message: 'No estás en turno' });
     }
+    return { ok: true, location_sharing: reported.sharing };
   }
 
   async getHome(driverId: number, companyId: number): Promise<DriverHomeState> {
@@ -59,6 +73,12 @@ export class DriverShiftService {
     let activeTripView: DriverTripView | null = null;
     if (activeTrip) {
       const graceMin = (await this.params.get(activeTrip.municipalityId, activeTrip.serviceType)).noShowGraceMin;
+      const sharing = isInTripWindow(activeTrip.status)
+        ? this.tracking.sharingFor(
+            activeTrip.tripRequestId,
+            await this.consents.locationStatus(driverId),
+          )
+        : null;
       activeTripView = {
         trip_request_id: activeTrip.tripRequestId,
         assignment_id: activeTrip.assignmentId,
@@ -70,12 +90,13 @@ export class DriverShiftService {
         arrived_at: activeTrip.arrivedAt ? activeTrip.arrivedAt.toISOString() : null,
         no_show_available_at: noShowAvailableAt(activeTrip.arrivedAt, graceMin),
         cash_collected_at: activeTrip.cashCollectedAt ? activeTrip.cashCollectedAt.toISOString() : null,
-        start_code_required: false,
-        start_attempts_remaining: null,
-        start_blocked: false,
-        pickup_location: null,
-        dropoff_location: null,
-        location_sharing: null,
+        ...startCodeView(activeTrip),
+        pickup_location: toCoordinate(activeTrip.pickupLat, activeTrip.pickupLng),
+        dropoff_location:
+          activeTrip.status === 'in_progress'
+            ? toCoordinate(activeTrip.dropoffLat, activeTrip.dropoffLng)
+            : null,
+        location_sharing: sharing,
       };
     }
 
@@ -157,7 +178,7 @@ export class DriverShiftService {
     driverId: number,
     companyId: number,
     options: { currentVersion: boolean },
-    write: (tx: Prisma.TransactionClient) => Promise<T>,
+    write: (tx: Prisma.TransactionClient, consent: ConsentStatus) => Promise<T>,
   ): Promise<T> {
     return this.prisma.runInTenant(companyId, async (tx) => {
       const status = await this.consents.locationStatusLocked(tx, driverId);
@@ -167,13 +188,30 @@ export class DriverShiftService {
           message: 'Acepta el aviso de ubicación para poder compartirla.',
         });
       }
-      return write(tx);
+      return write(tx, status);
     });
   }
 }
 
 function isLocationConsentAccepted(status: ConsentStatus, currentVersion: boolean): boolean {
   return status.state === 'granted' && !(currentVersion && status.requires_acceptance);
+}
+
+function startCodeView(
+  trip: ActiveTripRow,
+): Pick<DriverTripView, 'start_code_required' | 'start_attempts_remaining' | 'start_blocked'> {
+  const required = isInTripWindow(trip.status) && !trip.startCodeExempt;
+  return {
+    start_code_required: required,
+    start_attempts_remaining: required
+      ? Math.max(0, START_CODE_MAX_FAILED_ATTEMPTS - trip.startCodeFailedAttempts)
+      : null,
+    start_blocked: trip.startCodeBlockedAt !== null,
+  };
+}
+
+function toCoordinate(lat: number | null, lng: number | null): { lat: number; lng: number } | null {
+  return lat !== null && lng !== null ? { lat, lng } : null;
 }
 
 function toShiftState(row: DriverShiftRow): DriverShiftState {
