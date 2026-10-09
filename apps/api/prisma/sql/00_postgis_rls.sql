@@ -15,6 +15,12 @@
 --   (h) RLS by company_id — trips.fare_config and admin.system_parameter (ADR-018)
 --   (i) One open fare version per company and service type (ADR-018, closes B-13)
 --   (j) RLS by company_id — affiliation documents and reviews (ADR-021)
+--   (k) RLS by company_id — settlement remittances and export audit (ADR-027)
+--   (l) Uniqueness and purge support (ADR-027, ADR-029, ADR-030)
+--   (m) Unassigned-trip probe (CM-14)
+--   (n) RLS on trips.trip_request scoped to tenant sessions + function permissions (ADR-032 section 3)
+--   (o) RLS and append-only privileges — municipality fare, operational params, company commission (ADR-032 section 4.4)
+--   (p) One open version per key (ADR-032 section 4)
 --
 -- Idempotent (IF [NOT] EXISTS / DROP POLICY IF EXISTS).
 -- =============================================================================
@@ -213,3 +219,102 @@ BEGIN
   END IF;
 END
 $$;
+
+
+-- (n) RLS on trips.trip_request, scoped to tenant sessions (ADR-032 section 3) ----------------------
+ALTER TABLE trips.trip_request ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips.trip_request FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS company_scope_trip_request ON trips.trip_request;
+CREATE POLICY company_scope_trip_request ON trips.trip_request
+  USING (
+    CASE
+      WHEN nullif(current_setting('app.current_company', true), '') IS NULL THEN true
+      ELSE company_id = nullif(current_setting('app.current_company', true), '')::int
+        OR (company_id IS NULL
+            AND addressed_company_id = nullif(current_setting('app.current_company', true), '')::int)
+        OR assignment.company_has_live_assignment(trip_request_id, status = 'pending_assignment')
+    END
+  )
+  WITH CHECK (
+    CASE
+      WHEN nullif(current_setting('app.current_company', true), '') IS NULL THEN true
+      ELSE company_id IS NULL OR company_id = nullif(current_setting('app.current_company', true), '')::int
+    END
+  );
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+    GRANT EXECUTE ON FUNCTION assignment.company_has_live_assignment(integer, boolean) TO app_voyya;
+  END IF;
+END
+$$;
+
+REVOKE EXECUTE ON FUNCTION assignment.company_has_live_assignment(integer, boolean) FROM PUBLIC;
+
+-- (o) RLS and append-only privileges — municipality fare, operational params, company commission (ADR-032 section 4.4) ---
+ALTER TABLE trips.municipality_fare ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips.municipality_fare FORCE  ROW LEVEL SECURITY;
+ALTER TABLE admin.municipality_operational_params ENABLE ROW LEVEL SECURITY;
+ALTER TABLE admin.municipality_operational_params FORCE  ROW LEVEL SECURITY;
+ALTER TABLE tenancy.company_commission ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tenancy.company_commission FORCE  ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS read_municipality_fare ON trips.municipality_fare;
+CREATE POLICY read_municipality_fare ON trips.municipality_fare FOR SELECT USING (true);
+DROP POLICY IF EXISTS platform_insert_municipality_fare ON trips.municipality_fare;
+CREATE POLICY platform_insert_municipality_fare ON trips.municipality_fare FOR INSERT
+  WITH CHECK (current_setting('app.platform_session', true) = 'on');
+DROP POLICY IF EXISTS platform_close_municipality_fare ON trips.municipality_fare;
+CREATE POLICY platform_close_municipality_fare ON trips.municipality_fare FOR UPDATE
+  USING (current_setting('app.platform_session', true) = 'on' AND valid_to IS NULL)
+  WITH CHECK (current_setting('app.platform_session', true) = 'on'
+              AND valid_to IS NOT NULL
+              AND valid_to BETWEEN (now() AT TIME ZONE 'UTC') - interval '1 minute'
+                               AND (now() AT TIME ZONE 'UTC') + interval '1 minute');
+
+DROP POLICY IF EXISTS read_municipality_operational_params ON admin.municipality_operational_params;
+CREATE POLICY read_municipality_operational_params ON admin.municipality_operational_params FOR SELECT USING (true);
+DROP POLICY IF EXISTS platform_insert_municipality_operational_params ON admin.municipality_operational_params;
+CREATE POLICY platform_insert_municipality_operational_params ON admin.municipality_operational_params FOR INSERT
+  WITH CHECK (current_setting('app.platform_session', true) = 'on');
+DROP POLICY IF EXISTS platform_close_municipality_operational_params ON admin.municipality_operational_params;
+CREATE POLICY platform_close_municipality_operational_params ON admin.municipality_operational_params FOR UPDATE
+  USING (current_setting('app.platform_session', true) = 'on' AND valid_to IS NULL)
+  WITH CHECK (current_setting('app.platform_session', true) = 'on'
+              AND valid_to IS NOT NULL
+              AND valid_to BETWEEN (now() AT TIME ZONE 'UTC') - interval '1 minute'
+                               AND (now() AT TIME ZONE 'UTC') + interval '1 minute');
+
+DROP POLICY IF EXISTS read_company_commission ON tenancy.company_commission;
+CREATE POLICY read_company_commission ON tenancy.company_commission FOR SELECT
+  USING (current_setting('app.platform_session', true) = 'on'
+         OR company_id = nullif(current_setting('app.current_company', true), '')::int);
+DROP POLICY IF EXISTS platform_insert_company_commission ON tenancy.company_commission;
+CREATE POLICY platform_insert_company_commission ON tenancy.company_commission FOR INSERT
+  WITH CHECK (current_setting('app.platform_session', true) = 'on');
+DROP POLICY IF EXISTS platform_close_company_commission ON tenancy.company_commission;
+CREATE POLICY platform_close_company_commission ON tenancy.company_commission FOR UPDATE
+  USING (current_setting('app.platform_session', true) = 'on' AND valid_to IS NULL)
+  WITH CHECK (current_setting('app.platform_session', true) = 'on'
+              AND valid_to IS NOT NULL
+              AND valid_to BETWEEN (now() AT TIME ZONE 'UTC') - interval '1 minute'
+                               AND (now() AT TIME ZONE 'UTC') + interval '1 minute');
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app_voyya') THEN
+    REVOKE UPDATE, DELETE ON trips.municipality_fare, admin.municipality_operational_params, tenancy.company_commission FROM app_voyya;
+    GRANT UPDATE (valid_to) ON trips.municipality_fare, admin.municipality_operational_params, tenancy.company_commission TO app_voyya;
+  END IF;
+END
+$$;
+
+-- (p) One open version per key (ADR-032 section 4) ----------------------------------------------------
+CREATE UNIQUE INDEX IF NOT EXISTS uq_municipality_fare_open
+  ON trips.municipality_fare (municipality_id, service_type) WHERE valid_to IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_municipality_operational_params_open
+  ON admin.municipality_operational_params (municipality_id, service_type) WHERE valid_to IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_company_commission_open
+  ON tenancy.company_commission (company_id) WHERE valid_to IS NULL;

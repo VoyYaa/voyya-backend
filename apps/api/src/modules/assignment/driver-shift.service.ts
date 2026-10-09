@@ -12,7 +12,7 @@ import type {
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { ConsentQueryService } from '../auth/consent-query.service';
 import { DriverRepository, type DriverShiftRow } from './driver.repository';
-import { OperationalParamsService } from './operational-params.service';
+import { OperationalParamsService } from '../service-config/operational-params.service';
 
 @Injectable()
 export class DriverShiftService {
@@ -58,7 +58,7 @@ export class DriverShiftService {
 
     let activeTripView: DriverTripView | null = null;
     if (activeTrip) {
-      const graceMin = await this.noShowGraceMinFor(companyId);
+      const graceMin = (await this.params.get(activeTrip.municipalityId, activeTrip.serviceType)).noShowGraceMin;
       activeTripView = {
         trip_request_id: activeTrip.tripRequestId,
         assignment_id: activeTrip.assignmentId,
@@ -163,12 +163,6 @@ export class DriverShiftService {
       }
       return write(tx);
     });
-  }
-
-  private async noShowGraceMinFor(companyId: number): Promise<number> {
-    const municipalityId = await this.repo.getCompanyMunicipality(companyId);
-    if (municipalityId === null) return 0;
-    return (await this.params.get(municipalityId)).noShowGraceMin;
   }
 }
 

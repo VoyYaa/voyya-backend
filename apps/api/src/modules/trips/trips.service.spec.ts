@@ -11,7 +11,7 @@ import type { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import type { AssignmentService } from '../assignment/assignment.service';
 import type {
-  CloseTripInput,
+  ClosePassengerTripInput,
   CloseTripOutcome,
   TripClosingService,
 } from '../assignment/trip-closing.service';
@@ -19,10 +19,45 @@ import type { HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService } from './quote-token.service';
 import { TripsRepository } from './trips.repository';
 import { TripsService } from './trips.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
+import type { CompanyDirectory } from '../tenancy/company-directory';
+import type { MunicipalityFareReader } from '../service-config/municipality-fare.reader';
+import type { MunicipalityFareRow } from '../service-config/service-config.types';
+import type { OperationalParamsService } from '../service-config/operational-params.service';
+import { ServiceCatalog } from '../service-config/service-catalog';
 
-function fakeActiveCompanyResolver(companyId: number | null = 1): ActiveCompanyResolver {
-  return { resolve: async () => companyId } as unknown as ActiveCompanyResolver;
+const FARE_ROW = {
+  municipalityFareId: 31,
+  baseFare: 8000,
+  nightSurchargePct: 20,
+  holidaySurchargePct: 15,
+} as MunicipalityFareRow;
+
+function fakeFares(row: MunicipalityFareRow | null = FARE_ROW): MunicipalityFareReader {
+  return {
+    getCurrent: async () => row,
+    getById: async () => row,
+  } as unknown as MunicipalityFareReader;
+}
+
+function fakeParams(cancellationWindowMin = 2): OperationalParamsService {
+  return { get: async () => ({ cancellationWindowMin }) } as unknown as OperationalParamsService;
+}
+
+function fakeCatalog(active: readonly string[] = ['taxi']): ServiceCatalog {
+  return new ServiceCatalog({ get: () => active } as never);
+}
+
+function fakeDirectory(): CompanyDirectory {
+  return {
+    getRef: async (companyId: number) => ({ company_id: companyId, display_name: `Empresa ${companyId}` }),
+  } as unknown as CompanyDirectory;
+}
+
+function fakeDispatchCompaniesResolver(companyIds: number[] = [1]): DispatchCompaniesResolver & { resolve: jest.Mock } {
+  return { resolve: jest.fn(async () => companyIds) } as unknown as DispatchCompaniesResolver & {
+    resolve: jest.Mock;
+  };
 }
 
 const SECRET = 'test-secret-0123456789';
@@ -49,6 +84,8 @@ interface FakeTripRequest {
   fare?: number;
   commission?: number;
   requestedAt?: Date;
+  requestedCompanyId?: number | null;
+  municipalityFareId?: number | null;
 }
 interface FakeState {
   covered?: boolean;
@@ -58,21 +95,24 @@ interface FakeState {
   tripRequest?: FakeTripRequest | null;
   summary?: AssignedDriverSummary | null;
   tripClosingRejected?: boolean;
+  companyIds?: number[];
+  fare?: MunicipalityFareRow | null;
+  activeServices?: readonly string[];
+  createError?: Error;
+  noDriverApplied?: boolean;
+  windowMin?: number;
 }
 
-function fakeRepo(state: FakeState): TripsRepository {
+interface FakeRepoCalls {
+  created: Array<Record<string, unknown>>;
+  noDriver: number[];
+}
+
+function fakeRepo(state: FakeState, calls: FakeRepoCalls): TripsRepository {
   let activeLookups = 0;
   return {
     async isPointInCoverage(): Promise<boolean> {
       return state.covered ?? true;
-    },
-    async getActiveFareConfig(): Promise<unknown> {
-      return {
-        baseFare: 8000,
-        nightSurchargePct: 20,
-        holidaySurchargePct: 15,
-        commissionPct: 8,
-      };
     },
     async findActiveTripRequest(): Promise<unknown> {
       activeLookups += 1;
@@ -80,7 +120,9 @@ function fakeRepo(state: FakeState): TripsRepository {
       if (state.activeRow) return state.activeRow;
       return state.active ? { tripRequestId: 77, status: 'driver_en_route' } : null;
     },
-    async createTripRequest(): Promise<unknown> {
+    async createTripRequest(data: Record<string, unknown>): Promise<unknown> {
+      calls.created.push(data);
+      if (state.createError) throw state.createError;
       if (state.createRaces) {
         throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
           code: 'P2002',
@@ -100,8 +142,9 @@ function fakeRepo(state: FakeState): TripsRepository {
     async getTripRequest(): Promise<unknown> {
       return state.tripRequest ?? null;
     },
-    async updateStatus(): Promise<void> {
-      return undefined;
+    async markNoDriverIfUnassigned(tripRequestId: number): Promise<boolean> {
+      calls.noDriver.push(tripRequestId);
+      return state.noDriverApplied ?? true;
     },
   } as unknown as TripsRepository;
 }
@@ -116,18 +159,18 @@ function fakeAssignment(
 
 function fakeTripClosing(rejected = false): TripClosingService {
   return {
-    async closeTrip(input: CloseTripInput): Promise<CloseTripOutcome> {
+    async closePassengerTrip(input: ClosePassengerTripInput): Promise<CloseTripOutcome> {
       if (rejected) {
         return { kind: 'rejected', reason: 'invalid_status', status: 'cancelled_by_passenger' };
       }
       return {
         kind: 'applied',
-        status: input.to,
+        status: 'cancelled_by_passenger',
         arrivedAt: null,
         finishedAt: new Date(),
         netEarnings: null,
         cashCollectedAt: null,
-        penaltyRecorded: input.penaltyRecorded ?? false,
+        penaltyRecorded: input.penaltyRecorded,
       };
     },
   } as unknown as TripClosingService;
@@ -143,23 +186,30 @@ function createService(
   service: TripsService;
   emitter: { emit: jest.Mock };
   assignment: AssignmentService & { getAssignedDriverSummary: jest.Mock };
+  calls: FakeRepoCalls;
+  dispatch: DispatchCompaniesResolver & { resolve: jest.Mock };
 } {
   const env = fakeEnv(ttl);
   const quote = new QuoteTokenService(env);
   const emitter = { emit: jest.fn(() => true) };
   const assignment = fakeAssignment(state.summary ?? null);
+  const calls: FakeRepoCalls = { created: [], noDriver: [] };
+  const dispatch = fakeDispatchCompaniesResolver(state.companyIds);
   const service = new TripsService(
-    fakeRepo(state),
+    fakeRepo(state, calls),
     quote,
-    env,
     emitter as unknown as EventEmitter2,
     NO_HOLIDAYS,
     assignment,
     fakeTripClosing(state.tripClosingRejected ?? false),
-    fakeActiveCompanyResolver(),
+    dispatch,
     new RequestContextService(),
+    fakeFares(state.fare === undefined ? FARE_ROW : state.fare),
+    fakeParams(state.windowMin),
+    fakeCatalog(state.activeServices),
+    fakeDirectory(),
   );
-  return { service, emitter, assignment };
+  return { service, emitter, assignment, calls, dispatch };
 }
 
 describe('TripsService.quote', () => {
@@ -278,6 +328,7 @@ describe('TripsService.create', () => {
     const expirer = new QuoteTokenService(fakeEnv(-10));
     const expiredToken = expirer.sign({
       municipalityId: 1,
+      municipalityFareId: 31,
       serviceType: 'taxi',
       origin: { lat: ORIGIN.lat, lng: ORIGIN.lng },
       destination: { lat: DESTINATION.lat, lng: DESTINATION.lng },
@@ -317,6 +368,7 @@ describe('TripsService.getStatus (GET /trips/:id)', () => {
     model: 'Logan',
     contact_phone: '3001234567',
     eta: null,
+    company: { company_id: 1, display_name: 'Cootrayal' },
   };
 
   it('pending -> driver null, ui "searching", closed fare', async () => {
@@ -416,6 +468,7 @@ describe('TripsService.getActive (GET /trips/active)', () => {
     model: 'Logan',
     contact_phone: '3001234567',
     eta: null,
+    company: { company_id: 1, display_name: 'Cootrayal' },
   };
 
   it('no active trip -> { active_trip: null }', async () => {
@@ -554,5 +607,273 @@ describe('TripsService.cancel (free window from assignedAt)', () => {
       expect(r.free_of_charge).toBe(expectedFree);
       expect(r.penalty_recorded).toBe(!expectedFree);
     });
+  });
+});
+
+describe('TripsService.quote · municipality fare (ADR-032 §4.1)', () => {
+  const quoteDto = {
+    origin: ORIGIN,
+    destination: DESTINATION,
+    municipality_id: 1,
+    service_type: 'taxi' as const,
+  };
+
+  it('prices with the municipality fare and never carries a commission to the passenger', async () => {
+    const { service } = createService({ fare: { ...FARE_ROW, baseFare: 9500 } });
+
+    const r = await service.quote(quoteDto);
+
+    expect(r.fare.base_fare).toBe(9500);
+    expect(r.fare.commission).toBe(0);
+  });
+
+  it('signs the version of the fare it used (token v2)', async () => {
+    const { service } = createService();
+    const quoter = new QuoteTokenService(fakeEnv());
+
+    const r = await service.quote(quoteDto);
+
+    const verification = quoter.verify(r.quote_token);
+    expect(verification.ok && verification.payload).toMatchObject({ version: 2, municipalityFareId: 31 });
+  });
+
+  it('asks the resolver for the companies that offer the service in the municipality', async () => {
+    const { service, dispatch } = createService();
+
+    await service.quote(quoteDto);
+
+    expect(dispatch.resolve).toHaveBeenCalledWith(1, { serviceType: 'taxi' });
+  });
+
+  it('no company offers the service -> 409 NO_COMPANY_AVAILABLE', async () => {
+    const { service } = createService({ companyIds: [] });
+
+    const error = await service.quote(quoteDto).catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'NO_COMPANY_AVAILABLE' });
+  });
+
+  it('no fare for the municipality -> 409 FARE_NOT_CONFIGURED', async () => {
+    const { service } = createService({ fare: null });
+
+    const error = await service.quote(quoteDto).catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'FARE_NOT_CONFIGURED' });
+  });
+
+  it('an inactive service -> 409 SERVICE_NOT_AVAILABLE before anything else', async () => {
+    const { service, dispatch } = createService({ activeServices: ['taxi'] });
+
+    const error = await service
+      .quote({ ...quoteDto, service_type: 'comfort' as never })
+      .catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'SERVICE_NOT_AVAILABLE' });
+    expect(dispatch.resolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('TripsService.create · preference and fare version (ADR-032 §3, §7.2)', () => {
+  const dtoWith = (token: string, over: Partial<CreateTripRequestDTO> = {}): CreateTripRequestDTO => ({
+    origin: ORIGIN,
+    destination: DESTINATION,
+    municipality_id: 1,
+    service_type: 'taxi',
+    payment_method: 'cash',
+    quote_token: token,
+    ...over,
+  });
+  async function tokenFrom(service: TripsService): Promise<string> {
+    const r = await service.quote({
+      origin: ORIGIN,
+      destination: DESTINATION,
+      municipality_id: 1,
+      service_type: 'taxi',
+    });
+    return r.quote_token;
+  }
+
+  it('stores the requested company, the fare version and a zero commission', async () => {
+    const { service, calls } = createService({ companyIds: [4] });
+
+    await service.create(dtoWith(await tokenFrom(service), { requested_company_id: 4 }), 1);
+
+    expect(calls.created[0]).toMatchObject({
+      requestedCompanyId: 4,
+      municipalityFareId: 31,
+      commission: 0,
+    });
+  });
+
+  it('"Cualquiera" (no preference) stores a null requested company', async () => {
+    const { service, calls } = createService();
+
+    await service.create(dtoWith(await tokenFrom(service)), 1);
+
+    expect(calls.created[0]).toMatchObject({ requestedCompanyId: null });
+  });
+
+  it('a requested company that is not available -> 409 COMPANY_NOT_AVAILABLE and nothing is created', async () => {
+    const { service, calls, dispatch } = createService();
+    const token = await tokenFrom(service);
+    dispatch.resolve.mockResolvedValueOnce([]);
+
+    const error = await service
+      .create(dtoWith(token, { requested_company_id: 99 }), 1)
+      .catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'COMPANY_NOT_AVAILABLE' });
+    expect(calls.created).toHaveLength(0);
+  });
+
+  it('the trigger rejecting the company between validation and insert -> the same 409', async () => {
+    const { service } = createService({
+      createError: new Error(
+        'new row for relation "trip_request" violates check constraint "trip_request_requested_company_available"',
+      ),
+    });
+
+    const error = await service
+      .create(dtoWith(await tokenFrom(service), { requested_company_id: 4 }), 1)
+      .catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'COMPANY_NOT_AVAILABLE' });
+  });
+
+  it('the trigger message surfaced by Prisma without the constraint name -> the same 409', async () => {
+    const { service } = createService({
+      createError: new Error(
+        'Error occurred during query execution: PostgresError { code: "23514", message: "ADR-032: requested company 7 is not available for this trip" }',
+      ),
+    });
+
+    const error = await service
+      .create(dtoWith(await tokenFrom(service), { requested_company_id: 7 }), 1)
+      .catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'COMPANY_NOT_AVAILABLE' });
+  });
+
+  it('an inactive service -> 409 SERVICE_NOT_AVAILABLE', async () => {
+    const { service } = createService({ activeServices: ['taxi'] });
+    const token = await tokenFrom(service);
+
+    const error = await service
+      .create(dtoWith(token, { service_type: 'comfort' as never }), 1)
+      .catch((e: unknown) => e);
+
+    expect((error as ConflictException).getResponse()).toMatchObject({ code: 'SERVICE_NOT_AVAILABLE' });
+  });
+
+  it('a token without the v2 marker -> 410 QUOTE_EXPIRED', async () => {
+    const { service } = createService();
+    const { createHmac } = await import('node:crypto');
+    const body = Buffer.from(
+      JSON.stringify({
+        municipalityId: 1,
+        serviceType: 'taxi',
+        origin: { lat: ORIGIN.lat, lng: ORIGIN.lng },
+        destination: { lat: DESTINATION.lat, lng: DESTINATION.lng },
+        distanceKm: 1,
+        fare: { base_fare: 8000, night_surcharge: 0, holiday_surcharge: 0, total: 8000, commission: 640, currency: 'COP' },
+        exp: Math.floor(Date.now() / 1000) + 120,
+      }),
+    ).toString('base64url');
+    const signature = createHmac('sha256', SECRET).update(body).digest().toString('base64url');
+
+    await expect(service.create(dtoWith(`${body}.${signature}`), 1)).rejects.toBeInstanceOf(GoneException);
+  });
+});
+
+describe('TripsService.getStatus · company fields (ADR-032 §7.2)', () => {
+  const trip = (over: Partial<FakeTripRequest>): FakeTripRequest => ({
+    tripRequestId: 9,
+    passengerId: 1,
+    status: 'pending_assignment',
+    assignedAt: null,
+    arrivedAt: null,
+    updatedAt: new Date(),
+    municipalityId: 1,
+    serviceType: 'taxi',
+    fare: 8000,
+    commission: 640,
+    requestedAt: new Date(),
+    requestedCompanyId: null,
+    municipalityFareId: 31,
+    ...over,
+  });
+
+  it('exposes the service type and null requested_company for "Cualquiera"', async () => {
+    const { service } = createService({ tripRequest: trip({}) });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(r.service_type).toBe('taxi');
+    expect(r.requested_company).toBeNull();
+  });
+
+  it('names the requested company', async () => {
+    const { service } = createService({ tripRequest: trip({ requestedCompanyId: 4 }) });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(r.requested_company).toEqual({ company_id: 4, display_name: 'Empresa 4' });
+  });
+
+  it('rebuilds the fare from the stored version and always reports a zero commission', async () => {
+    const { service } = createService({ tripRequest: trip({ commission: 640 }) });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(r.fare.base_fare).toBe(8000);
+    expect(r.fare.commission).toBe(0);
+  });
+
+  it('a trip without a stored version falls back to the flat fare', async () => {
+    const { service } = createService({ tripRequest: trip({ municipalityFareId: null, fare: 8500 }) });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(r.fare).toMatchObject({ base_fare: 8500, total: 8500, commission: 0 });
+  });
+
+  it('the free-cancellation window comes from the municipality parameters', async () => {
+    const assignedAt = new Date(Date.now() - 30_000);
+    const { service } = createService({
+      tripRequest: trip({ status: 'assigned', assignedAt }),
+      windowMin: 7,
+    });
+
+    const r = await service.getStatus(9, 1);
+
+    expect(r.free_cancellation_until).toBe(new Date(assignedAt.getTime() + 7 * 60_000).toISOString());
+  });
+});
+
+describe('TripsService.onNoDriver (MD-05)', () => {
+  it('moves the trip to no_driver through the conditional update', async () => {
+    const { service, calls } = createService();
+
+    await service.onNoDriver({
+      trip_request_id: 12,
+      attempts_made: 3,
+      final_radius_km: 5,
+      occurred_at: new Date().toISOString(),
+    });
+
+    expect(calls.noDriver).toEqual([12]);
+  });
+
+  it('a trip that was taken meanwhile is left alone and nothing throws', async () => {
+    const { service } = createService({ noDriverApplied: false });
+
+    await expect(
+      service.onNoDriver({
+        trip_request_id: 12,
+        attempts_made: 3,
+        final_radius_km: 5,
+        occurred_at: new Date().toISOString(),
+      }),
+    ).resolves.toBeUndefined();
   });
 });

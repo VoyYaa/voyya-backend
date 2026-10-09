@@ -1,20 +1,24 @@
 import type { INestApplication } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Test } from '@nestjs/testing';
-import { randomInt } from 'node:crypto';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import {
+  commissionsOf,
+  createCompany,
+  createMunicipality,
+  createPlatformAdmin,
+  openFares,
+} from './support/platform-fixtures';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
 
-function uniqueSuffix(): string {
-  return `${Date.now()}${randomInt(100_000, 999_999)}`;
-}
+const PREFIX = '_ConcurApproveMuni';
 
-suite('Approve company — doubleclick is an atomic single-take (ADR-021 §2.3)', () => {
+suite('Approve company: double click and concurrent approvals are atomic (ADR-021 §2.3, ADR-032 §10.2, HU-MS-11)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let jwt: JwtService;
@@ -22,6 +26,7 @@ suite('Approve company — doubleclick is an atomic single-take (ADR-021 §2.3)'
 
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
+    process.env.ACTIVE_SERVICE_TYPES = 'taxi,comfort';
     process.env.LOCATION_STALE_MIN = '0';
     process.env.LOCATION_PURGE_HOURS = '0';
 
@@ -33,77 +38,29 @@ suite('Approve company — doubleclick is an atomic single-take (ADR-021 §2.3)'
 
     prisma = moduleRef.get(PrismaService);
     jwt = moduleRef.get(JwtService, { strict: false });
-
-    const suffix = uniqueSuffix();
-    const platformAdmin = await prisma.user.create({
-      data: {
-        firstName: '_Platform',
-        lastName: 'Admin',
-        phone: `_platadm-concur-${suffix}`,
-        role: 'platform_admin',
-        companyId: null,
-      },
-    });
-    const token = jwt.sign({ sub: platformAdmin.userId, role: 'platform_admin', type: 'access' });
-    platformAdminAuth = `Bearer ${token}`;
-  }, 20_000);
+    platformAdminAuth = (await createPlatformAdmin(prisma, jwt, 'concur')).auth;
+  }, 30_000);
 
   afterAll(async () => {
-    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, '_ConcurApproveMuni');
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, PREFIX);
     if (app) await app.close();
   }, 60_000);
 
-  async function pendingCompanyFixture(): Promise<number> {
-    const suffix = uniqueSuffix();
-    const municipality = await prisma.municipality.create({
-      data: {
-        name: `_ConcurApproveMuni-${suffix}`,
-        department: 'Test',
-        coveragePolygon: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [0, 0],
-              [0, 1],
-              [1, 1],
-              [1, 0],
-              [0, 0],
-            ],
-          ],
-        },
-        status: 'active',
-      },
-    });
-
-    const company = await prisma.company.create({
-      data: {
-        legalName: `_ConcurApproveCo-${suffix}`,
-        taxId: `_concur-approve-${suffix}`,
-        type: 'cooperative',
-        municipalityId: municipality.municipalityId,
-        status: 'pending',
-        vehicleCount: 10,
-        contactEmail: `contact-${suffix}@voyya-e2e.test`,
-        contactFirstName: '_Contact',
-        contactLastName: `First${suffix}`,
-        contactPhone: `_concur-contact-${suffix}`,
-      },
-    });
-    return company.companyId;
+  function approve(companyId: number, body: Record<string, unknown>) {
+    return request(app.getHttpServer())
+      .post(`/platform/companies/${companyId}/approve`)
+      .set('Authorization', platformAdminAuth)
+      .send(body);
   }
 
+  const APPROVAL = { initial_fare: { base_fare: 9000 }, commission_pct: 8 };
+
   it('N=10 concurrent approve requests on the SAME pending company -> exactly one 200, the rest 409', async () => {
-    const companyId = await pendingCompanyFixture();
+    const municipalityId = await createMunicipality(prisma, PREFIX);
+    const companyId = await createCompany(prisma, municipalityId);
     const N = 10;
 
-    const attempts = Array.from({ length: N }, () =>
-      request(app.getHttpServer())
-        .post(`/platform/companies/${companyId}/approve`)
-        .set('Authorization', platformAdminAuth)
-        .send({ initial_fare: { base_fare: 9000 } }),
-    );
-
-    const results = await Promise.all(attempts);
+    const results = await Promise.all(Array.from({ length: N }, () => approve(companyId, APPROVAL)));
     const ok = results.filter((r) => r.status === 200);
     const conflicts = results.filter((r) => r.status === 409);
 
@@ -115,43 +72,72 @@ suite('Approve company — doubleclick is an atomic single-take (ADR-021 §2.3)'
 
     const company = await prisma.company.findUnique({ where: { companyId } });
     expect(company?.status).toBe('active');
+    expect(await openFares(prisma, municipalityId)).toHaveLength(1);
+    expect((await commissionsOf(prisma, companyId)).filter((c) => c.validTo === null)).toHaveLength(1);
+    expect(await prisma.user.count({ where: { companyId, role: 'admin' } })).toBe(1);
 
-    const fareConfigCount = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
-      return tx.fareConfig.count({ where: { companyId, validTo: null } });
-    });
-    expect(fareConfigCount).toBe(1);
-
-    const adminCount = await prisma.user.count({ where: { companyId, role: 'admin' } });
-    expect(adminCount).toBe(1);
-
-    const reviewCount = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
-      return tx.companyReview.count({ where: { companyId, decision: 'approved' } });
-    });
+    const reviewCount = await prisma.runInTenant(companyId, (tx) =>
+      tx.companyReview.count({ where: { companyId, decision: 'approved' } }),
+    );
     expect(reviewCount).toBe(1);
   }, 30_000);
 
-  it('reintentar después de un 409 sigue siendo seguro: aprobar de nuevo no crea una segunda tarifa', async () => {
-    const companyId = await pendingCompanyFixture();
+  it('retrying after a 409 is safe: approving again creates no second fare and no second commission', async () => {
+    const municipalityId = await createMunicipality(prisma, PREFIX);
+    const companyId = await createCompany(prisma, municipalityId);
 
-    const first = await request(app.getHttpServer())
-      .post(`/platform/companies/${companyId}/approve`)
-      .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 8500 } });
+    const first = await approve(companyId, APPROVAL);
     expect(first.status).toBe(200);
+    expect(first.body.provisioning.municipality_fares).toEqual([
+      expect.objectContaining({ service_type: 'taxi', created: true }),
+    ]);
 
-    const retry = await request(app.getHttpServer())
-      .post(`/platform/companies/${companyId}/approve`)
-      .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 8500 } });
+    const retry = await approve(companyId, APPROVAL);
     expect(retry.status).toBe(409);
     expect(retry.body).toMatchObject({ code: 'COMPANY_NOT_PENDING' });
 
-    const fareConfigCount = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
-      return tx.fareConfig.count({ where: { companyId } });
-    });
-    expect(fareConfigCount).toBe(1);
+    expect(await openFares(prisma, municipalityId)).toHaveLength(1);
+    expect(await commissionsOf(prisma, companyId)).toHaveLength(1);
   }, 20_000);
+
+  it('HU-MS-11: two different companies of the same municipality approved at once -> two 200 and one single open fare', async () => {
+    const municipalityId = await createMunicipality(prisma, PREFIX);
+    const firstId = await createCompany(prisma, municipalityId);
+    const secondId = await createCompany(prisma, municipalityId);
+
+    const [first, second] = await Promise.all([
+      approve(firstId, { initial_fare: { base_fare: 9000 }, commission_pct: 8 }),
+      approve(secondId, { initial_fare: { base_fare: 12000 }, commission_pct: 5 }),
+    ]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    const created = [first, second].filter((r) => r.body.provisioning.municipality_fares[0].created);
+    expect(created).toHaveLength(1);
+    const fares = await openFares(prisma, municipalityId);
+    expect(fares).toHaveLength(1);
+    expect(first.body.provisioning.municipality_fares[0].municipality_fare_id).toBe(fares[0]?.municipalityFareId);
+    expect(second.body.provisioning.municipality_fares[0].municipality_fare_id).toBe(fares[0]?.municipalityFareId);
+    expect(Number((await commissionsOf(prisma, firstId))[0]?.commissionPct)).toBe(8);
+    expect(Number((await commissionsOf(prisma, secondId))[0]?.commissionPct)).toBe(5);
+  }, 30_000);
+
+  it('MD-16: repeated concurrent approvals with services declared in opposite orders never answer 500', async () => {
+    for (let round = 0; round < 3; round += 1) {
+      const municipalityId = await createMunicipality(prisma, PREFIX);
+      const firstId = await createCompany(prisma, municipalityId, { serviceTypes: ['taxi', 'comfort'] });
+      const secondId = await createCompany(prisma, municipalityId, { serviceTypes: ['comfort', 'taxi'] });
+
+      const results = await Promise.all([
+        approve(firstId, APPROVAL),
+        approve(secondId, APPROVAL),
+      ]);
+
+      for (const result of results) {
+        expect([200, 409]).toContain(result.status);
+      }
+      expect((await openFares(prisma, municipalityId, 'taxi')).length).toBeLessThanOrEqual(1);
+      expect((await openFares(prisma, municipalityId, 'comfort')).length).toBeLessThanOrEqual(1);
+    }
+  }, 60_000);
 });

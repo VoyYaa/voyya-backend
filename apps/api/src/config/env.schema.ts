@@ -1,9 +1,26 @@
 import {
+  ActiveServiceTypes,
   DRIVER_LOCATION_RETENTION_MAX_HOURS,
   TRIP_COORDINATES_RETENTION_DAYS,
 } from '@voyyaa/shared';
 import { z } from 'zod';
 import { isHttpsOrigin, parseCorsOrigins } from './cors-origins';
+
+const ActiveServiceTypesFromEnv = z
+  .string()
+  .default('taxi')
+  .transform((raw, ctx) => {
+    const parsed = ActiveServiceTypes.safeParse(raw.split(',').map((value) => value.trim()));
+    if (!parsed.success) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'ACTIVE_SERVICE_TYPES debe ser una lista separada por comas de taxi, comfort o delivery (motorcycle está prohibido)',
+      });
+      return z.NEVER;
+    }
+    return [...new Set(parsed.data)];
+  });
 
 const BaseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -65,6 +82,7 @@ const BaseEnvSchema = z.object({
   THROTTLE_LIMIT: z.coerce.number().int().positive().default(100),
 
   DEFAULT_MUNICIPALITY_ID: z.coerce.number().int().positive().default(1),
+  ACTIVE_SERVICE_TYPES: ActiveServiceTypesFromEnv,
 
   SEARCH_RADIUS_KM: z.coerce.number().positive().default(2),
   EXPANSION_RADIUS_KM: z.coerce.number().positive().default(6),

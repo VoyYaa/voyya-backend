@@ -1,7 +1,6 @@
 import type { Assignment, Driver, Prisma, PrismaClient } from '@prisma/client';
 import { AssignmentRepository } from '../src/modules/assignment/assignment.repository';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
-import type { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { createFreshPassenger } from './support/fresh-passenger';
 
@@ -45,8 +44,7 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
     } as unknown as PrismaService;
 
     repo = new AssignmentRepository(prismaService);
-    const activeCompanyResolver = {} as unknown as ActiveCompanyResolver;
-    tripClosing = new TripClosingService(prismaService, repo, activeCompanyResolver);
+    tripClosing = new TripClosingService(prismaService, repo);
 
     const municipality = await raw.municipality.upsert({
       where: { municipalityId: 9001 },
@@ -187,10 +185,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   it('completes an in_progress trip: net_earnings = fare - commission, releases the driver, closes the assignment', async () => {
     const trip = await makeTrip('in_progress');
 
-    const outcome = await tripClosing.closeTrip({
+    const outcome = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'completed',
-      companyId,
       cashCollected: true,
     });
 
@@ -216,10 +213,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
       }),
     );
 
-    const outcome = await tripClosing.closeTrip({
+    const outcome = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'completed',
-      companyId,
       cashCollected: true,
     });
 
@@ -233,17 +229,15 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
 
   it('repeating the same close is idempotent: does not recompute net_earnings', async () => {
     const trip = await makeTrip('in_progress');
-    await tripClosing.closeTrip({
+    await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'completed',
-      companyId,
       cashCollected: true,
     });
 
-    const second = await tripClosing.closeTrip({
+    const second = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'completed',
-      companyId,
       cashCollected: false,
     });
 
@@ -260,10 +254,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
 
     const results = await Promise.all(
       Array.from({ length: N }, () =>
-        tripClosing.closeTrip({
+        tripClosing.closeTrip(companyId, {
           tripRequestId: trip.tripRequestId,
           to: 'completed',
-          companyId,
           cashCollected: true,
         }),
       ),
@@ -279,10 +272,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   it('no_show is rejected as "not_arrived" when the driver never marked arrival', async () => {
     const trip = await makeTrip('driver_en_route');
 
-    const outcome = await tripClosing.closeTrip({
+    const outcome = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'no_show',
-      companyId,
       noShowGraceMin: 5,
     });
 
@@ -292,10 +284,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   it('no_show is rejected as "grace_pending" (with remaining_seconds) before the courtesy elapses', async () => {
     const trip = await makeTrip('driver_en_route', 0);
 
-    const outcome = await tripClosing.closeTrip({
+    const outcome = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'no_show',
-      companyId,
       noShowGraceMin: 5,
     });
 
@@ -309,10 +300,9 @@ suite('TripClosingService.closeTrip against real Postgres (ADR-009)', () => {
   it('no_show applies once the courtesy already elapsed, and closes the assignment as completed', async () => {
     const trip = await makeTrip('driver_en_route', 10);
 
-    const outcome = await tripClosing.closeTrip({
+    const outcome = await tripClosing.closeTrip(companyId, {
       tripRequestId: trip.tripRequestId,
       to: 'no_show',
-      companyId,
       noShowGraceMin: 5,
     });
 

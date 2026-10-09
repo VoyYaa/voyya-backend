@@ -157,9 +157,11 @@ model Company {
   contactPhone     String?       @map("contact_phone")
   status           CompanyStatus @default(active) @map("status")
   membershipFee    Decimal?      @map("membership_fee") @db.Decimal(12, 2)
+  publicName       String?       @map("public_name")
+  serviceTypes     ServiceType[] @default([taxi]) @map("service_types")
   registeredAt     DateTime      @default(now()) @map("registered_at")
 
-  municipality      Municipality           @relation(fields: [municipalityId], references: [municipalityId])
+  municipality      Municipality                    @relation(fields: [municipalityId], references: [municipalityId])
   drivers           Driver[]
   vehicles          Vehicle[]
   assignments       Assignment[]
@@ -167,10 +169,16 @@ model Company {
   fareConfigs       FareConfig[]
   systemParameters  SystemParameter[]
   documents         CompanyDocument[]
-  reviews           CompanyReview[]        @relation("CompanyReviewSubject")
+  reviews           CompanyReview[]                 @relation("CompanyReviewSubject")
   driverDocuments   DriverDocument[]
   remittances       SettlementRemittance[]
   settlementExports SettlementExport[]
+  commissions       CompanyCommission[]
+  requestedTrips    TripRequest[]                   @relation("TripRequestedCompany")
+  addressedTrips    TripRequest[]                   @relation("TripAddressedCompany")
+  ownedTrips        TripRequest[]                   @relation("TripOwnerCompany")
+  originatedFares   MunicipalityFare[]              @relation("FareOriginCompany")
+  originatedParams  MunicipalityOperationalParams[] @relation("ParamsOriginCompany")
 
   @@index([municipalityId])
   @@index([status, registeredAt])
@@ -179,14 +187,20 @@ model Company {
 }
 
 model Municipality {
-  municipalityId  Int    @id @default(autoincrement()) @map("municipality_id")
-  name            String @map("name")
-  department      String @map("department")
-  coveragePolygon Json   @map("coverage_polygon")
-  status          String @default("active") @map("status")
+  municipalityId  Int     @id @default(autoincrement()) @map("municipality_id")
+  daneCode        String? @unique @map("dane_code") @db.Char(5)
+  daneType        String? @map("dane_type")
+  name            String  @map("name")
+  department      String  @map("department")
+  referenceLat    Float?  @map("reference_lat")
+  referenceLng    Float?  @map("reference_lng")
+  coveragePolygon Json?   @map("coverage_polygon")
+  status          String  @default("active") @map("status")
 
-  companies    Company[]
-  tripRequests TripRequest[]
+  companies         Company[]
+  tripRequests      TripRequest[]
+  fares             MunicipalityFare[]
+  operationalParams MunicipalityOperationalParams[]
 
   @@map("municipality")
   @@schema("tenancy")
@@ -206,18 +220,21 @@ model User {
   blockedUntil   DateTime? @map("blocked_until")
   createdAt      DateTime  @default(now()) @map("created_at")
 
-  company                  Company?               @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
-  passenger                Passenger?
-  driver                   Driver?
-  refreshTokens            RefreshToken[]
-  pushTokens               PushToken[]
-  systemParameterUpdates   SystemParameter[]
-  fareConfigVersions       FareConfig[]           @relation("FareConfigAuthor")
-  consentRecords           ConsentRecord[]
-  remittancesRecorded      SettlementRemittance[] @relation("SettlementRemittanceRecorder")
-  settlementExports        SettlementExport[]     @relation("SettlementExporter")
-  verifiedCompanyDocuments CompanyDocument[]      @relation("CompanyDocumentVerifier")
-  companyReviews           CompanyReview[]        @relation("CompanyReviewer")
+  company                   Company?                        @relation(fields: [companyId], references: [companyId], onDelete: Restrict, onUpdate: Cascade)
+  passenger                 Passenger?
+  driver                    Driver?
+  refreshTokens             RefreshToken[]
+  pushTokens                PushToken[]
+  systemParameterUpdates    SystemParameter[]
+  fareConfigVersions        FareConfig[]                    @relation("FareConfigAuthor")
+  consentRecords            ConsentRecord[]
+  remittancesRecorded       SettlementRemittance[]          @relation("SettlementRemittanceRecorder")
+  settlementExports         SettlementExport[]              @relation("SettlementExporter")
+  verifiedCompanyDocuments  CompanyDocument[]               @relation("CompanyDocumentVerifier")
+  companyReviews            CompanyReview[]                 @relation("CompanyReviewer")
+  municipalityFareVersions  MunicipalityFare[]              @relation("MunicipalityFareAuthor")
+  operationalParamsVersions MunicipalityOperationalParams[] @relation("OperationalParamsAuthor")
+  commissionVersions        CompanyCommission[]             @relation("CompanyCommissionAuthor")
 
   @@index([companyId, role])
   @@map("user")
@@ -367,39 +384,50 @@ model Vehicle {
 }
 
 model TripRequest {
-  tripRequestId     Int           @id @default(autoincrement()) @map("trip_request_id")
-  passengerId       Int           @map("passenger_id")
-  municipalityId    Int           @map("municipality_id")
-  serviceType       ServiceType   @default(taxi) @map("service_type")
-  paymentMethod     PaymentMethod @default(cash) @map("payment_method")
-  pickupAddress     String?       @map("pickup_address")
-  dropoffAddress    String?       @map("dropoff_address")
-  pickupLat         Float?        @map("pickup_lat")
-  pickupLng         Float?        @map("pickup_lng")
-  dropoffLat        Float?        @map("dropoff_lat")
-  dropoffLng        Float?        @map("dropoff_lng")
-  requestedAt       DateTime      @default(now()) @map("requested_at")
-  status            TripStatus    @default(pending_assignment) @map("status")
-  assignedAt        DateTime?     @map("assigned_at")
-  arrivedAt         DateTime?     @map("arrived_at")
-  type              String        @default("immediate") @map("type")
-  scheduledPickupAt DateTime?     @map("scheduled_pickup_at")
-  finishedAt        DateTime?     @map("finished_at")
-  distance          Float?        @map("distance")
-  fare              Decimal       @map("fare") @db.Decimal(12, 2)
-  commission        Decimal       @map("commission") @db.Decimal(12, 2)
-  netEarnings       Decimal?      @map("net_earnings") @db.Decimal(12, 2)
-  cashCollectedAt   DateTime?     @map("cash_collected_at")
-  penaltyRecorded   Boolean       @default(false) @map("penalty_recorded")
-  locationPurgedAt  DateTime?     @map("location_purged_at")
-  updatedAt         DateTime      @updatedAt @map("updated_at")
+  tripRequestId      Int           @id @default(autoincrement()) @map("trip_request_id")
+  passengerId        Int           @map("passenger_id")
+  municipalityId     Int           @map("municipality_id")
+  serviceType        ServiceType   @default(taxi) @map("service_type")
+  paymentMethod      PaymentMethod @default(cash) @map("payment_method")
+  pickupAddress      String?       @map("pickup_address")
+  dropoffAddress     String?       @map("dropoff_address")
+  pickupLat          Float?        @map("pickup_lat")
+  pickupLng          Float?        @map("pickup_lng")
+  dropoffLat         Float?        @map("dropoff_lat")
+  dropoffLng         Float?        @map("dropoff_lng")
+  requestedAt        DateTime      @default(now()) @map("requested_at")
+  status             TripStatus    @default(pending_assignment) @map("status")
+  assignedAt         DateTime?     @map("assigned_at")
+  arrivedAt          DateTime?     @map("arrived_at")
+  type               String        @default("immediate") @map("type")
+  scheduledPickupAt  DateTime?     @map("scheduled_pickup_at")
+  finishedAt         DateTime?     @map("finished_at")
+  distance           Float?        @map("distance")
+  fare               Decimal       @map("fare") @db.Decimal(12, 2)
+  commission         Decimal       @map("commission") @db.Decimal(12, 2)
+  commissionPct      Decimal?      @map("commission_pct") @db.Decimal(5, 2)
+  netEarnings        Decimal?      @map("net_earnings") @db.Decimal(12, 2)
+  cashCollectedAt    DateTime?     @map("cash_collected_at")
+  penaltyRecorded    Boolean       @default(false) @map("penalty_recorded")
+  locationPurgedAt   DateTime?     @map("location_purged_at")
+  requestedCompanyId Int?          @map("requested_company_id")
+  addressedCompanyId Int?          @map("addressed_company_id")
+  companyId          Int?          @map("company_id")
+  municipalityFareId Int?          @map("municipality_fare_id")
+  updatedAt          DateTime      @updatedAt @map("updated_at")
 
-  passenger    Passenger    @relation(fields: [passengerId], references: [passengerId])
-  municipality Municipality @relation(fields: [municipalityId], references: [municipalityId])
-  assignments  Assignment[]
+  passenger        Passenger         @relation(fields: [passengerId], references: [passengerId])
+  municipality     Municipality      @relation(fields: [municipalityId], references: [municipalityId])
+  requestedCompany Company?          @relation("TripRequestedCompany", fields: [requestedCompanyId], references: [companyId])
+  addressedCompany Company?          @relation("TripAddressedCompany", fields: [addressedCompanyId], references: [companyId])
+  company          Company?          @relation("TripOwnerCompany", fields: [companyId], references: [companyId])
+  municipalityFare MunicipalityFare? @relation(fields: [municipalityFareId], references: [municipalityFareId])
+  assignments      Assignment[]
 
   @@index([municipalityId, status, requestedAt])
   @@index([serviceType, status])
+  @@index([companyId, updatedAt])
+  @@index([addressedCompanyId, updatedAt])
   @@map("trip_request")
   @@schema("trips")
 }
@@ -423,6 +451,33 @@ model FareConfig {
   @@index([companyId, serviceType])
   @@index([companyId, serviceType, validFrom])
   @@map("fare_config")
+  @@schema("trips")
+}
+
+model MunicipalityFare {
+  municipalityFareId  Int         @id @default(autoincrement()) @map("municipality_fare_id")
+  municipalityId      Int         @map("municipality_id")
+  serviceType         ServiceType @map("service_type")
+  baseFare            Decimal     @map("base_fare") @db.Decimal(12, 2)
+  nightSurchargePct   Decimal     @map("night_surcharge_pct") @db.Decimal(5, 2)
+  holidaySurchargePct Decimal     @map("holiday_surcharge_pct") @db.Decimal(5, 2)
+  isOfficial          Boolean     @default(false) @map("is_official")
+  officialReference   String?     @map("official_reference")
+  origin              String      @map("origin")
+  originCompanyId     Int?        @map("origin_company_id")
+  sourceFareConfigId  Int?        @unique @map("source_fare_config_id")
+  validFrom           DateTime    @default(now()) @map("valid_from")
+  validTo             DateTime?   @map("valid_to")
+  createdAt           DateTime    @default(now()) @map("created_at")
+  createdBy           Int?        @map("created_by")
+
+  municipality  Municipality  @relation(fields: [municipalityId], references: [municipalityId])
+  originCompany Company?      @relation("FareOriginCompany", fields: [originCompanyId], references: [companyId])
+  createdByUser User?         @relation("MunicipalityFareAuthor", fields: [createdBy], references: [userId], onDelete: SetNull, onUpdate: Cascade)
+  tripRequests  TripRequest[]
+
+  @@index([municipalityId, serviceType, validFrom])
+  @@map("municipality_fare")
   @@schema("trips")
 }
 
@@ -575,4 +630,52 @@ model SettlementExport {
   @@index([companyId, exportedAt])
   @@map("settlement_export")
   @@schema("admin")
+}
+
+model MunicipalityOperationalParams {
+  operationalParamsId   Int         @id @default(autoincrement()) @map("operational_params_id")
+  municipalityId        Int         @map("municipality_id")
+  serviceType           ServiceType @map("service_type")
+  searchRadiusKm        Decimal?    @map("search_radius_km") @db.Decimal(5, 1)
+  expansionRadiusKm     Decimal?    @map("expansion_radius_km") @db.Decimal(5, 1)
+  acceptanceTimeoutSec  Int?        @map("acceptance_timeout_sec")
+  maxAutoRetries        Int?        @map("max_auto_retries")
+  tiebreakWindowHours   Int?        @map("tiebreak_window_hours")
+  locationStaleMin      Int?        @map("location_stale_min")
+  avgSpeedKmh           Int?        @map("avg_speed_kmh")
+  cancellationWindowMin Int?        @map("cancellation_window_min")
+  noShowGraceMin        Int?        @map("no_show_grace_min")
+  origin                String      @map("origin")
+  originCompanyId       Int?        @map("origin_company_id")
+  validFrom             DateTime    @default(now()) @map("valid_from")
+  validTo               DateTime?   @map("valid_to")
+  createdAt             DateTime    @default(now()) @map("created_at")
+  createdBy             Int?        @map("created_by")
+
+  municipality  Municipality @relation(fields: [municipalityId], references: [municipalityId])
+  originCompany Company?     @relation("ParamsOriginCompany", fields: [originCompanyId], references: [companyId])
+  createdByUser User?        @relation("OperationalParamsAuthor", fields: [createdBy], references: [userId], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([municipalityId, serviceType, validFrom])
+  @@map("municipality_operational_params")
+  @@schema("admin")
+}
+
+model CompanyCommission {
+  companyCommissionId Int       @id @default(autoincrement()) @map("company_commission_id")
+  companyId           Int       @map("company_id")
+  commissionPct       Decimal   @map("commission_pct") @db.Decimal(5, 2)
+  origin              String    @map("origin")
+  sourceFareConfigId  Int?      @unique @map("source_fare_config_id")
+  validFrom           DateTime  @default(now()) @map("valid_from")
+  validTo             DateTime? @map("valid_to")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  createdBy           Int?      @map("created_by")
+
+  company       Company @relation(fields: [companyId], references: [companyId])
+  createdByUser User?   @relation("CompanyCommissionAuthor", fields: [createdBy], references: [userId], onDelete: SetNull, onUpdate: Cascade)
+
+  @@index([companyId, validFrom])
+  @@map("company_commission")
+  @@schema("tenancy")
 }

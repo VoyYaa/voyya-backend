@@ -208,19 +208,13 @@ suite('DriverRepository raw SQL against real Postgres (ADR-009)', () => {
     });
   });
 
-  describe('getShiftRow / getCompanyMunicipality', () => {
+  describe('getShiftRow', () => {
     it('getShiftRow reflects the persisted status and vehicle', async () => {
       const driverId = await makeDriver('available');
 
       const row = await withTenant((tx) => repo.getShiftRow(tx, driverId, companyId));
 
       expect(row).toMatchObject({ status: 'available', currentVehicleId: vehicleId });
-    });
-
-    it('getCompanyMunicipality resolves the company municipality', async () => {
-      const found = await repo.getCompanyMunicipality(companyId);
-
-      expect(found).toBe(municipalityId);
     });
   });
 

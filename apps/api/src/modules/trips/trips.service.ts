@@ -28,19 +28,25 @@ import {
   TRIPS_EVENTS,
   TripStateMachine,
 } from '@voyyaa/shared';
-import { Prisma, type TripRequest } from '@prisma/client';
-import { EnvService } from '../../config/env.service';
+import type { TripRequest } from '@prisma/client';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { isUniqueViolation } from '../../shared/unique-violation';
+import { MunicipalityFareReader } from '../service-config/municipality-fare.reader';
+import { OperationalParamsService } from '../service-config/operational-params.service';
+import { ServiceCatalog } from '../service-config/service-catalog';
+import { CompanyDirectory } from '../tenancy/company-directory';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { AssignmentService } from '../assignment/assignment.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
-import { calculateFare } from './domain/fare.calculator';
+import type { MunicipalityFareRow } from '../service-config/service-config.types';
+import { calculateFare, type FareParams } from './domain/fare.calculator';
 import { freeCancellationDeadline, isFreeCancellation } from './domain/free-cancellation';
 import { haversineKm } from './domain/geo';
 import { passengerUiState } from './domain/ui-state';
 import { HOLIDAYS_PROVIDER, type HolidaysProvider } from './holidays/holidays.provider';
 import { QuoteTokenService, type QuotePayload } from './quote-token.service';
+import { TRIPS_MESSAGES } from './trips.messages';
 import { TripsRepository } from './trips.repository';
 
 const EPS = 1e-6;
@@ -61,48 +67,46 @@ export class TripsService {
   constructor(
     private readonly repo: TripsRepository,
     private readonly quoteToken: QuoteTokenService,
-    private readonly env: EnvService,
     private readonly emitter: EventEmitter2,
     @Inject(HOLIDAYS_PROVIDER) private readonly holidays: HolidaysProvider,
     private readonly assignment: AssignmentService,
     private readonly tripClosing: TripClosingService,
-    private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
     private readonly requestContext: RequestContextService,
+    private readonly fares: MunicipalityFareReader,
+    private readonly params: OperationalParamsService,
+    private readonly catalog: ServiceCatalog,
+    private readonly companyDirectory: CompanyDirectory,
   ) {}
 
   async quote(dto: QuoteFareDTO): Promise<QuoteResponse> {
+    this.catalog.assertActive(dto.service_type);
     await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
 
-    const companyId = await this.activeCompanyResolver.resolve(dto.municipality_id);
-    if (companyId === null) {
+    const companyIds = await this.dispatchCompanies.resolve(dto.municipality_id, {
+      serviceType: dto.service_type,
+    });
+    if (companyIds.length === 0) {
       throw new ConflictException({
         code: 'NO_COMPANY_AVAILABLE',
-        message: 'No hay ninguna empresa prestando el servicio en este municipio',
+        message: TRIPS_MESSAGES.noCompanyAvailable,
       });
     }
 
-    const config = await this.repo.getActiveFareConfig(companyId, dto.service_type);
+    const config = await this.fares.getCurrent(dto.municipality_id, dto.service_type);
     if (!config) {
       throw new ConflictException({
         code: 'FARE_NOT_CONFIGURED',
-        message: 'No hay tarifa vigente para este municipio/servicio',
+        message: TRIPS_MESSAGES.fareNotConfigured,
       });
     }
 
     const distanceKm = round3(haversineKm(dto.origin, dto.destination));
-    const fare = calculateFare(
-      {
-        baseFare: Number(config.baseFare),
-        nightSurchargePct: Number(config.nightSurchargePct),
-        holidaySurchargePct: Number(config.holidaySurchargePct),
-        commissionPct: Number(config.commissionPct),
-      },
-      { date: new Date() },
-      this.holidays,
-    );
+    const fare = calculateFare(toFareParams(config), { date: new Date() }, this.holidays);
 
     const quote_token = this.quoteToken.sign({
       municipalityId: dto.municipality_id,
+      municipalityFareId: config.municipalityFareId,
       serviceType: dto.service_type,
       origin: { lat: dto.origin.lat, lng: dto.origin.lng },
       destination: { lat: dto.destination.lat, lng: dto.destination.lng },
@@ -122,17 +126,18 @@ export class TripsService {
   }
 
   async create(dto: CreateTripRequestDTO, passengerId: number): Promise<TripRequestCreated> {
+    this.catalog.assertActive(dto.service_type);
     const verification = this.quoteToken.verify(dto.quote_token);
     if (!verification.ok) {
       if (verification.reason === 'expired') {
         throw new GoneException({
           code: 'QUOTE_EXPIRED',
-          message: 'La cotización venció, vuelve a cotizar',
+          message: TRIPS_MESSAGES.quoteExpired,
         });
       }
       throw new BadRequestException({
         code: 'QUOTE_INVALID',
-        message: 'quote_token inválido',
+        message: TRIPS_MESSAGES.quoteInvalid,
       });
     }
 
@@ -140,11 +145,12 @@ export class TripsService {
     if (!this.tokenMatchesDto(payload, dto)) {
       throw new BadRequestException({
         code: 'QUOTE_MISMATCH',
-        message: 'La cotización no corresponde a la solicitud enviada',
+        message: TRIPS_MESSAGES.quoteMismatch,
       });
     }
 
     await this.ensureCoverage(dto.municipality_id, dto.origin, dto.destination);
+    await this.ensureRequestedCompany(dto);
 
     const active = await this.repo.findActiveTripRequest(passengerId);
     if (active) throw activeTripConflict(active);
@@ -182,14 +188,26 @@ export class TripsService {
         dropoffLng: dto.destination.lng,
         distanceKm: payload.distanceKm,
         fareTotal: payload.fare.total,
-        commission: payload.fare.commission,
+        commission: 0,
+        requestedCompanyId: dto.requested_company_id ?? null,
+        municipalityFareId: payload.municipalityFareId,
       });
     } catch (error) {
+      if (isRequestedCompanyRejected(error)) throw companyNotAvailable();
       if (!isUniqueViolation(error)) throw error;
       const winner = await this.repo.findActiveTripRequest(passengerId);
       if (!winner) throw error;
       throw activeTripConflict(winner);
     }
+  }
+
+  private async ensureRequestedCompany(dto: CreateTripRequestDTO): Promise<void> {
+    if (dto.requested_company_id == null) return;
+    const [available] = await this.dispatchCompanies.resolve(dto.municipality_id, {
+      serviceType: dto.service_type,
+      requestedCompanyId: dto.requested_company_id,
+    });
+    if (available === undefined) throw companyNotAvailable();
   }
 
   async cancel(
@@ -202,11 +220,11 @@ export class TripsService {
     if (!tripRequest) {
       throw new NotFoundException({
         code: 'TRIP_REQUEST_NOT_FOUND',
-        message: 'La solicitud no existe',
+        message: TRIPS_MESSAGES.tripNotFound,
       });
     }
     if (tripRequest.passengerId !== passengerId) {
-      throw new ForbiddenException({ code: 'NOT_OWNER', message: 'No eres el dueño' });
+      throw new ForbiddenException({ code: 'NOT_OWNER', message: TRIPS_MESSAGES.notOwner });
     }
 
     if (
@@ -214,26 +232,26 @@ export class TripsService {
     ) {
       throw new ConflictException({
         code: 'STATUS_NOT_CANCELLABLE',
-        message: 'La solicitud ya no se puede cancelar',
+        message: TRIPS_MESSAGES.notCancellable,
       });
     }
 
-    const freeOfCharge = isFreeCancellation(
-      tripRequest,
-      this.env.get('CANCELLATION_WINDOW_MIN'),
-      receivedAt,
+    const { cancellationWindowMin } = await this.params.get(
+      tripRequest.municipalityId,
+      tripRequest.serviceType,
     );
+    const freeOfCharge = isFreeCancellation(tripRequest, cancellationWindowMin, receivedAt);
     const penaltyRecorded = !freeOfCharge;
 
-    const outcome = await this.tripClosing.closeTrip({
+    const outcome = await this.tripClosing.closePassengerTrip({
       tripRequestId,
-      to: 'cancelled_by_passenger',
+      passengerId,
       penaltyRecorded,
     });
     if (outcome.kind === 'rejected') {
       throw new ConflictException({
         code: 'STATUS_NOT_CANCELLABLE',
-        message: 'La solicitud ya no se puede cancelar',
+        message: TRIPS_MESSAGES.notCancellable,
       });
     }
 
@@ -261,11 +279,11 @@ export class TripsService {
     if (!t) {
       throw new NotFoundException({
         code: 'TRIP_REQUEST_NOT_FOUND',
-        message: 'La solicitud no existe',
+        message: TRIPS_MESSAGES.tripNotFound,
       });
     }
     if (t.passengerId !== passengerId) {
-      throw new ForbiddenException({ code: 'NOT_OWNER', message: 'No eres el dueño' });
+      throw new ForbiddenException({ code: 'NOT_OWNER', message: TRIPS_MESSAGES.notOwner });
     }
     return this.toStatusResponse(t);
   }
@@ -283,16 +301,21 @@ export class TripsService {
           STATUSES_WITH_DRIVER_CONTACT.includes(t.status),
         )
       : null;
+    const requestedCompany =
+      t.requestedCompanyId === null ? null : await this.companyDirectory.getRef(t.requestedCompanyId);
+    const { cancellationWindowMin } = await this.params.get(t.municipalityId, t.serviceType);
 
     return {
       trip_request_id: t.tripRequestId,
       status: t.status,
       ui: passengerUiState(t.status, t.arrivedAt),
+      service_type: t.serviceType,
+      requested_company: requestedCompany,
       fare: await this.rebuildFare(t),
       driver,
       arrived_at: t.arrivedAt ? t.arrivedAt.toISOString() : null,
       free_cancellation_until:
-        freeCancellationDeadline(t, this.env.get('CANCELLATION_WINDOW_MIN'))?.toISOString() ?? null,
+        freeCancellationDeadline(t, cancellationWindowMin)?.toISOString() ?? null,
       updated_at: t.updatedAt.toISOString(),
       server_time: new Date().toISOString(),
     };
@@ -300,36 +323,25 @@ export class TripsService {
 
   private async rebuildFare(t: TripRequest): Promise<FareBreakdown> {
     const total = Number(t.fare);
-    const commission = Number(t.commission);
-    const companyId = await this.activeCompanyResolver.resolve(t.municipalityId);
     const config =
-      companyId === null ? null : await this.repo.getActiveFareConfig(companyId, t.serviceType);
+      t.municipalityFareId === null ? null : await this.fares.getById(t.municipalityFareId);
     if (config) {
-      const d = calculateFare(
-        {
-          baseFare: Number(config.baseFare),
-          nightSurchargePct: Number(config.nightSurchargePct),
-          holidaySurchargePct: Number(config.holidaySurchargePct),
-          commissionPct: Number(config.commissionPct),
-        },
-        { date: t.requestedAt },
-        this.holidays,
-      );
-      if (d.total === total) return { ...d, commission };
+      const rebuilt = calculateFare(toFareParams(config), { date: t.requestedAt }, this.holidays);
+      if (rebuilt.total === total) return rebuilt;
     }
     return {
       base_fare: total,
       night_surcharge: 0,
       holiday_surcharge: 0,
       total,
-      commission,
+      commission: 0,
       currency: 'COP',
     };
   }
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_NO_DRIVER)
   async onNoDriver(ev: TripRequestNoDriverEvent): Promise<void> {
-    await this.transition(ev.trip_request_id, 'no_driver');
+    await this.markNoDriver(ev.trip_request_id);
   }
 
   @OnEvent(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER)
@@ -340,19 +352,11 @@ export class TripsService {
     this.emitTripRequestCreated(tripRequest);
   }
 
-  private async transition(
-    tripRequestId: number,
-    to: Parameters<typeof TripStateMachine.tripRequest.assert>[1],
-  ): Promise<void> {
-    const tripRequest = await this.repo.getTripRequest(tripRequestId);
-    if (!tripRequest) return;
-    if (!TripStateMachine.tripRequest.canTransition(tripRequest.status, to)) {
-      this.logger.warn(
-        `Transition ignored tripRequest=${tripRequestId}: ${tripRequest.status} -> ${to}`,
-      );
-      return;
+  private async markNoDriver(tripRequestId: number): Promise<void> {
+    const applied = await this.repo.markNoDriverIfUnassigned(tripRequestId);
+    if (!applied) {
+      this.logger.warn(`no_driver ignored tripRequest=${tripRequestId}: no longer pending without a company`);
     }
-    await this.repo.updateStatus(tripRequestId, to);
   }
 
   private emitTripRequestCreated(tripRequest: TripRequest): void {
@@ -383,7 +387,7 @@ export class TripsService {
     if (!originOk || !destinationOk) {
       throw new ConflictException({
         code: 'OUT_OF_COVERAGE',
-        message: 'El origen o el destino está fuera del área de cobertura',
+        message: TRIPS_MESSAGES.outOfCoverage,
       });
     }
   }
@@ -403,13 +407,37 @@ export class TripsService {
 function activeTripConflict(active: Pick<TripRequest, 'tripRequestId' | 'status'>): ConflictException {
   return new ConflictException({
     code: 'ACTIVE_TRIP_REQUEST_EXISTS',
-    message: 'Ya tienes un viaje en curso',
+    message: TRIPS_MESSAGES.activeTripExists,
     active_trip: { trip_request_id: active.tripRequestId, status: active.status },
   });
 }
-function isUniqueViolation(error: unknown): boolean {
-  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+const REQUESTED_COMPANY_CONSTRAINT = 'trip_request_requested_company_available';
+const REQUESTED_COMPANY_TRIGGER_MESSAGE = 'ADR-032: requested company';
+
+function isRequestedCompanyRejected(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error.message.includes(REQUESTED_COMPANY_CONSTRAINT) ||
+      error.message.includes(REQUESTED_COMPANY_TRIGGER_MESSAGE))
+  );
 }
+
+function companyNotAvailable(): ConflictException {
+  return new ConflictException({
+    code: 'COMPANY_NOT_AVAILABLE',
+    message: TRIPS_MESSAGES.companyNotAvailable,
+  });
+}
+
+function toFareParams(config: MunicipalityFareRow): FareParams {
+  return {
+    baseFare: config.baseFare,
+    nightSurchargePct: config.nightSurchargePct,
+    holidaySurchargePct: config.holidaySurchargePct,
+    commissionPct: 0,
+  };
+}
+
 function almostEqual(a: number, b: number): boolean {
   return Math.abs(a - b) < EPS;
 }

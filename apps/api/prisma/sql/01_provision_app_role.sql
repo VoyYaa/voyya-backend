@@ -59,5 +59,10 @@ REVOKE DELETE ON auth."user" FROM app_voyya;
 REVOKE EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION assignment.trip_has_assignment(integer) TO app_voyya;
 
+REVOKE UPDATE, DELETE ON trips.municipality_fare, admin.municipality_operational_params, tenancy.company_commission FROM app_voyya;
+GRANT UPDATE (valid_to) ON trips.municipality_fare, admin.municipality_operational_params, tenancy.company_commission TO app_voyya;
+GRANT EXECUTE ON FUNCTION assignment.company_has_live_assignment(integer, boolean) TO app_voyya;
+REVOKE EXECUTE ON FUNCTION assignment.company_has_live_assignment(integer, boolean) FROM PUBLIC;
+
 -- Verification (prints the row so the operator sees it in the psql output):
 SELECT rolname, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'app_voyya';

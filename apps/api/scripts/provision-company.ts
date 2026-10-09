@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
 import { PrismaClient } from '@prisma/client';
-import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { CompanyCommissionRepository } from '../src/modules/service-config/company-commission.repository';
+import { MunicipalityFareRepository } from '../src/modules/service-config/municipality-fare.repository';
+import { OperationalParamsRepository } from '../src/modules/service-config/operational-params.repository';
+import { ServiceConfigProvisioner } from '../src/modules/service-config/service-config-provisioner';
 import {
   CompanyProvisioningService,
   type ProvisionCompanyInput,
@@ -9,11 +13,23 @@ import {
 
 export type { ProvisionCompanyInput, ProvisionedCompany };
 
+function platformRunnerFor(prisma: PrismaClient): PrismaService {
+  return {
+    runAsPlatform: (fn: Parameters<PrismaService['runAsPlatform']>[0]) =>
+      PrismaService.prototype.runAsPlatform.call(prisma, fn),
+  } as unknown as PrismaService;
+}
+
 export async function provisionCompany(
   prisma: PrismaClient,
   input: ProvisionCompanyInput,
 ): Promise<ProvisionedCompany> {
-  const service = new CompanyProvisioningService(prisma as unknown as PrismaService);
+  const serviceConfig = new ServiceConfigProvisioner(
+    new MunicipalityFareRepository(),
+    new OperationalParamsRepository(),
+    new CompanyCommissionRepository(),
+  );
+  const service = new CompanyProvisioningService(platformRunnerFor(prisma), serviceConfig);
   return service.provisionNew(input);
 }
 

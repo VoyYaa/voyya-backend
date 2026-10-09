@@ -4,8 +4,9 @@ import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
 import { TripLifecycleService } from './trip-lifecycle.service';
 import type { TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
+import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { AssignmentService } from '../assignment/assignment.service';
-import type { OperationalParamsService } from '../assignment/operational-params.service';
+import type { OperationalParamsService } from '../service-config/operational-params.service';
 import type { CloseTripOutcome } from '../assignment/trip-closing.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 
@@ -13,9 +14,15 @@ const TRIP_REQUEST_ID = 42;
 const DRIVER_ID = 7;
 const COMPANY_ID = 1;
 
+function buildPrisma(): PrismaService {
+  return {
+    runInTenant: async (_companyId: number, fn: (tx: unknown) => Promise<unknown>) => fn({}),
+  } as unknown as PrismaService;
+}
+
 function buildAssignment(owns: boolean): AssignmentService {
   return {
-    async getAcceptedAssignment(): Promise<{ assignmentId: number } | null> {
+    async getOwnedAssignment(): Promise<{ assignmentId: number } | null> {
       return owns ? { assignmentId: 1 } : null;
     },
   } as unknown as AssignmentService;
@@ -40,7 +47,7 @@ function buildRepo(overrides: Partial<TripsRepository>): TripsRepository {
 
 function buildTripClosing(outcome: CloseTripOutcome): TripClosingService {
   return {
-    async closeTrip() {
+    async closeTripInTx() {
       return outcome;
     },
   } as unknown as TripClosingService;
@@ -53,6 +60,7 @@ function buildEmitter(): EventEmitter2 {
 describe('TripLifecycleService · ownership (403 NOT_THE_DRIVER)', () => {
   it('rejects any transition when the driver has no accepted/closed assignment for the trip', async () => {
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(false),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -70,7 +78,8 @@ describe('TripLifecycleService · transition on an already closed trip (BUG-5)',
   it('the assigned driver starting a completed trip gets 409 INVALID_TRIP_TRANSITION, not 403', async () => {
     const seenAllow: Array<readonly AssignmentStatus[] | undefined> = [];
     const assignment = {
-      async getAcceptedAssignment(
+      async getOwnedAssignment(
+        _tx: unknown,
         _t: number,
         _d: number,
         _c: number,
@@ -81,6 +90,7 @@ describe('TripLifecycleService · transition on an already closed trip (BUG-5)',
       },
     } as unknown as AssignmentService;
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
@@ -97,6 +107,7 @@ describe('TripLifecycleService · transition on an already closed trip (BUG-5)',
 
   it('a driver with no assignment on the trip still gets 403 NOT_THE_DRIVER', async () => {
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(false),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
@@ -118,6 +129,7 @@ describe('TripLifecycleService.markEnRoute', () => {
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markEnRoute: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -136,6 +148,7 @@ describe('TripLifecycleService.markEnRoute', () => {
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markEnRoute: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -153,6 +166,7 @@ describe('TripLifecycleService.markEnRoute', () => {
       status: 'pending_assignment' as TripStatus,
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markEnRoute: async () => rejected }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -184,6 +198,7 @@ describe('TripLifecycleService.markArrived', () => {
       row: { arrivedAt },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markArrived: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -205,6 +220,7 @@ describe('TripLifecycleService.markArrived', () => {
       row: { arrivedAt },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markArrived: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -223,6 +239,7 @@ describe('TripLifecycleService.markArrived', () => {
       status: 'assigned' as TripStatus,
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markArrived: async () => rejected }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -243,6 +260,7 @@ describe('TripLifecycleService.markStarted', () => {
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markStarted: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -261,6 +279,7 @@ describe('TripLifecycleService.markStarted', () => {
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markStarted: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -279,6 +298,7 @@ describe('TripLifecycleService.markStarted', () => {
       status: 'assigned' as TripStatus,
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markStarted: async () => rejected }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -295,6 +315,7 @@ describe('TripLifecycleService.markStarted', () => {
 describe('TripLifecycleService.declareNoShow', () => {
   it('grace pending -> 409 NO_SHOW_GRACE_PENDING with remaining_seconds', async () => {
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(true),
       buildTripClosing({
@@ -314,6 +335,7 @@ describe('TripLifecycleService.declareNoShow', () => {
 
   it('not arrived -> 409 ARRIVAL_NOT_MARKED', async () => {
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'not_arrived', status: 'driver_en_route' }),
@@ -328,6 +350,7 @@ describe('TripLifecycleService.declareNoShow', () => {
   it('applied -> status no_show, idempotent=false, emits trip_request.no_show', async () => {
     const emitter = buildEmitter();
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(true),
       buildTripClosing({
@@ -352,6 +375,7 @@ describe('TripLifecycleService.declareNoShow', () => {
   it('idempotent -> does not re-emit trip_request.no_show', async () => {
     const emitter = buildEmitter();
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(true),
       buildTripClosing({
@@ -377,6 +401,7 @@ describe('TripLifecycleService.complete', () => {
     const finishedAt = new Date();
     const emitter = buildEmitter();
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       buildAssignment(true),
       buildTripClosing({
@@ -408,6 +433,7 @@ describe('TripLifecycleService.confirmCashCollected', () => {
       row: { cashCollectedAt },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markCashCollected: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
@@ -428,6 +454,7 @@ describe('TripLifecycleService.confirmCashCollected', () => {
       row: { cashCollectedAt },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markCashCollected: async () => outcome }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
@@ -446,6 +473,7 @@ describe('TripLifecycleService.confirmCashCollected', () => {
       status: 'in_progress' as TripStatus,
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markCashCollected: async () => rejected }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'in_progress' }),
@@ -461,10 +489,10 @@ describe('TripLifecycleService.confirmCashCollected', () => {
 
 function buildAssignmentSpy(): { assignment: AssignmentService; spy: jest.Mock } {
   const spy = jest.fn(async () => ({ assignmentId: 1 }));
-  return { assignment: { getAcceptedAssignment: spy } as unknown as AssignmentService, spy };
+  return { assignment: { getOwnedAssignment: spy } as unknown as AssignmentService, spy };
 }
 
-describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment (V-01)', () => {
+describe('TripLifecycleService · allow-list forwarded to getOwnedAssignment (V-01)', () => {
   it('markEnRoute -> allow=["accepted"]', async () => {
     const { assignment, spy } = buildAssignmentSpy();
     const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
@@ -472,6 +500,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markEnRoute: async () => outcome }),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -481,7 +510,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.markEnRoute(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
 
   it('markArrived -> allow=["accepted"]', async () => {
@@ -491,6 +520,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
       row: { arrivedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markArrived: async () => outcome }),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -500,7 +530,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
 
   it('markStarted -> allow=["accepted"]', async () => {
@@ -510,6 +540,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
       row: { updatedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markStarted: async () => outcome }),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
@@ -519,12 +550,13 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
 
   it('complete -> allow=["accepted"] (the assignment is still "accepted" when /complete runs)', async () => {
     const { assignment, spy } = buildAssignmentSpy();
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       assignment,
       buildTripClosing({
@@ -542,12 +574,13 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.complete(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { cash_collected: true });
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
 
   it('declareNoShow -> allow=["accepted"]', async () => {
     const { assignment, spy } = buildAssignmentSpy();
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({}),
       assignment,
       buildTripClosing({
@@ -565,7 +598,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.declareNoShow(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
 
   it('confirmCashCollected -> allow=["completed"] (the assignment is already closed by /complete)', async () => {
@@ -575,6 +608,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
       row: { cashCollectedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({ markCashCollected: async () => outcome }),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'completed' }),
@@ -584,7 +618,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
 
     await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
 
-    expect(spy).toHaveBeenCalledWith(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['completed']);
+    expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['completed']);
   });
 
   it('none of the six lifecycle transitions ever allow a "cancelled" assignment (V-01 regression guard)', async () => {
@@ -606,6 +640,7 @@ describe('TripLifecycleService · allow-list forwarded to getAcceptedAssignment 
       row: { cashCollectedAt: new Date() },
     };
     const service = new TripLifecycleService(
+      buildPrisma(),
       buildRepo({
         markEnRoute: async () => enRouteOutcome,
         markArrived: async () => arrivedOutcome,

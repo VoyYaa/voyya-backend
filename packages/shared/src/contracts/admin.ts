@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { DriverSuspensionReason, NationalId, Phone } from './auth';
 import { DocumentStorageKey } from './documents';
 import { DriverStatus } from './driver';
-import { AmountCop, FareBreakdown, TripStatus } from './trips';
+import { AmountCop, FareBreakdown, ServiceType, TripStatus } from './trips';
 
 export const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Fecha inválida (YYYY-MM-DD)');
 export type IsoDate = z.infer<typeof IsoDate>;
@@ -154,6 +154,9 @@ export type BaseFareCop = z.infer<typeof BaseFareCop>;
 export const SurchargePct = z.number().min(0).max(100).multipleOf(0.01);
 export type SurchargePct = z.infer<typeof SurchargePct>;
 
+export const CommissionPct = z.number().min(0).max(50).multipleOf(0.01);
+export type CommissionPct = z.infer<typeof CommissionPct>;
+
 export const SearchRadiusKm = z.number().positive().max(50).multipleOf(0.1);
 export type SearchRadiusKm = z.infer<typeof SearchRadiusKm>;
 
@@ -180,6 +183,17 @@ export const ConsoleSettings = z.object({
   expansion_radius_km: z.number().positive(),
   acceptance_timeout_sec: z.number().int().positive(),
   updated_at: z.string().datetime().nullable(),
+  read_only: z.literal(true),
+  service_type: ServiceType,
+  fare_is_official: z.boolean(),
+  fare_official_reference: z.string().nullable(),
+  fare_valid_from: z.string().datetime().nullable(),
+  max_auto_retries: z.number(),
+  tiebreak_window_hours: z.number(),
+  location_stale_min: z.number(),
+  avg_speed_kmh: z.number(),
+  cancellation_window_min: z.number(),
+  no_show_grace_min: z.number(),
 });
 export type ConsoleSettings = z.infer<typeof ConsoleSettings>;
 
@@ -468,6 +482,7 @@ export const AdminErrorCode = z.enum([
   'TRIP_REQUEST_NOT_FOUND',
   'SETTINGS_CONFLICT',
   'SETTINGS_OUT_OF_RANGE',
+  'SETTINGS_MANAGED_BY_PLATFORM',
   'FARE_CONFIG_NOT_FOUND',
   'FLEET_LIMIT_REACHED',
   'DRIVER_DOCUMENTS_INCOMPLETE',

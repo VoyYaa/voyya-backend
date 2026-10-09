@@ -3,15 +3,20 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { AssignmentRepository } from '../src/modules/assignment/assignment.repository';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import type { AssignmentService } from '../src/modules/assignment/assignment.service';
-import type { EnvService } from '../src/config/env.service';
+import { randomInt } from 'node:crypto';
 import type { HolidaysProvider } from '../src/modules/trips/holidays/holidays.provider';
 import type { QuoteTokenService } from '../src/modules/trips/quote-token.service';
-import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
+import type { CompanyDirectory } from '../src/modules/tenancy/company-directory';
+import type { MunicipalityFareReader } from '../src/modules/service-config/municipality-fare.reader';
+import type { OperationalParamsService } from '../src/modules/service-config/operational-params.service';
+import type { ServiceCatalog } from '../src/modules/service-config/service-catalog';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
 import { TripsService } from '../src/modules/trips/trips.service';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { RequestContextService } from '../src/infrastructure/observability/request-context.service';
 import { createFreshPassenger } from './support/fresh-passenger';
+import { ensureCommissionWithClient } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -32,25 +37,35 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
     raw = new Client({ datasources: { db: { url } } });
     await raw.$connect();
 
-    prismaService = {
-      ...raw,
+    const baseTransaction = raw.$transaction.bind(raw) as unknown as <T>(
+      fn: (tx: Prisma.TransactionClient) => Promise<T>,
+    ) => Promise<T>;
+    const inBogota = <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> =>
+      baseTransaction(async (tx) => {
+        await tx.$executeRaw`SET TIME ZONE 'America/Bogota'`;
+        return fn(tx);
+      });
+    prismaService = Object.assign(raw, {
+      $transaction: inBogota,
       runInTenant: async <T>(
         cId: number,
         fn: (tx: Prisma.TransactionClient) => Promise<T>,
       ): Promise<T> =>
-        raw.$transaction(async (tx) => {
-          await tx.$executeRaw`SET TIME ZONE 'America/Bogota'`;
+        inBogota(async (tx) => {
           await tx.$executeRaw`SELECT set_config('app.current_company', ${String(cId)}, true)`;
           return fn(tx);
         }),
-    } as unknown as PrismaService;
+    }) as unknown as PrismaService;
 
     assignmentRepo = new AssignmentRepository(prismaService);
-    const activeCompanyResolver = new ActiveCompanyResolver(prismaService);
-    tripClosing = new TripClosingService(prismaService, assignmentRepo, activeCompanyResolver);
+    const dispatchCompanies = new DispatchCompaniesResolver(prismaService);
+    tripClosing = new TripClosingService(prismaService, assignmentRepo);
     tripsRepo = new TripsRepository(raw as unknown as PrismaService);
 
-    const fakeEnv = { get: (k: string) => (k === 'CANCELLATION_WINDOW_MIN' ? 2 : undefined) } as unknown as EnvService;
+    const fakeFares = { getById: async () => null } as unknown as MunicipalityFareReader;
+    const fakeParams = { get: async () => ({ cancellationWindowMin: 2 }) } as unknown as OperationalParamsService;
+    const fakeCatalog = {} as unknown as ServiceCatalog;
+    const fakeDirectory = {} as unknown as CompanyDirectory;
     const fakeQuoteToken = {} as unknown as QuoteTokenService;
     const fakeEmitter = { emit: () => true } as unknown as EventEmitter2;
     const fakeHolidays: HolidaysProvider = { isHoliday: () => false };
@@ -59,13 +74,16 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
     tripsService = new TripsService(
       tripsRepo,
       fakeQuoteToken,
-      fakeEnv,
       fakeEmitter,
       fakeHolidays,
       fakeAssignment,
       tripClosing,
-      activeCompanyResolver,
+      dispatchCompanies,
       new RequestContextService(),
+      fakeFares,
+      fakeParams,
+      fakeCatalog,
+      fakeDirectory,
     );
 
     const municipality = await raw.municipality.upsert({
@@ -104,6 +122,7 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
       },
     });
     companyId = company.companyId;
+    await ensureCommissionWithClient(raw, companyId);
 
     const passengerUser = await raw.user.upsert({
       where: { phone: '_9990000201' },
@@ -144,13 +163,55 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
     return trip.tripRequestId;
   }
 
+  async function takeTrip(tripRequestId: number): Promise<boolean> {
+    const plate = `_V3${randomInt(100_000, 999_999)}`;
+    const vehicle = await prismaService.runInTenant(companyId, (tx) =>
+      tx.vehicle.create({ data: { plate, companyId, status: 'active' } }),
+    );
+    const driverUser = await raw.user.create({
+      data: { firstName: '_V03', lastName: 'Driver', phone: `_v03-drv-${plate}`, role: 'driver' },
+    });
+    await prismaService.runInTenant(companyId, (tx) =>
+      tx.driver.create({
+        data: {
+          driverId: driverUser.userId,
+          companyId,
+          nationalId: `_V03-${plate}`,
+          pin: 'x',
+          status: 'available',
+          currentVehicleId: vehicle.vehicleId,
+        },
+      }),
+    );
+    const offer = await prismaService.runInTenant(companyId, (tx) =>
+      tx.assignment.create({
+        data: {
+          tripRequestId,
+          driverId: driverUser.userId,
+          vehicleId: vehicle.vehicleId,
+          companyId,
+          status: 'notified',
+          assignedBy: 'system',
+          notifiedAt: new Date(),
+          expiresAt: new Date(Date.now() + 60_000),
+        },
+      }),
+    );
+    return prismaService.runInTenant(companyId, (tx) =>
+      assignmentRepo.markTripRequestAssigned(tx, {
+        tripRequestId,
+        assignmentId: offer.assignmentId,
+        driverId: driverUser.userId,
+        companyId,
+      }),
+    );
+  }
+
   it('markTripRequestAssigned writes assigned_at as the real current instant, not 5h in the past', async () => {
     const tripRequestId = await makePendingTrip();
 
     const before = Date.now();
-    await prismaService.runInTenant(companyId, (tx) =>
-      assignmentRepo.markTripRequestAssigned(tx, tripRequestId),
-    );
+    expect(await takeTrip(tripRequestId)).toBe(true);
     const after = Date.now();
 
     const t = await raw.tripRequest.findUnique({ where: { tripRequestId } });
@@ -164,9 +225,7 @@ suite('V-03 · assigned_at timestamp is not 5h off with the session in America/B
   it('cancelling immediately after assignment, with the session in America/Bogota, does NOT record a penalty', async () => {
     const tripRequestId = await makePendingTrip();
 
-    await prismaService.runInTenant(companyId, (tx) =>
-      assignmentRepo.markTripRequestAssigned(tx, tripRequestId),
-    );
+    expect(await takeTrip(tripRequestId)).toBe(true);
 
     const result = await tripsService.cancel(tripRequestId, passengerId, {});
 

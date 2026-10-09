@@ -1,13 +1,25 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
+import type { ServiceType } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { setTenantSession } from '../../shared/tenant-session';
+import { AFFILIATION_ELIGIBLE_DANE_TYPES } from './affiliation-eligibility';
 
 export interface MunicipalityCatalogRow {
   municipalityId: number;
+  daneCode: string;
   name: string;
   department: string;
-  alreadyCovered: boolean;
+  hasActiveCompanies: boolean;
+  coverageActive: boolean;
+}
+
+export interface AffiliationMunicipalityRow {
+  municipalityId: number;
+  name: string;
+  status: string;
+  daneCode: string | null;
+  daneType: string | null;
 }
 
 export interface ExistingCompanyByTaxId {
@@ -22,6 +34,8 @@ export interface UpsertPendingCompanyInput {
   taxId: string;
   legalForm: string;
   municipalityId: number;
+  publicName: string | null;
+  serviceTypes: ServiceType[];
   vehicleCount: number;
   contactEmail: string;
   contactFirstName: string;
@@ -55,29 +69,40 @@ export class AffiliationRepository {
 
   async listMunicipalityCatalog(): Promise<MunicipalityCatalogRow[]> {
     const rows = await this.prisma.municipality.findMany({
-      where: { status: 'active' },
-      orderBy: { name: 'asc' },
+      where: {
+        daneCode: { not: null },
+        status: { not: 'retired' },
+        daneType: { in: [...AFFILIATION_ELIGIBLE_DANE_TYPES] },
+      },
       select: {
         municipalityId: true,
+        daneCode: true,
         name: true,
         department: true,
+        status: true,
         companies: { where: { status: 'active' }, select: { companyId: true }, take: 1 },
       },
     });
-    return rows.map((r) => ({
-      municipalityId: r.municipalityId,
-      name: r.name,
-      department: r.department,
-      alreadyCovered: r.companies.length > 0,
-    }));
+    return rows.flatMap((r) =>
+      r.daneCode === null
+        ? []
+        : [
+            {
+              municipalityId: r.municipalityId,
+              daneCode: r.daneCode,
+              name: r.name,
+              department: r.department,
+              hasActiveCompanies: r.companies.length > 0,
+              coverageActive: r.status === 'active',
+            },
+          ],
+    );
   }
 
-  async getMunicipality(
-    municipalityId: number,
-  ): Promise<{ municipalityId: number; name: string; status: string } | null> {
+  async getMunicipality(municipalityId: number): Promise<AffiliationMunicipalityRow | null> {
     return this.prisma.municipality.findUnique({
       where: { municipalityId },
-      select: { municipalityId: true, name: true, status: true },
+      select: { municipalityId: true, name: true, status: true, daneCode: true, daneType: true },
     });
   }
 
@@ -112,6 +137,8 @@ export class AffiliationRepository {
       legalName: input.legalName,
       type: input.legalForm,
       municipalityId: input.municipalityId,
+      publicName: input.publicName,
+      serviceTypes: input.serviceTypes,
       vehicleCount: input.vehicleCount,
       contactEmail: input.contactEmail,
       contactFirstName: input.contactFirstName,

@@ -13,7 +13,6 @@ import { AdminDriverRepository } from './admin-driver.repository';
 import { AdminDriverService } from './admin-driver.service';
 import { AdminFleetQuotaController } from './admin-fleet-quota.controller';
 import { AdminSettingsController } from './admin-settings.controller';
-import { AdminSettingsRepository } from './admin-settings.repository';
 import { AdminSettingsService } from './admin-settings.service';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { OpsConsoleController } from './ops-console.controller';
@@ -39,7 +38,6 @@ import { SettlementRepository } from './settlement/settlement.repository';
     AdminDriverService,
     AdminDriverRepository,
     AdminSettingsService,
-    AdminSettingsRepository,
     OpsConsoleService,
     OpsConsoleRepository,
     CompanyMunicipalityResolver,

@@ -4,17 +4,33 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import {
+  createCompany,
+  createMunicipality,
+  createPlatformAdmin,
+  openFares,
+  seedCommission,
+  seedOpenFare,
+  tokenFor,
+} from './support/platform-fixtures';
+import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
 
-suite('Admin console — settings: versioned fare + optimistic lock (ADR-014, tenant-owned by ADR-018)', () => {
+const PREFIX = '_SettingsMuni';
+
+suite('Company console settings are read-only: the platform owns fare, parameters and commission (ADR-032 §7.4, §8.3)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let jwt: JwtService;
-  let companyId: number;
+  let platformAuth: string;
   let municipalityId: number;
-  let adminAuth: string;
+  let companyAId: number;
+  let companyBId: number;
+  let adminAAuth: string;
+  let operatorAAuth: string;
+  let adminBAuth: string;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
@@ -29,302 +45,168 @@ suite('Admin console — settings: versioned fare + optimistic lock (ADR-014, te
 
     prisma = moduleRef.get(PrismaService);
     jwt = moduleRef.get(JwtService, { strict: false });
+    platformAuth = (await createPlatformAdmin(prisma, jwt, 'settings')).auth;
 
-    const municipality = await prisma.municipality.upsert({
-      where: { municipalityId: 9131 },
-      update: {},
-      create: {
-        municipalityId: 9131,
-        name: '_SettingsMuni',
-        department: 'Test',
-        coveragePolygon: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [0, 0],
-              [0, 1],
-              [1, 1],
-              [1, 0],
-              [0, 0],
-            ],
-          ],
-        },
-        status: 'active',
-      },
-    });
-    municipalityId = municipality.municipalityId;
-
-    const company = await prisma.company.upsert({
-      where: { taxId: '_settings-co' },
-      update: { status: 'active' },
-      create: {
-        legalName: '_SettingsCo',
-        taxId: '_settings-co',
-        type: 'cooperative',
-        municipalityId,
-        status: 'active',
-      },
-    });
-    companyId = company.companyId;
-
-    await prisma.runInTenant(companyId, async (tx) => {
-      await tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } });
-      await tx.fareConfig.create({
-        data: {
-          companyId,
-          serviceType: 'taxi',
-          baseFare: 8000,
-          nightSurchargePct: 20,
-          holidaySurchargePct: 15,
-          commissionPct: 8,
-        },
-      });
-      await tx.systemParameter.upsert({
-        where: { key_companyId: { key: 'search_radius_km', companyId } },
-        update: { value: '2' },
-        create: { key: 'search_radius_km', value: '2', companyId },
-      });
-      await tx.systemParameter.upsert({
-        where: { key_companyId: { key: 'acceptance_timeout_sec', companyId } },
-        update: { value: '15' },
-        create: { key: 'acceptance_timeout_sec', value: '15', companyId },
-      });
-      await tx.systemParameter.upsert({
-        where: { key_companyId: { key: 'expansion_radius_km', companyId } },
-        update: { value: '6' },
-        create: { key: 'expansion_radius_km', value: '6', companyId },
-      });
-    });
-
-    const adminUser = await prisma.user.upsert({
-      where: { phone: '_9990000601' },
-      update: { companyId, role: 'admin' },
-      create: {
-        firstName: '_Settings',
-        lastName: 'Admin',
-        phone: '_9990000601',
-        role: 'admin',
-        companyId,
-      },
-    });
-
-    const token = jwt.sign({
-      sub: adminUser.userId,
-      role: 'admin',
-      type: 'access',
-      company_id: companyId,
-    });
-    adminAuth = `Bearer ${token}`;
-  }, 20_000);
+    municipalityId = await createMunicipality(prisma, PREFIX);
+    companyAId = await createCompany(prisma, municipalityId, { status: 'active', publicName: 'Taxis A' });
+    companyBId = await createCompany(prisma, municipalityId, { status: 'active' });
+    await seedOpenFare(prisma, municipalityId, 'taxi', 8000);
+    await seedCommission(prisma, companyAId, 8);
+    await seedCommission(prisma, companyBId, 12.5);
+    adminAAuth = tokenFor(jwt, 'admin', companyAId);
+    operatorAAuth = tokenFor(jwt, 'operator', companyAId);
+    adminBAuth = tokenFor(jwt, 'admin', companyBId);
+  }, 30_000);
 
   afterAll(async () => {
+    if (prisma) await purgeMunicipalitiesByNamePrefix(prisma, PREFIX);
     if (app) await app.close();
-  });
+  }, 60_000);
 
-  async function getSettings(): Promise<request.Response> {
-    return request(app.getHttpServer()).get('/admin/settings').set('Authorization', adminAuth);
+  function settingsOf(auth: string) {
+    return request(app.getHttpServer()).get('/admin/settings').set('Authorization', auth);
   }
 
-  async function fareConfigCount(): Promise<number> {
-    return prisma.runInTenant(companyId, (tx) => tx.fareConfig.count({ where: { companyId } }));
-  }
+  it('GET shows the municipality fare, the nine parameters and the own commission, read-only', async () => {
+    const res = await settingsOf(adminAAuth);
 
-  async function systemParameterRows(): Promise<Array<{ key: string; value: string }>> {
-    return prisma.runInTenant(companyId, (tx) =>
-      tx.systemParameter.findMany({ where: { companyId } }),
-    );
-  }
-
-  it('GET returns the seeded fare + parameters with a version string', async () => {
-    const res = await getSettings();
     expect(res.status).toBe(200);
-    expect(res.body.base_fare).toBe(8000);
-    expect(res.body.search_radius_km).toBe(2);
-    expect(res.body.expansion_radius_km).toBe(6);
-    expect(res.body.version).toEqual(expect.any(String));
+    expect(res.body).toMatchObject({
+      read_only: true,
+      service_type: 'taxi',
+      base_fare: 8000,
+      night_surcharge_pct: 20,
+      holiday_surcharge_pct: 15,
+      commission_pct: 8,
+      fare_is_official: false,
+      fare_official_reference: null,
+      search_radius_km: 2,
+      expansion_radius_km: 6,
+      acceptance_timeout_sec: 15,
+      cancellation_window_min: 2,
+      no_show_grace_min: 5,
+    });
+    expect(res.body.version).toMatch(/^mf:\d+\|op:\d+$/);
+    expect(res.body.fare_valid_from).toEqual(expect.any(String));
+    for (const key of ['max_auto_retries', 'tiebreak_window_hours', 'location_stale_min', 'avg_speed_kmh']) {
+      expect(typeof res.body[key]).toBe('number');
+    }
   });
 
-  it('saving only the radius does not create a new fare_config version', async () => {
-    const before = await getSettings();
-    const fareRowsBefore = await fareConfigCount();
+  it('the two companies of one municipality see the same fare and each its own commission', async () => {
+    const a = await settingsOf(adminAAuth);
+    const b = await settingsOf(adminBAuth);
+
+    expect(a.body.base_fare).toBe(b.body.base_fare);
+    expect(a.body.version).toBe(b.body.version);
+    expect(a.body.commission_pct).toBe(8);
+    expect(b.body.commission_pct).toBe(12.5);
+  });
+
+  it('PUT answers 403 SETTINGS_MANAGED_BY_PLATFORM to the admin and writes nothing', async () => {
+    const before = await settingsOf(adminAAuth);
+    const faresBefore = await prisma.municipalityFare.count({ where: { municipalityId } });
 
     const res = await request(app.getHttpServer())
       .put('/admin/settings')
-      .set('Authorization', adminAuth)
+      .set('Authorization', adminAAuth)
       .send({
         version: before.body.version,
-        base_fare: before.body.base_fare,
-        night_surcharge_pct: before.body.night_surcharge_pct,
-        holiday_surcharge_pct: before.body.holiday_surcharge_pct,
+        base_fare: 1_000_000,
+        night_surcharge_pct: 99,
+        holiday_surcharge_pct: 99,
         search_radius_km: 3,
-        acceptance_timeout_sec: before.body.acceptance_timeout_sec,
+        acceptance_timeout_sec: 20,
       });
 
-    expect(res.status).toBe(200);
-    expect(res.body.search_radius_km).toBe(3);
-    const fareRowsAfter = await fareConfigCount();
-    expect(fareRowsAfter).toBe(fareRowsBefore);
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      code: 'SETTINGS_MANAGED_BY_PLATFORM',
+      message: 'La tarifa y los parámetros los administra VoyYa para todo el municipio.',
+    });
+    expect(await prisma.municipalityFare.count({ where: { municipalityId } })).toBe(faresBefore);
+    expect((await settingsOf(adminAAuth)).body).toEqual(before.body);
   });
 
-  it('changing the base fare creates a new version and getActiveFareConfig resolves to it', async () => {
-    const before = await getSettings();
-
-    const res = await request(app.getHttpServer())
+  it('PUT with an empty or malformed body is still 403, never a validation error', async () => {
+    const empty = await request(app.getHttpServer()).put('/admin/settings').set('Authorization', adminAAuth).send({});
+    const garbage = await request(app.getHttpServer())
       .put('/admin/settings')
-      .set('Authorization', adminAuth)
-      .send({
-        version: before.body.version,
-        base_fare: 9500,
-        night_surcharge_pct: before.body.night_surcharge_pct,
-        holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-        search_radius_km: before.body.search_radius_km,
-        acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.body.base_fare).toBe(9500);
-
-    const active = await prisma.runInTenant(companyId, (tx) =>
-      tx.fareConfig.findFirst({ where: { companyId, serviceType: 'taxi', validTo: null } }),
-    );
-    expect(Number(active?.baseFare)).toBe(9500);
-
-    const closed = await prisma.runInTenant(companyId, (tx) =>
-      tx.fareConfig.count({ where: { companyId, serviceType: 'taxi', validTo: { not: null } } }),
-    );
-    expect(closed).toBeGreaterThan(0);
+      .set('Authorization', adminAAuth)
+      .send({ base_fare: 'free' });
+    expect(empty.status).toBe(403);
+    expect(garbage.status).toBe(403);
   });
 
-  it('a stale version -> 409 SETTINGS_CONFLICT, zero writes', async () => {
-    const current = await getSettings();
-    const paramsBefore = await systemParameterRows();
-
-    const res = await request(app.getHttpServer())
-      .put('/admin/settings')
-      .set('Authorization', adminAuth)
-      .send({
-        version: 'fc:1|sp:1',
-        base_fare: 12345,
-        night_surcharge_pct: current.body.night_surcharge_pct,
-        holiday_surcharge_pct: current.body.holiday_surcharge_pct,
-        search_radius_km: current.body.search_radius_km,
-        acceptance_timeout_sec: current.body.acceptance_timeout_sec,
-      });
-
-    expect(res.status).toBe(409);
-    expect(res.body).toMatchObject({ code: 'SETTINGS_CONFLICT' });
-
-    const paramsAfter = await systemParameterRows();
-    expect(paramsAfter).toEqual(paramsBefore);
-    const stillCurrent = await getSettings();
-    expect(stillCurrent.body.base_fare).toBe(current.body.base_fare);
+  it('the operator gets 403 FORBIDDEN on GET and on PUT: settings are an admin screen', async () => {
+    const read = await settingsOf(operatorAAuth);
+    const write = await request(app.getHttpServer()).put('/admin/settings').set('Authorization', operatorAAuth).send({});
+    expect(read.status).toBe(403);
+    expect(read.body).toMatchObject({ code: 'FORBIDDEN' });
+    expect(write.status).toBe(403);
+    expect(write.body).toMatchObject({ code: 'FORBIDDEN' });
   });
 
-  it('search_radius_km above expansion_radius_km -> 422 SETTINGS_OUT_OF_RANGE on that field', async () => {
-    const current = await getSettings();
+  it('a platform edit shows up on the company screen with a new version and the official mark', async () => {
+    const before = await settingsOf(adminAAuth);
+    const current = (await openFares(prisma, municipalityId))[0];
 
-    const res = await request(app.getHttpServer())
-      .put('/admin/settings')
-      .set('Authorization', adminAuth)
+    const edit = await request(app.getHttpServer())
+      .put(`/platform/municipalities/${municipalityId}/services/taxi/fare`)
+      .set('Authorization', platformAuth)
       .send({
-        version: current.body.version,
-        base_fare: current.body.base_fare,
-        night_surcharge_pct: current.body.night_surcharge_pct,
-        holiday_surcharge_pct: current.body.holiday_surcharge_pct,
-        search_radius_km: current.body.expansion_radius_km + 1,
-        acceptance_timeout_sec: current.body.acceptance_timeout_sec,
+        version: current?.municipalityFareId,
+        base_fare: 8500,
+        night_surcharge_pct: 25,
+        holiday_surcharge_pct: 18,
+        is_official: true,
+        official_reference: 'Decreto 045 de 2026',
       });
+    expect(edit.status).toBe(200);
 
-    expect(res.status).toBe(422);
-    expect(res.body).toMatchObject({ code: 'SETTINGS_OUT_OF_RANGE', field: 'search_radius_km' });
+    const after = await settingsOf(adminAAuth);
+    expect(after.body).toMatchObject({
+      base_fare: 8500,
+      night_surcharge_pct: 25,
+      holiday_surcharge_pct: 18,
+      fare_is_official: true,
+      fare_official_reference: 'Decreto 045 de 2026',
+    });
+    expect(after.body.version).not.toBe(before.body.version);
   });
 
-  describe('Zod validation (400) rejects a malformed body before it reaches the service', () => {
-    it('missing version -> 400 INVALID_DATA, settings left untouched', async () => {
-      const before = await getSettings();
+  it('a company without a municipality fare answers 404 FARE_CONFIG_NOT_FOUND', async () => {
+    const emptyMunicipality = await createMunicipality(prisma, PREFIX);
+    const lonelyId = await createCompany(prisma, emptyMunicipality, { status: 'active' });
 
-      const res = await request(app.getHttpServer())
-        .put('/admin/settings')
-        .set('Authorization', adminAuth)
-        .send({
-          base_fare: before.body.base_fare,
-          night_surcharge_pct: before.body.night_surcharge_pct,
-          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-          search_radius_km: before.body.search_radius_km,
-          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-        });
+    const res = await settingsOf(tokenFor(jwt, 'admin', lonelyId));
 
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
-      expect(res.body.details).toEqual(
-        expect.arrayContaining([expect.objectContaining({ field: 'version' })]),
-      );
+    expect(res.status).toBe(404);
+    expect(res.body).toMatchObject({ code: 'FARE_CONFIG_NOT_FOUND' });
+  });
 
-      const after = await getSettings();
-      expect(after.body.version).toBe(before.body.version);
+  it('GET /admin/company-profile shows the display name, the declared services and the coverage state', async () => {
+    const withPublicName = await request(app.getHttpServer())
+      .get('/admin/company-profile')
+      .set('Authorization', adminAAuth);
+    const withoutPublicName = await request(app.getHttpServer())
+      .get('/admin/company-profile')
+      .set('Authorization', operatorAAuth);
+
+    expect(withPublicName.status).toBe(200);
+    expect(withPublicName.body).toMatchObject({
+      company_id: companyAId,
+      display_name: 'Taxis A',
+      service_types: ['taxi'],
+      municipality_coverage_active: true,
     });
+    expect(withoutPublicName.status).toBe(200);
 
-    it('base_fare above the 1,000,000 COP ceiling -> 400 INVALID_DATA on that field', async () => {
-      const before = await getSettings();
-
-      const res = await request(app.getHttpServer())
-        .put('/admin/settings')
-        .set('Authorization', adminAuth)
-        .send({
-          version: before.body.version,
-          base_fare: 1_000_001,
-          night_surcharge_pct: before.body.night_surcharge_pct,
-          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-          search_radius_km: before.body.search_radius_km,
-          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
-      expect(res.body.details).toEqual(
-        expect.arrayContaining([expect.objectContaining({ field: 'base_fare' })]),
-      );
-    });
-
-    it('base_fare below the 1,000 COP floor -> 400 INVALID_DATA on that field (ADR-018 §7)', async () => {
-      const before = await getSettings();
-
-      const res = await request(app.getHttpServer())
-        .put('/admin/settings')
-        .set('Authorization', adminAuth)
-        .send({
-          version: before.body.version,
-          base_fare: 999,
-          night_surcharge_pct: before.body.night_surcharge_pct,
-          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-          search_radius_km: before.body.search_radius_km,
-          acceptance_timeout_sec: before.body.acceptance_timeout_sec,
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
-      expect(res.body.details).toEqual(
-        expect.arrayContaining([expect.objectContaining({ field: 'base_fare' })]),
-      );
-    });
-
-    it('negative acceptance_timeout_sec -> 400 INVALID_DATA', async () => {
-      const before = await getSettings();
-
-      const res = await request(app.getHttpServer())
-        .put('/admin/settings')
-        .set('Authorization', adminAuth)
-        .send({
-          version: before.body.version,
-          base_fare: before.body.base_fare,
-          night_surcharge_pct: before.body.night_surcharge_pct,
-          holiday_surcharge_pct: before.body.holiday_surcharge_pct,
-          search_radius_km: before.body.search_radius_km,
-          acceptance_timeout_sec: -5,
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toMatchObject({ code: 'INVALID_DATA' });
-    });
+    const catalogMunicipality = await createMunicipality(prisma, PREFIX, { status: 'catalog' });
+    const pendingCoverage = await createCompany(prisma, catalogMunicipality, { status: 'active', legalName: '_PendingCoverage' });
+    const profile = await request(app.getHttpServer())
+      .get('/admin/company-profile')
+      .set('Authorization', tokenFor(jwt, 'admin', pendingCoverage));
+    expect(profile.body).toMatchObject({ display_name: '_PendingCoverage', municipality_coverage_active: false });
   });
 });

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
-import type { DriverStatus, TripStatus } from '@voyyaa/shared';
+import type { DriverStatus, ServiceType, TripStatus } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { requireTripLocation } from '../../shared/require-trip-location';
 
@@ -14,6 +14,8 @@ export interface ActiveTripRow {
   tripRequestId: number;
   assignmentId: number;
   status: TripStatus;
+  municipalityId: number;
+  serviceType: ServiceType;
   pickupAddress: string;
   dropoffAddress: string;
   fare: number;
@@ -48,14 +50,6 @@ function toShiftRow(row: RawShiftRow): DriverShiftRow {
 @Injectable()
 export class DriverRepository {
   constructor(private readonly prisma: PrismaService) {}
-
-  async getCompanyMunicipality(companyId: number): Promise<number | null> {
-    const company = await this.prisma.company.findUnique({
-      where: { companyId },
-      select: { municipalityId: true },
-    });
-    return company?.municipalityId ?? null;
-  }
 
   async listCompanyIds(): Promise<number[]> {
     const companies = await this.prisma.company.findMany({ select: { companyId: true } });
@@ -191,42 +185,53 @@ export class DriverRepository {
     driverId: number,
     companyId: number,
   ): Promise<ActiveTripRow | null> {
-    const a = await tx.assignment.findFirst({
-      where: { driverId, companyId, status: 'accepted' },
-      select: {
-        assignmentId: true,
-        tripRequest: {
-          select: {
-            tripRequestId: true,
-            status: true,
-            pickupAddress: true,
-            dropoffAddress: true,
-            fare: true,
-            commission: true,
-            arrivedAt: true,
-            cashCollectedAt: true,
-            passenger: {
-              select: { user: { select: { firstName: true, lastName: true, phone: true } } },
-            },
-          },
-        },
-      },
-    });
-    if (!a) return null;
-    const t = a.tripRequest;
-    const u = t.passenger.user;
+    const rows = await tx.$queryRaw<
+      Array<{
+        trip_request_id: number;
+        assignment_id: number;
+        status: TripStatus;
+        municipality_id: number;
+        service_type: ServiceType;
+        pickup_address: string | null;
+        dropoff_address: string | null;
+        fare: number;
+        commission: number;
+        arrived_at: Date | null;
+        cash_collected_at: Date | null;
+        first_name: string;
+        last_name: string;
+        phone: string | null;
+      }>
+    >`
+      SELECT t.trip_request_id, a.assignment_id, t.status, t.municipality_id, t.service_type,
+             t.pickup_address, t.dropoff_address,
+             t.fare::float8 AS fare, t.commission::float8 AS commission,
+             t.arrived_at, t.cash_collected_at,
+             u.first_name, u.last_name, u.phone
+        FROM assignment.assignment a
+        JOIN trips.trip_request t ON t.trip_request_id = a.trip_request_id
+        JOIN auth."user" u ON u.user_id = t.passenger_id
+       WHERE a.driver_id = ${driverId}
+         AND a.company_id = ${companyId}
+         AND a.status = 'accepted'
+       LIMIT 1
+    `;
+    const t = rows[0];
+    if (!t) return null;
     return {
-      tripRequestId: t.tripRequestId,
-      assignmentId: a.assignmentId,
+      tripRequestId: t.trip_request_id,
+      assignmentId: t.assignment_id,
       status: t.status,
-      pickupAddress: requireTripLocation(t.pickupAddress),
-      dropoffAddress: requireTripLocation(t.dropoffAddress),
-      fare: Number(t.fare),
-      commission: Number(t.commission),
-      arrivedAt: t.arrivedAt,
-      cashCollectedAt: t.cashCollectedAt,
-      passengerName: `${u.firstName} ${u.lastName}`.trim(),
-      passengerPhone: u.phone,
+      municipalityId: t.municipality_id,
+      serviceType: t.service_type,
+      pickupAddress: requireTripLocation(t.pickup_address),
+      dropoffAddress: requireTripLocation(t.dropoff_address),
+      fare: t.fare,
+      commission: t.commission,
+      arrivedAt: t.arrived_at,
+      cashCollectedAt: t.cash_collected_at,
+      passengerName: `${t.first_name} ${t.last_name}`.trim(),
+      passengerPhone: t.phone,
     };
   }
 

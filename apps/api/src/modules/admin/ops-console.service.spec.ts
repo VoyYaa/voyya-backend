@@ -1,15 +1,13 @@
 import { NotFoundException } from '@nestjs/common';
 import type { OpsDriverQuery, OpsQueueQuery } from '@voyyaa/shared';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import type { OperationalParamsService } from '../assignment/operational-params.service';
-import type { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import type { OperationalParamsService } from '../service-config/operational-params.service';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { OpsConsoleRepository } from './ops-console.repository';
 import { OpsConsoleService } from './ops-console.service';
 
 const COMPANY_ID = 1;
 const MUNICIPALITY_ID = 10;
-const SCOPE = { companyId: COMPANY_ID, municipalityId: MUNICIPALITY_ID, receivesUnassigned: true };
 
 function fakePrisma(): PrismaService {
   return {
@@ -17,24 +15,22 @@ function fakePrisma(): PrismaService {
   } as unknown as PrismaService;
 }
 
-function create(locationStaleMin = 15, dispatchTarget: number | null = COMPANY_ID) {
+function create(locationStaleMin = 15) {
   const repo = {
     listTripRequests: jest.fn().mockResolvedValue([]),
     getTripRequest: jest.fn().mockResolvedValue(null),
     listDrivers: jest.fn().mockResolvedValue([]),
     getDriver: jest.fn().mockResolvedValue(null),
   };
-  const companyMunicipality = { resolve: jest.fn().mockResolvedValue(MUNICIPALITY_ID) };
-  const activeCompany = { resolve: jest.fn().mockResolvedValue(dispatchTarget) };
+  const companyMunicipality = { resolve: jest.fn().mockResolvedValue({ municipalityId: MUNICIPALITY_ID, serviceType: 'taxi' }) };
   const params = { get: jest.fn().mockResolvedValue({ locationStaleMin }) };
   const service = new OpsConsoleService(
     fakePrisma(),
     repo as unknown as OpsConsoleRepository,
     companyMunicipality as unknown as CompanyMunicipalityResolver,
-    activeCompany as unknown as ActiveCompanyResolver,
     params as unknown as OperationalParamsService,
   );
-  return { service, repo, companyMunicipality, activeCompany, params };
+  return { service, repo, companyMunicipality, params };
 }
 
 describe('OpsConsoleService.listTripRequests', () => {
@@ -74,7 +70,7 @@ describe('OpsConsoleService.listTripRequests', () => {
 
     expect(repo.listTripRequests).toHaveBeenCalledWith(
       expect.anything(),
-      SCOPE,
+      COMPANY_ID,
       ['no_driver', 'expired'],
       100,
       60,
@@ -88,7 +84,7 @@ describe('OpsConsoleService.listTripRequests', () => {
 
     expect(repo.listTripRequests).toHaveBeenCalledWith(
       expect.anything(),
-      SCOPE,
+      COMPANY_ID,
       null,
       100,
       60,
@@ -96,23 +92,23 @@ describe('OpsConsoleService.listTripRequests', () => {
   });
 });
 
-describe('OpsConsoleService trip scope (B-04)', () => {
-  it('the dispatch-target company of the municipality also sees unassigned requests', async () => {
-    const { service, repo } = create(15, COMPANY_ID);
+describe('OpsConsoleService trip scope (ADR-032 section 5)', () => {
+  it('lists with the tenant company and never resolves a dispatch target', async () => {
+    const { service, repo } = create();
     await service.listTripRequests(COMPANY_ID, { status: 'all', limit: 100 });
-    expect(repo.listTripRequests.mock.calls[0]?.[1]).toEqual(SCOPE);
+    expect(repo.listTripRequests.mock.calls[0]?.[1]).toBe(COMPANY_ID);
   });
 
-  it('another company in the same municipality does not receive unassigned requests', async () => {
-    const { service, repo } = create(15, 99);
-    await service.listTripRequests(COMPANY_ID, { status: 'all', limit: 100 });
-    expect(repo.listTripRequests.mock.calls[0]?.[1]).toEqual({ ...SCOPE, receivesUnassigned: false });
-  });
-
-  it('a municipality with no active company yields no unassigned visibility in the detail', async () => {
-    const { service, repo } = create(15, null);
+  it('reads the detail with the tenant company and answers 404 when the scope hides it', async () => {
+    const { service, repo } = create();
     await expect(service.getTripRequest(COMPANY_ID, 5)).rejects.toBeInstanceOf(NotFoundException);
-    expect(repo.getTripRequest.mock.calls[0]?.[1]).toEqual({ ...SCOPE, receivesUnassigned: false });
+    expect(repo.getTripRequest.mock.calls[0]?.[1]).toBe(COMPANY_ID);
+  });
+
+  it('reads the staleness window from the municipality and service of the company', async () => {
+    const { service, params } = create(20);
+    await service.listDrivers(COMPANY_ID, { limit: 100 });
+    expect(params.get).toHaveBeenCalledWith(MUNICIPALITY_ID, 'taxi');
   });
 });
 
@@ -141,6 +137,38 @@ describe('OpsConsoleService.getTripRequest', () => {
 
     expect(result.passenger_phone_masked).toBe('***4567');
     expect(JSON.stringify(result)).not.toContain('3001234567');
+  });
+
+  it.each([
+    ['completed', 800],
+    ['cancelled_by_passenger', 0],
+    ['cancelled_by_driver', 0],
+    ['no_show', 0],
+    ['in_progress', 0],
+  ] as const)('shows fare.commission of a %s trip as %i', async (status, expected) => {
+    const { service, repo } = create();
+    repo.getTripRequest.mockResolvedValue({
+      tripRequestId: 1,
+      status,
+      statusSince: new Date(),
+      pickupAddress: 'A',
+      dropoffAddress: 'B',
+      fareTotal: 10000,
+      commission: 800,
+      passengerName: 'Ana Pérez',
+      passengerPhone: null,
+      driver: null,
+      requestedAt: new Date(),
+      assignedAt: null,
+      arrivedAt: null,
+      finishedAt: null,
+      cashCollectedAt: null,
+    });
+
+    const result = await service.getTripRequest(COMPANY_ID, 1);
+
+    expect(result.fare.commission).toBe(expected);
+    expect(result.fare.total).toBe(10000);
   });
 
   it('trip request not found -> 404 TRIP_REQUEST_NOT_FOUND', async () => {

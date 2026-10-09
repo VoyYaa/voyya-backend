@@ -1,7 +1,7 @@
 import { ConflictException, HttpException } from '@nestjs/common';
 import { DriverShiftService } from './driver-shift.service';
 import type { DriverRepository, DriverShiftRow } from './driver.repository';
-import type { OperationalParamsService } from './operational-params.service';
+import type { OperationalParamsService } from '../service-config/operational-params.service';
 import type { ConsentQueryService } from '../auth/consent-query.service';
 import type { ConsentStatus } from '@voyyaa/shared';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';

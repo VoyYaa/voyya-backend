@@ -1,8 +1,7 @@
-import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
-import { type ConsoleSettings, UpdateConsoleSettingsDTO } from '@voyyaa/shared';
-import { ZodValidationPipe } from '../../shared/zod-validation.pipe';
+import { Controller, Get, Put, UseGuards } from '@nestjs/common';
+import type { ConsoleSettings } from '@voyyaa/shared';
 import { Roles } from '../auth/decorators/roles.decorator';
-import { CurrentTenant, CurrentUserId } from '../tenancy/identity.decorators';
+import { CurrentTenant } from '../tenancy/identity.decorators';
 import { TenantGuard } from '../tenancy/tenant.guard';
 import { AdminSettingsService } from './admin-settings.service';
 
@@ -18,11 +17,7 @@ export class AdminSettingsController {
   }
 
   @Put()
-  update(
-    @Body(new ZodValidationPipe(UpdateConsoleSettingsDTO)) dto: UpdateConsoleSettingsDTO,
-    @CurrentTenant() companyId: number,
-    @CurrentUserId() userId: number,
-  ): Promise<ConsoleSettings> {
-    return this.service.update(companyId, userId, dto);
+  update(): never {
+    return this.service.rejectUpdate();
   }
 }

@@ -3,6 +3,7 @@ export * from './contracts/trips';
 export * from './contracts/driver';
 export * from './contracts/assignment';
 export * from './contracts/admin';
+export * from './contracts/service-config';
 export * from './contracts/consent';
 export * from './contracts/location-notice';
 export * from './contracts/documents';

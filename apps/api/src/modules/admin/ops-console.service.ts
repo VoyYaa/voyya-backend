@@ -13,11 +13,10 @@ import {
   type TripStatus,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { OperationalParamsService } from '../assignment/operational-params.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { OperationalParamsService } from '../service-config/operational-params.service';
 import { CompanyMunicipalityResolver } from './company-municipality.resolver';
 import { driverPinStatus } from './driver-pin-status';
-import { OpsConsoleRepository, type OpsDriverDbRow, type OpsTripScope } from './ops-console.repository';
+import { OpsConsoleRepository, type OpsDriverDbRow } from './ops-console.repository';
 
 @Injectable()
 export class OpsConsoleService {
@@ -25,19 +24,17 @@ export class OpsConsoleService {
     private readonly prisma: PrismaService,
     private readonly repo: OpsConsoleRepository,
     private readonly companyMunicipality: CompanyMunicipalityResolver,
-    private readonly activeCompany: ActiveCompanyResolver,
     private readonly params: OperationalParamsService,
   ) {}
 
   async listTripRequests(companyId: number, query: OpsQueueQuery): Promise<OpsQueueResponse> {
-    const scope = await this.resolveScope(companyId);
     const statuses: readonly TripStatus[] | null =
       query.status === 'all' ? null : OPS_QUEUE_FILTER_STATUSES[query.status];
 
     const rows = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.listTripRequests(
         tx,
-        scope,
+        companyId,
         statuses,
         query.limit,
         OPS_QUEUE_TERMINAL_WINDOW_SEC,
@@ -63,9 +60,8 @@ export class OpsConsoleService {
   }
 
   async getTripRequest(companyId: number, tripRequestId: number): Promise<OpsTripDetail> {
-    const scope = await this.resolveScope(companyId);
     const row = await this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.getTripRequest(tx, scope, tripRequestId),
+      this.repo.getTripRequest(tx, companyId, tripRequestId),
     );
     if (!row) {
       throw new NotFoundException({
@@ -81,7 +77,7 @@ export class OpsConsoleService {
       status_since: row.statusSince.toISOString(),
       pickup_address: row.pickupAddress,
       dropoff_address: row.dropoffAddress,
-      fare: toFareBreakdown(row.fareTotal, row.commission),
+      fare: toFareBreakdown(row.fareTotal, row.status === 'completed' ? row.commission : 0),
       passenger_name: row.passengerName,
       passenger_phone_masked: row.passengerPhone ? maskPhone(row.passengerPhone) : null,
       driver: row.driver
@@ -97,14 +93,13 @@ export class OpsConsoleService {
     };
   }
 
-  private async resolveScope(companyId: number): Promise<OpsTripScope> {
-    const municipalityId = await this.companyMunicipality.resolve(companyId);
-    const dispatchTarget = await this.activeCompany.resolve(municipalityId);
-    return { companyId, municipalityId, receivesUnassigned: dispatchTarget === companyId };
+  private async staleMinutes(companyId: number): Promise<number> {
+    const scope = await this.companyMunicipality.resolve(companyId);
+    return (await this.params.get(scope.municipalityId, scope.serviceType)).locationStaleMin;
   }
 
   async listDrivers(companyId: number, query: OpsDriverQuery): Promise<OpsDriverListResponse> {
-    const staleMin = (await this.params.get(companyId)).locationStaleMin;
+    const staleMin = await this.staleMinutes(companyId);
 
     const rows = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.listDrivers(tx, companyId, query.search ?? null, query.status ?? null, query.limit),
@@ -118,7 +113,7 @@ export class OpsConsoleService {
   }
 
   async getDriver(companyId: number, driverId: number): Promise<OpsDriverDetail> {
-    const staleMin = (await this.params.get(companyId)).locationStaleMin;
+    const staleMin = await this.staleMinutes(companyId);
 
     const row = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.getDriver(tx, companyId, driverId),

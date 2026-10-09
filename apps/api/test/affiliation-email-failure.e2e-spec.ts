@@ -9,6 +9,7 @@ import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { EMAIL_PROVIDER, type EmailProvider } from '../src/modules/affiliation/ports/email-provider.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createMunicipality, openFares, commissionsOf } from './support/platform-fixtures';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
@@ -88,27 +89,7 @@ suite('El fallo del correo NO deshace la decisión ya persistida (ADR-021 §5.2)
   }, 60_000);
 
   async function freshMunicipality(): Promise<number> {
-    const suffix = uniqueSuffix();
-    const municipality = await prisma.municipality.create({
-      data: {
-        name: `_EmailFailureMuni-${suffix}`,
-        department: 'Test',
-        coveragePolygon: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [0, 0],
-              [0, 1],
-              [1, 1],
-              [1, 0],
-              [0, 0],
-            ],
-          ],
-        },
-        status: 'active',
-      },
-    });
-    return municipality.municipalityId;
+    return createMunicipality(prisma, '_EmailFailureMuni', { status: 'catalog' });
   }
 
   it('SendGrid caído al aprobar -> la empresa queda active igual, delivery=failed; el reenvío luego entrega sent', async () => {
@@ -137,7 +118,7 @@ suite('El fallo del correo NO deshace la decisión ya persistida (ADR-021 §5.2)
     const approval = await request(app.getHttpServer())
       .post(`/platform/companies/${companyId}/approve`)
       .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 9000 } });
+      .send({ initial_fare: { base_fare: 9000 }, commission_pct: 8 });
 
     expect(approval.status).toBe(200);
     expect(approval.body.notification.delivery).toBe('failed');
@@ -149,11 +130,8 @@ suite('El fallo del correo NO deshace la decisión ya persistida (ADR-021 §5.2)
     const adminCount = await prisma.user.count({ where: { companyId, role: 'admin' } });
     expect(adminCount).toBe(1);
 
-    const fareConfigCount = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
-      return tx.fareConfig.count({ where: { companyId, validTo: null } });
-    });
-    expect(fareConfigCount).toBe(1);
+    expect(await openFares(prisma, municipalityId)).toHaveLength(1);
+    expect((await commissionsOf(prisma, companyId)).filter((c) => c.validTo === null)).toHaveLength(1);
 
     email.send.mockResolvedValueOnce(undefined);
     const resend = await request(app.getHttpServer())

@@ -4,13 +4,18 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { AssignmentRepository } from '../src/modules/assignment/assignment.repository';
 import { AssignmentService } from '../src/modules/assignment/assignment.service';
 import type { CandidateRepository } from '../src/modules/assignment/candidate.repository';
-import type { OperationalParamsService } from '../src/modules/assignment/operational-params.service';
+import type { OperationalParamsService } from '../src/modules/service-config/operational-params.service';
+import { CompanyCommissionReader } from '../src/modules/service-config/company-commission.reader';
+import { CompanyCommissionRepository } from '../src/modules/service-config/company-commission.repository';
+import { CompanyDirectory } from '../src/modules/tenancy/company-directory';
 import type { PushProvider } from '../src/modules/assignment/ports/push-provider.port';
 import { TripClosingService } from '../src/modules/assignment/trip-closing.service';
 import { TripLifecycleService } from '../src/modules/trips/trip-lifecycle.service';
 import { TripsRepository } from '../src/modules/trips/trips.repository';
-import type { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import type { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createFreshPassenger } from './support/fresh-passenger';
+import { ensureCommissionWithClient } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -42,8 +47,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
     raw = new Client({ datasources: { db: { url } } });
     await raw.$connect();
 
-    prismaService = {
-      ...raw,
+    prismaService = Object.assign(raw, {
       runInTenant: async <T>(
         cId: number,
         fn: (tx: Prisma.TransactionClient) => Promise<T>,
@@ -52,15 +56,15 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
           await tx.$executeRaw`SELECT set_config('app.current_company', ${String(cId)}, true)`;
           return fn(tx);
         }),
-    } as unknown as PrismaService;
+    }) as unknown as PrismaService;
 
     assignmentRepo = new AssignmentRepository(prismaService);
-    const activeCompanyResolver = {
+    const dispatchCompanies = {
       async resolve() {
-        return companyId;
+        return [companyId];
       },
-    } as unknown as ActiveCompanyResolver;
-    tripClosing = new TripClosingService(prismaService, assignmentRepo, activeCompanyResolver);
+    } as unknown as DispatchCompaniesResolver;
+    tripClosing = new TripClosingService(prismaService, assignmentRepo);
 
     const candidateRepo = {} as unknown as CandidateRepository;
     const push = { async sendAssignment() {} } as unknown as PushProvider;
@@ -79,11 +83,13 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
       emitter,
       push,
       tripClosing,
-      activeCompanyResolver,
+      dispatchCompanies,
+      new CompanyCommissionReader(new CompanyCommissionRepository()),
+      new CompanyDirectory(prismaService),
     );
 
     const tripsRepo = new TripsRepository(raw as unknown as PrismaService);
-    tripLifecycle = new TripLifecycleService(tripsRepo, assignmentService, tripClosing, params, emitter);
+    tripLifecycle = new TripLifecycleService(prismaService, tripsRepo, assignmentService, tripClosing, params, emitter);
 
     const municipality = await raw.municipality.upsert({
       where: { municipalityId: 9002 },
@@ -121,6 +127,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
       },
     });
     companyId = company.companyId;
+    await ensureCommissionWithClient(raw, companyId);
 
     const passengerUser = await raw.user.upsert({
       where: { phone: '_9990000101' },
@@ -208,7 +215,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
   async function makePendingTrip(): Promise<number> {
     const trip = await raw.tripRequest.create({
       data: {
-        passengerId,
+        passengerId: await createFreshPassenger(raw),
         municipalityId,
         serviceType: 'taxi',
         paymentMethod: 'cash',

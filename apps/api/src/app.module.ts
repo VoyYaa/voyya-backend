@@ -15,10 +15,12 @@ import { AuthModule } from './modules/auth/auth.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { PinChangeGuard } from './modules/auth/guards/pin-change.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
+import { ServiceConfigModule } from './modules/service-config/service-config.module';
 import { TenancyModule } from './modules/tenancy/tenancy.module';
 import { TripsModule } from './modules/trips/trips.module';
 import { AFFILIATION_DOCS_HOURLY, AFFILIATION_DOCS_HOURLY_LIMIT } from './shared/throttlers';
 import { skipUnlessOptedIn } from './shared/opt-in-throttle';
+import { SERVICE_OPTIONS_PER_USER, SERVICE_OPTIONS_PER_USER_LIMIT } from './shared/user-throttler.guard';
 
 @Module({
   imports: [
@@ -31,10 +33,12 @@ import { skipUnlessOptedIn } from './shared/opt-in-throttle';
       useFactory: (env: EnvService) => [
         { name: 'default', ttl: env.get('THROTTLE_TTL_SECONDS') * 1000, limit: env.get('THROTTLE_LIMIT') },
         { name: AFFILIATION_DOCS_HOURLY, ...AFFILIATION_DOCS_HOURLY_LIMIT, skipIf: skipUnlessOptedIn(AFFILIATION_DOCS_HOURLY) },
+        { name: SERVICE_OPTIONS_PER_USER, ...SERVICE_OPTIONS_PER_USER_LIMIT, skipIf: () => true },
       ],
     }),
     PrismaModule,
     TenancyModule,
+    ServiceConfigModule,
     AuthModule,
     TripsModule,
     AssignmentModule,

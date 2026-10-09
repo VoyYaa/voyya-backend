@@ -7,10 +7,11 @@ import { REQUIRED_DRIVER_DOCUMENT_TYPES } from '@voyyaa/shared';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
-import { ActiveCompanyResolver } from '../src/modules/tenancy/active-company.resolver';
+import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 import { grantLocationConsent } from './support/grant-location-consent';
+import { seedCommission, seedOpenFare } from './support/platform-fixtures';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -49,7 +50,7 @@ suite(
   () => {
     let app: INestApplication;
     let prisma: PrismaService;
-    let activeCompanies: ActiveCompanyResolver;
+    let dispatchCompanies: DispatchCompaniesResolver;
     let storage: FileStorageProvider;
     let companyId: number;
     let municipalityId: number;
@@ -84,7 +85,7 @@ suite(
       await app.init();
 
       prisma = moduleRef.get(PrismaService);
-      activeCompanies = moduleRef.get(ActiveCompanyResolver);
+      dispatchCompanies = moduleRef.get(DispatchCompaniesResolver);
       storage = moduleRef.get(FILE_STORAGE);
 
       const suffix = uniqueSuffix();
@@ -122,17 +123,8 @@ suite(
       const jwt = moduleRef.get(JwtService, { strict: false });
       adminAuth = `Bearer ${jwt.sign({ sub: adminUser.userId, role: 'admin', type: 'access', company_id: companyId })}`;
 
-      await prisma.runInTenant(companyId, (tx) =>
-        tx.fareConfig.create({
-          data: {
-            companyId,
-            serviceType: 'taxi',
-            baseFare: 8000,
-            validFrom: new Date(),
-            validTo: null,
-          },
-        }),
-      );
+      await seedOpenFare(prisma, municipalityId, 'taxi', 8000);
+      await seedCommission(prisma, companyId, 8);
 
       const passengerUser = await prisma.user.create({
         data: {
@@ -155,9 +147,9 @@ suite(
       if (app) await app.close();
     }, 60_000);
 
-    it('ActiveCompanyResolver resuelve esta empresa como la única activa de su municipio (regresión de Cootrayal/Yarumal)', async () => {
-      const resolved = await activeCompanies.resolve(municipalityId);
-      expect(resolved).toBe(companyId);
+    it('DispatchCompaniesResolver resuelve esta empresa como la única activa de su municipio (regresión de Cootrayal/Yarumal)', async () => {
+      const resolved = await dispatchCompanies.resolve(municipalityId, { serviceType: 'taxi' });
+      expect(resolved).toEqual([companyId]);
     });
 
     it('vehicle_count NULL: registrar varios conductores por HTTP nunca dispara FLEET_LIMIT_REACHED', async () => {
@@ -255,6 +247,7 @@ suite(
           dropoffLng: DROPOFF.lng,
           fare: quote.body.fare.total,
           commission: quote.body.fare.commission,
+          companyId,
           status: 'assigned',
         },
       });

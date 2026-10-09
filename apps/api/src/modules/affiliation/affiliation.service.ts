@@ -18,6 +18,9 @@ import type {
   ReplaceAffiliationDocumentDTO,
 } from '@voyyaa/shared';
 import { REQUIRED_COMPANY_DOCUMENT_TYPES } from '@voyyaa/shared';
+import { ServiceCatalog } from '../service-config/service-catalog';
+import { isAffiliationEligible } from './affiliation-eligibility';
+import { MUNICIPALITY_CATALOG_SOURCE } from './municipality-catalog-source';
 import { AffiliationLinkService } from './affiliation-link.service';
 import {
   AffiliationRepository,
@@ -34,18 +37,29 @@ export class AffiliationService {
   constructor(
     private readonly repo: AffiliationRepository,
     private readonly links: AffiliationLinkService,
+    private readonly catalog: ServiceCatalog,
     @Inject(FILE_STORAGE) private readonly storage: FileStorageProvider,
   ) {}
 
   async listMunicipalities(): Promise<AffiliationMunicipalityListResponse> {
     const rows = await this.repo.listMunicipalityCatalog();
+    const collator = new Intl.Collator('es-CO', { sensitivity: 'base' });
+    const sorted = [...rows].sort(
+      (a, b) => collator.compare(a.department, b.department) || collator.compare(a.name, b.name),
+    );
     return {
-      rows: rows.map((r) => ({
+      rows: sorted.map((r) => ({
         municipality_id: r.municipalityId,
+        dane_code: r.daneCode,
+        department_code: r.daneCode.slice(0, 2),
         name: r.name,
         department: r.department,
-        already_covered: r.alreadyCovered,
+        already_covered: r.hasActiveCompanies,
+        has_active_companies: r.hasActiveCompanies,
+        coverage_active: r.coverageActive,
       })),
+      source: MUNICIPALITY_CATALOG_SOURCE,
+      active_service_types: [...this.catalog.activeServiceTypes()],
     };
   }
 
@@ -64,12 +78,14 @@ export class AffiliationService {
     }
 
     const municipality = await this.repo.getMunicipality(dto.municipality_id);
-    if (!municipality || municipality.status !== 'active') {
+    if (!municipality || !isAffiliationEligible(municipality)) {
       throw new NotFoundException({
         code: 'MUNICIPALITY_NOT_FOUND',
         message: 'El municipio no existe o no está disponible',
       });
     }
+
+    this.catalog.assertAllActive(dto.service_types);
 
     const [phoneTaken, emailTaken] = await Promise.all([
       this.repo.findUserByPhone(dto.contact_phone),
@@ -164,6 +180,8 @@ export class AffiliationService {
           taxId: dto.tax_id,
           legalForm: dto.legal_form,
           municipalityId: dto.municipality_id,
+          publicName: dto.public_name ?? null,
+          serviceTypes: dto.service_types,
           vehicleCount: dto.vehicle_count,
           contactEmail: dto.contact_email,
           contactFirstName: dto.contact_first_name,

@@ -268,6 +268,7 @@ suite('Ops/Admin console — driver reads and writes never cross company_id, eve
           fare: 12000,
           commission: 960,
           status: 'pending_assignment',
+          requestedCompanyId: companyAId,
         },
       });
 
@@ -275,14 +276,52 @@ suite('Ops/Admin console — driver reads and writes never cross company_id, eve
         .get(`/ops/trip-requests/${trip.tripRequestId}`)
         .set('Authorization', adminAAuth);
 
+      const adminBAuth = `Bearer ${jwt.sign({ sub: 900202, role: 'admin', type: 'access', company_id: companyBId })}`;
+      const foreign = await request(app.getHttpServer())
+        .get(`/ops/trip-requests/${trip.tripRequestId}`)
+        .set('Authorization', adminBAuth);
+      expect(foreign.status).toBe(404);
+      expect(JSON.stringify(foreign.body)).not.toContain('_TenantDetail');
+
       expect(res.status).toBe(200);
       expect(res.body.trip_request_id).toBe(trip.tripRequestId);
       expect(res.body.pickup_address).toBe('_TenantDetail pickup');
-      expect(res.body.fare).toMatchObject({ total: 12000, commission: 960, currency: 'COP' });
+      expect(res.body.fare).toMatchObject({ total: 12000, commission: 0, currency: 'COP' });
       expect(res.body.driver).toBeNull();
       expect(res.body.timeline.requested_at).toEqual(expect.any(String));
       expect(res.body.passenger_phone_masked).toBe(`***${passengerPhone.slice(-4)}`);
       expect(JSON.stringify(res.body)).not.toContain(passengerPhone);
+    });
+
+    it('an undirected trip of a municipality with two companies is readable by neither (404 for the admin of A)', async () => {
+      const passengerUser = await prisma.user.create({
+        data: { firstName: '_Tenant', lastName: 'AnyPassenger', phone: uniquePhone(), role: 'passenger' },
+      });
+      await prisma.passenger.create({ data: { passengerId: passengerUser.userId } });
+      const trip = await prisma.tripRequest.create({
+        data: {
+          passengerId: passengerUser.userId,
+          municipalityId,
+          serviceType: 'taxi',
+          paymentMethod: 'cash',
+          pickupAddress: '_TenantAny pickup',
+          dropoffAddress: '_TenantAny dropoff',
+          pickupLat: 0.1,
+          pickupLng: 0.1,
+          dropoffLat: 0.2,
+          dropoffLng: 0.2,
+          fare: 12000,
+          commission: 0,
+          status: 'pending_assignment',
+        },
+      });
+
+      const res = await request(app.getHttpServer())
+        .get(`/ops/trip-requests/${trip.tripRequestId}`)
+        .set('Authorization', adminAAuth);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toMatchObject({ code: 'TRIP_REQUEST_NOT_FOUND' });
     });
 
     it('a trip request from a DIFFERENT municipality -> 404 TRIP_REQUEST_NOT_FOUND (the WHERE clause is the only guard, and it must hold)', async () => {

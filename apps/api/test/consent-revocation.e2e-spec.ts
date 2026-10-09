@@ -94,7 +94,12 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
   async function makePassenger(): Promise<number> {
     const n = nextId();
     const user = await prisma.user.create({
-      data: { firstName: '_Rev', lastName: `Passenger${n}`, phone: `_rev-${runId}-p${n}`, role: 'passenger' },
+      data: {
+        firstName: '_Rev',
+        lastName: `Passenger${n}`,
+        phone: `_rev-${runId}-p${n}`,
+        role: 'passenger',
+      },
     });
     await prisma.passenger.create({ data: { passengerId: user.userId } });
     return user.userId;
@@ -103,10 +108,17 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
   async function makeDriver(status: 'off_shift' | 'available' | 'on_trip'): Promise<number> {
     const n = nextId();
     const user = await prisma.user.create({
-      data: { firstName: '_Rev', lastName: `Driver${n}`, phone: `_rev-${runId}-d${n}`, role: 'driver' },
+      data: {
+        firstName: '_Rev',
+        lastName: `Driver${n}`,
+        phone: `_rev-${runId}-d${n}`,
+        role: 'driver',
+      },
     });
     const vehicle = await prisma.runInTenant(companyId, (tx) =>
-      tx.vehicle.create({ data: { plate: `_R${runId.slice(-9)}${n}`, companyId, status: 'active' } }),
+      tx.vehicle.create({
+        data: { plate: `_R${runId.slice(-9)}${n}`, companyId, status: 'active' },
+      }),
     );
     const located = status !== 'off_shift';
     await prisma.runInTenant(companyId, (tx) =>
@@ -143,11 +155,16 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
   }
 
   function revokeAs(headers: Record<string, string>) {
-    return request(app.getHttpServer()).post('/consents/revoke').set(headers).send({ purpose: 'location' });
+    return request(app.getHttpServer())
+      .post('/consents/revoke')
+      .set(headers)
+      .send({ purpose: 'location' });
   }
 
   async function readDriver(driverId: number) {
-    return prisma.runInTenant(companyId, (tx) => tx.driver.findUniqueOrThrow({ where: { driverId } }));
+    return prisma.runInTenant(companyId, (tx) =>
+      tx.driver.findUniqueOrThrow({ where: { driverId } }),
+    );
   }
 
   describe('notice registry', () => {
@@ -165,83 +182,77 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       }
     });
 
-    ownerIt('fails the startup when the stored hash of the current version differs', async () => {
+    async function driftedRegistryClass(): Promise<
+      new (
+        ...args: ConstructorParameters<
+          typeof import('../src/modules/auth/consent-notice.registry').ConsentNoticeRegistry
+        >
+      ) => import('../src/modules/auth/consent-notice.registry').ConsentNoticeRegistry
+    > {
       const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
-      const registry = app.get(ConsentNoticeRegistry);
-      const original = await prisma.consentNotice.findUniqueOrThrow({
-        where: {
-          purpose_noticeVersion_audience: {
-            purpose: 'location',
-            noticeVersion: LOCATION_NOTICE_VERSION,
-            audience: 'driver',
-          },
-        },
+      return class DriftedRegistry extends ConsentNoticeRegistry {
+        protected noticeBody(audience: Parameters<ConsentNoticeRegistry['isKnown']>[2]): string {
+          return `${super.noticeBody(audience)} reescrito sin subir la versión`;
+        }
+      };
+    }
+
+    it('fails the startup when the contract text changed without bumping the version (no shared row is touched)', async () => {
+      const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
+      const { EnvService } = await import('../src/config/env.service');
+      const Drifted = await driftedRegistryClass();
+      const drifted = new Drifted(prisma, app.get(EnvService));
+      const before = await prisma.consentNotice.findMany({
+        where: { purpose: 'location', noticeVersion: LOCATION_NOTICE_VERSION },
       });
-      const tampered = 'a'.repeat(64);
-      await owner.consentNotice.update({
-        where: {
-          purpose_noticeVersion_audience: {
-            purpose: 'location',
-            noticeVersion: LOCATION_NOTICE_VERSION,
-            audience: 'driver',
-          },
-        },
-        data: { sha256: tampered },
+
+      await expect(drifted.register()).rejects.toThrow('cambió sin subir la versión del aviso');
+
+      const after = await prisma.consentNotice.findMany({
+        where: { purpose: 'location', noticeVersion: LOCATION_NOTICE_VERSION },
       });
+      expect(after.map((row) => [row.audience, row.sha256, row.body]).sort()).toEqual(
+        before.map((row) => [row.audience, row.sha256, row.body]).sort(),
+      );
+      await expect(app.get(ConsentNoticeRegistry).register()).resolves.toBeUndefined();
+    });
+
+    it('refuses to boot the application while the contract text differs from the stored hash', async () => {
+      const { AppModule } = await import('../src/app.module');
+      const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
+      const Drifted = await driftedRegistryClass();
+      const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+        .overrideProvider(ConsentNoticeRegistry)
+        .useClass(Drifted)
+        .compile();
+      const second = moduleRef.createNestApplication();
       try {
-        await expect(registry.register()).rejects.toThrow('cambió sin subir la versión del aviso');
+        await expect(second.init()).rejects.toThrow('cambió sin subir la versión del aviso');
       } finally {
-        await owner.consentNotice.update({
-          where: {
-            purpose_noticeVersion_audience: {
-              purpose: 'location',
-              noticeVersion: LOCATION_NOTICE_VERSION,
-              audience: 'driver',
+        await moduleRef.get(PrismaService).$disconnect();
+      }
+    });
+
+    it('refuses to boot when the stored body no longer matches the stored hash (CM-03, read-time tamper, no shared row is touched)', async () => {
+      const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
+      const { EnvService } = await import('../src/config/env.service');
+      const tamperedPrisma = Object.create(prisma, {
+        consentNotice: {
+          value: {
+            createMany: prisma.consentNotice.createMany.bind(prisma.consentNotice),
+            findUniqueOrThrow: async (
+              args: Parameters<typeof prisma.consentNotice.findUniqueOrThrow>[0],
+            ) => {
+              const row = await prisma.consentNotice.findUniqueOrThrow(args);
+              return { ...row, body: `${row.body} reescrito` };
             },
           },
-          data: { sha256: original.sha256 },
-        });
-      }
-      await expect(registry.register()).resolves.toBeUndefined();
-    });
-
-    ownerIt('refuses to boot the application while a stored hash differs from the contract text', async () => {
-      const key = {
-        purpose_noticeVersion_audience: {
-          purpose: 'location' as const,
-          noticeVersion: LOCATION_NOTICE_VERSION,
-          audience: 'passenger' as const,
         },
-      };
-      const original = await prisma.consentNotice.findUniqueOrThrow({ where: key });
-      await owner.consentNotice.update({ where: key, data: { sha256: 'c'.repeat(64) } });
-      try {
-        const { AppModule } = await import('../src/app.module');
-        const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
-        const second = moduleRef.createNestApplication();
-        await expect(second.init()).rejects.toThrow('cambió sin subir la versión del aviso');
-        await moduleRef.get(PrismaService).$disconnect();
-      } finally {
-        await owner.consentNotice.update({ where: key, data: { sha256: original.sha256 } });
-      }
-    });
+      }) as PrismaService;
 
-    ownerIt('refuses to boot when the stored body no longer matches the stored hash (CM-03)', async () => {
-      const key = {
-        purpose_noticeVersion_audience: {
-          purpose: 'location' as const,
-          noticeVersion: LOCATION_NOTICE_VERSION,
-          audience: 'driver' as const,
-        },
-      };
-      const original = await prisma.consentNotice.findUniqueOrThrow({ where: key });
-      await owner.consentNotice.update({ where: key, data: { body: `${original.body} reescrito` } });
-      try {
-        const { ConsentNoticeRegistry } = await import('../src/modules/auth/consent-notice.registry');
-        await expect(app.get(ConsentNoticeRegistry).register()).rejects.toThrow('no coincide con su huella');
-      } finally {
-        await owner.consentNotice.update({ where: key, data: { body: original.body } });
-      }
+      await expect(
+        new ConsentNoticeRegistry(tamperedPrisma, app.get(EnvService)).register(),
+      ).rejects.toThrow('no coincide con su huella');
     });
 
     it('app_voyya cannot rewrite or delete the ledger or the notices (CM-03)', async () => {
@@ -259,7 +270,9 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         prisma.$executeRaw`UPDATE auth.consent_notice SET body = 'x' WHERE audience = 'passenger'::auth."NoticeAudience"`,
       ).rejects.toThrow(denied);
       await expect(prisma.$executeRaw`DELETE FROM auth.consent_notice`).rejects.toThrow(denied);
-      expect(await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } })).toBe(1);
+      expect(
+        await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } }),
+      ).toBe(1);
     });
 
     it('app_voyya cannot delete a user, so the consent proof and the user survive (CM-15)', async () => {
@@ -271,19 +284,24 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       ).rejects.toThrow(/permission denied/i);
 
       expect(await prisma.user.count({ where: { userId: passengerId } })).toBe(1);
-      expect(await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } })).toBe(1);
+      expect(
+        await prisma.consentRecord.count({ where: { userId: passengerId, action: 'granted' } }),
+      ).toBe(1);
     });
 
-    ownerIt('even the owner cannot delete a user that has consent records: the foreign key restricts (CM-15)', async () => {
-      const passengerId = await makePassenger();
-      await grantLocationConsent(prisma, passengerId, 'passenger');
+    ownerIt(
+      'even the owner cannot delete a user that has consent records: the foreign key restricts (CM-15)',
+      async () => {
+        const passengerId = await makePassenger();
+        await grantLocationConsent(prisma, passengerId, 'passenger');
 
-      await expect(
-        owner.$executeRaw`DELETE FROM auth."user" WHERE user_id = ${passengerId}`,
-      ).rejects.toThrow(/foreign key|consent_record_user_id_fkey/i);
+        await expect(
+          owner.$executeRaw`DELETE FROM auth."user" WHERE user_id = ${passengerId}`,
+        ).rejects.toThrow(/foreign key|consent_record_user_id_fkey/i);
 
-      expect(await prisma.consentRecord.count({ where: { userId: passengerId } })).toBe(1);
-    });
+        expect(await prisma.consentRecord.count({ where: { userId: passengerId } })).toBe(1);
+      },
+    );
 
     ownerIt('the ledger foreign key restricts updating the notice version (CM-03)', async () => {
       const passengerId = await makePassenger();
@@ -345,7 +363,11 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       expect(await prisma.consentRecord.count({ where: { userId: passengerId } })).toBe(2);
 
       const regranted = await grantAs(headers);
-      expect(regranted.body).toMatchObject({ state: 'granted', revoked_at: null, requires_acceptance: false });
+      expect(regranted.body).toMatchObject({
+        state: 'granted',
+        revoked_at: null,
+        requires_acceptance: false,
+      });
 
       const list = await request(app.getHttpServer()).get('/consents').set(headers);
       expect(list.status).toBe(200);
@@ -389,8 +411,14 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
         },
       });
       await revokeAs(passengerHeaders(passengerId));
-      const after = await prisma.tripRequest.findUniqueOrThrow({ where: { tripRequestId: trip.tripRequestId } });
-      expect(after).toMatchObject({ status: 'pending_assignment', pickupLat: 0.1, pickupAddress: 'Calle 1' });
+      const after = await prisma.tripRequest.findUniqueOrThrow({
+        where: { tripRequestId: trip.tripRequestId },
+      });
+      expect(after).toMatchObject({
+        status: 'pending_assignment',
+        pickupLat: 0.1,
+        pickupAddress: 'Calle 1',
+      });
       await prisma.tripRequest.update({
         where: { tripRequestId: trip.tripRequestId },
         data: { status: 'cancelled_by_passenger' },
@@ -463,7 +491,13 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       });
       if (old === null) throw new Error('old notice fixture missing');
       await prisma.consentRecord.create({
-        data: { userId: driverId, purpose: 'location', noticeVersion: old.noticeVersion, audience: 'driver', action: 'granted' },
+        data: {
+          userId: driverId,
+          purpose: 'location',
+          noticeVersion: old.noticeVersion,
+          audience: 'driver',
+          action: 'granted',
+        },
       });
 
       const location = await request(app.getHttpServer())
@@ -515,7 +549,9 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       const retry = await revokeAs(driverHeaders(driverId));
       expect(retry.status).toBe(200);
       expect(await readDriver(driverId)).toMatchObject({ status: 'off_shift', currentLat: null });
-      expect(await prisma.consentRecord.count({ where: { userId: driverId, action: 'revoked' } })).toBe(1);
+      expect(
+        await prisma.consentRecord.count({ where: { userId: driverId, action: 'revoked' } }),
+      ).toBe(1);
     });
 
     it('with a trip in progress the trip goes on and the driver ends off_shift when it closes', async () => {
@@ -559,7 +595,9 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
 
       const during = await readDriver(driverId);
       expect(during).toMatchObject({ status: 'on_trip', currentLat: null, currentLng: null });
-      const tripDuring = await prisma.tripRequest.findUniqueOrThrow({ where: { tripRequestId: trip.tripRequestId } });
+      const tripDuring = await prisma.tripRequest.findUniqueOrThrow({
+        where: { tripRequestId: trip.tripRequestId },
+      });
       expect(tripDuring.status).toBe('in_progress');
 
       const blocked = await request(app.getHttpServer())
@@ -598,11 +636,17 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
             await shifts.reportLocation(driverId, companyId, POSITION).catch(() => undefined);
           }
         });
-        const revocation = delay(round % 4).then(() => consents.revoke(user, { purpose: 'location' }));
+        const revocation = delay(round % 4).then(() =>
+          consents.revoke(user, { purpose: 'location' }),
+        );
         const [revoked] = await Promise.all([revocation, ...workers]);
         expect(revoked.state).toBe('revoked');
         const after = await readDriver(driverId);
-        if (after.currentLat !== null || after.currentLng !== null || after.locationUpdatedAt !== null) {
+        if (
+          after.currentLat !== null ||
+          after.currentLng !== null ||
+          after.locationUpdatedAt !== null
+        ) {
           survivors += 1;
         }
       }
@@ -615,7 +659,10 @@ suite('Revocable consent over real HTTP as app_voyya (ADR-029 sections 1 to 4)',
       await grantAs(driverHeaders(revoker));
       await grantAs(driverHeaders(bystander));
       await revokeAs(driverHeaders(revoker));
-      expect(await readDriver(bystander)).toMatchObject({ status: 'available', currentLat: POSITION.lat });
+      expect(await readDriver(bystander)).toMatchObject({
+        status: 'available',
+        currentLat: POSITION.lat,
+      });
     });
   });
 });

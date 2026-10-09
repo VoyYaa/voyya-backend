@@ -5,12 +5,12 @@ import { AssignmentController } from './assignment.controller';
 import { AssignmentRepository } from './assignment.repository';
 import { AssignmentService } from './assignment.service';
 import { CandidateRepository } from './candidate.repository';
+import { DriverAvailabilityService } from './driver-availability.service';
 import { DriverController } from './driver.controller';
 import { DriverRepository } from './driver.repository';
 import { ConsentRevokedListener } from './consent-revoked.listener';
 import { DriverLocationPurgeService } from './driver-location-purge.service';
 import { DriverShiftService } from './driver-shift.service';
-import { OperationalParamsService } from './operational-params.service';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
 import { SMS_PROVIDER } from './ports/sms-provider.port';
 import { createPushProvider } from './providers/push.factory';
@@ -27,9 +27,9 @@ import { TripClosingService } from './trip-closing.service';
     AssignmentService,
     AssignmentRepository,
     CandidateRepository,
-    OperationalParamsService,
     TripClosingService,
     DriverShiftService,
+    DriverAvailabilityService,
     DriverRepository,
     DriverLocationPurgeService,
     ConsentRevokedListener,
@@ -38,6 +38,6 @@ import { TripClosingService } from './trip-closing.service';
     { provide: PUSH_PROVIDER, useFactory: createPushProvider, inject: [EnvService, PushTokenRepository] },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
-  exports: [AssignmentService, TripClosingService, OperationalParamsService],
+  exports: [AssignmentService, TripClosingService, DriverAvailabilityService],
 })
 export class AssignmentModule {}

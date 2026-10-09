@@ -3,6 +3,33 @@ import { z } from 'zod';
 export const ServiceType = z.enum(['taxi', 'motorcycle', 'comfort', 'delivery']);
 export type ServiceType = z.infer<typeof ServiceType>;
 
+export const ActivatableServiceType = ServiceType.exclude(['motorcycle']);
+export type ActivatableServiceType = z.infer<typeof ActivatableServiceType>;
+
+export const ActiveServiceTypes = z.array(ActivatableServiceType).min(1);
+export type ActiveServiceTypes = z.infer<typeof ActiveServiceTypes>;
+
+const FORBIDDEN_NAME_CHARACTERS = /[\p{C}\u180E\u200B-\u200D\u2060\uFEFF]/u;
+
+export const CompanyPublicName = z
+  .string()
+  .trim()
+  .transform((value) => value.normalize('NFC'))
+  .pipe(
+    z
+      .string()
+      .min(2)
+      .max(60)
+      .refine((value) => !FORBIDDEN_NAME_CHARACTERS.test(value)),
+  );
+export type CompanyPublicName = z.infer<typeof CompanyPublicName>;
+
+export const CompanyRef = z.object({
+  company_id: z.number().int().positive(),
+  display_name: z.string(),
+});
+export type CompanyRef = z.infer<typeof CompanyRef>;
+
 export const PaymentMethod = z.enum(['cash', 'nequi', 'daviplata', 'card']);
 export type PaymentMethod = z.infer<typeof PaymentMethod>;
 
@@ -89,11 +116,41 @@ export const EstimatedEta = z.object({
 });
 export type EstimatedEta = z.infer<typeof EstimatedEta>;
 
+export const TripServiceOptionsQuery = z.object({
+  lat: z.coerce.number().min(-4.5).max(16),
+  lng: z.coerce.number().min(-82).max(-66),
+});
+export type TripServiceOptionsQuery = z.infer<typeof TripServiceOptionsQuery>;
+
+export const TripCompanyOption = CompanyRef.extend({
+  has_available_drivers: z.boolean(),
+});
+export type TripCompanyOption = z.infer<typeof TripCompanyOption>;
+
+export const TripServiceOption = z.object({
+  service_type: ActivatableServiceType,
+  selection_required: z.boolean(),
+  companies: z.array(TripCompanyOption).min(1),
+});
+export type TripServiceOption = z.infer<typeof TripServiceOption>;
+
+export const TripServiceMunicipality = z.object({
+  municipality_id: z.number().int().positive(),
+  name: z.string(),
+});
+export type TripServiceMunicipality = z.infer<typeof TripServiceMunicipality>;
+
+export const TripServiceOptionsResponse = z.object({
+  municipality: TripServiceMunicipality.nullable(),
+  services: z.array(TripServiceOption),
+});
+export type TripServiceOptionsResponse = z.infer<typeof TripServiceOptionsResponse>;
+
 export const QuoteFareDTO = z.object({
   origin: Location,
   destination: Location,
   municipality_id: z.number().int().positive(),
-  service_type: ServiceType.default('taxi'),
+  service_type: ActivatableServiceType.default('taxi'),
 });
 export type QuoteFareDTO = z.infer<typeof QuoteFareDTO>;
 
@@ -112,9 +169,10 @@ export const CreateTripRequestDTO = z.object({
   origin: Location,
   destination: Location,
   municipality_id: z.number().int().positive(),
-  service_type: ServiceType.default('taxi'),
+  service_type: ActivatableServiceType.default('taxi'),
   payment_method: PaymentMethod.default('cash'),
   quote_token: z.string().min(1),
+  requested_company_id: z.number().int().positive().nullable().optional(),
 });
 export type CreateTripRequestDTO = z.infer<typeof CreateTripRequestDTO>;
 
@@ -148,6 +206,7 @@ export const AssignedDriverSummary = z.object({
   model: z.string().nullable(),
   contact_phone: z.string().nullable(),
   eta: EstimatedEta.nullable(),
+  company: CompanyRef,
 });
 export type AssignedDriverSummary = z.infer<typeof AssignedDriverSummary>;
 
@@ -155,6 +214,8 @@ export const TripRequestStatus = z.object({
   trip_request_id: z.number().int().positive(),
   status: TripStatus,
   ui: PassengerUiState,
+  service_type: ServiceType,
+  requested_company: CompanyRef.nullable(),
   fare: FareBreakdown,
   driver: AssignedDriverSummary.nullable(),
   arrived_at: z.string().datetime().nullable(),
@@ -189,6 +250,8 @@ export const TripErrorCode = z.enum([
   'NO_ACTIVE_ASSIGNMENT',
   'ARRIVAL_NOT_MARKED',
   'NO_SHOW_GRACE_PENDING',
+  'SERVICE_NOT_AVAILABLE',
+  'COMPANY_NOT_AVAILABLE',
 ]);
 export type TripErrorCode = z.infer<typeof TripErrorCode>;
 

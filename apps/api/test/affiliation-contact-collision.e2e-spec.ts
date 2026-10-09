@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createMunicipality, openFares, commissionsOf } from './support/platform-fixtures';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
@@ -48,27 +49,7 @@ suite('Colisión de cuenta del contacto — dos ventanas temporales (ADR-021 §5
   let storage: FileStorageProvider;
 
   async function freshMunicipality(): Promise<number> {
-    const suffix = uniqueSuffix();
-    const municipality = await prisma.municipality.create({
-      data: {
-        name: `_ContactCollisionMuni-${suffix}`,
-        department: 'Test',
-        coveragePolygon: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [0, 0],
-              [0, 1],
-              [1, 1],
-              [1, 0],
-              [0, 0],
-            ],
-          ],
-        },
-        status: 'active',
-      },
-    });
-    return municipality.municipalityId;
+    return createMunicipality(prisma, '_ContactCollisionMuni', { status: 'catalog' });
   }
 
   beforeAll(async () => {
@@ -218,7 +199,7 @@ suite('Colisión de cuenta del contacto — dos ventanas temporales (ADR-021 §5
     const approval = await request(app.getHttpServer())
       .post(`/platform/companies/${companyId}/approve`)
       .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 9000 } });
+      .send({ initial_fare: { base_fare: 9000 }, commission_pct: 8 });
 
     expect(approval.status).toBe(409);
     expect(approval.body).toMatchObject({ code: 'CONTACT_ACCOUNT_CONFLICT' });
@@ -229,10 +210,7 @@ suite('Colisión de cuenta del contacto — dos ventanas temporales (ADR-021 §5
     const adminCount = await prisma.user.count({ where: { companyId, role: 'admin' } });
     expect(adminCount).toBe(0);
 
-    const fareConfigCount = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT set_config('app.current_company', ${String(companyId)}, true)`;
-      return tx.fareConfig.count({ where: { companyId } });
-    });
-    expect(fareConfigCount).toBe(0);
+    expect(await openFares(prisma, municipalityId)).toHaveLength(0);
+    expect(await commissionsOf(prisma, companyId)).toHaveLength(0);
   }, 20_000);
 });

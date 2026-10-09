@@ -182,7 +182,11 @@ suite('Ops console — live queue polling and driver roster (ADR-015)', () => {
     if (app) await app.close();
   });
 
-  async function makeTrip(status: 'pending_assignment' | 'completed', pickup: string): Promise<number> {
+  async function makeTrip(
+    status: 'pending_assignment' | 'completed' | 'cancelled_by_driver',
+    pickup: string,
+    ownerCompanyId: number | null = null,
+  ): Promise<number> {
     const t = await prisma.tripRequest.create({
       data: {
         passengerId,
@@ -198,6 +202,7 @@ suite('Ops console — live queue polling and driver roster (ADR-015)', () => {
         fare: 10000,
         commission: 800,
         status,
+        ...(ownerCompanyId !== null ? { companyId: ownerCompanyId } : {}),
       },
     });
     return t.tripRequestId;
@@ -274,6 +279,30 @@ suite('Ops console — live queue polling and driver roster (ADR-015)', () => {
 
       const addresses = res.body.rows.map((r: { pickup_address: string }) => r.pickup_address);
       expect(addresses).toContain('_pending-active');
+    });
+  });
+
+  describe('trip-request detail: fare.commission (D-1)', () => {
+    const detail = (id: number) =>
+      request(app.getHttpServer()).get(`/ops/trip-requests/${id}`).set('Authorization', operatorAuth);
+
+    it('a completed trip shows its real commission', async () => {
+      const id = await makeTrip('completed', '_detail-completed', companyId);
+
+      const res = await detail(id);
+
+      expect(res.status).toBe(200);
+      expect(res.body.fare.commission).toBe(800);
+    });
+
+    it('a trip cancelled after it was accepted shows commission 0', async () => {
+      const id = await makeTrip('cancelled_by_driver', '_detail-cancelled', companyId);
+
+      const res = await detail(id);
+
+      expect(res.status).toBe(200);
+      expect(res.body.fare.total).toBe(10000);
+      expect(res.body.fare.commission).toBe(0);
     });
   });
 });

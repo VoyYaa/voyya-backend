@@ -12,9 +12,15 @@ import type {
   ResendCompanyNotificationResponse,
 } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
+import { isDeadlock, retryOnDeadlock } from '../../shared/deadlock';
 import { generateTemporaryPassword } from '../../shared/temporary-password';
 import { HASHER, type Hasher } from '../auth/hasher.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { CompanyCommissionReader } from '../service-config/company-commission.reader';
+import { MunicipalityFareReader } from '../service-config/municipality-fare.reader';
+import { ServiceCatalog } from '../service-config/service-catalog';
+import { settingsConflict } from '../service-config/service-config.errors';
+import { toCommissionDto, toNullableFareDto } from '../service-config/service-config.mappers';
+import { ServiceConfigProvisioner } from '../service-config/service-config-provisioner';
 import { CompanyProvisioningService } from '../tenancy/company-provisioning.service';
 import { DocumentDownloadTokenService } from './document-download-token.service';
 import { EMAIL_PROVIDER, type EmailProvider } from './ports/email-provider.port';
@@ -30,8 +36,11 @@ import { PlatformCompanyRepository } from './platform-company.repository';
 export class PlatformCompanyService {
   constructor(
     private readonly repo: PlatformCompanyRepository,
-    private readonly activeCompanies: ActiveCompanyResolver,
     private readonly provisioning: CompanyProvisioningService,
+    private readonly serviceConfig: ServiceConfigProvisioner,
+    private readonly catalog: ServiceCatalog,
+    private readonly fares: MunicipalityFareReader,
+    private readonly commissions: CompanyCommissionReader,
     private readonly links: AffiliationLinkService,
     private readonly downloadTokens: DocumentDownloadTokenService,
     private readonly env: EnvService,
@@ -41,9 +50,13 @@ export class PlatformCompanyService {
 
   async list(query: PlatformCompanyQuery): Promise<PlatformCompanyListResponse> {
     const [rows, pendingCount] = await Promise.all([
-      this.repo.listCompanies(query.status, query.limit),
+      this.repo.listCompanies(query.status, query.municipality_id ?? null, query.limit),
       this.repo.countPending(),
     ]);
+    const awaitingCoverage = rows
+      .filter((r) => r.status === 'active' && !r.municipalityCoverageActive)
+      .map((r) => r.companyId);
+    const approvalDates = await this.repo.findApprovalDates(awaitingCoverage);
     return {
       server_time: new Date().toISOString(),
       pending_count: pendingCount,
@@ -55,6 +68,11 @@ export class PlatformCompanyService {
         municipality_id: r.municipalityId,
         municipality_name: r.municipalityName,
         municipality_already_covered: r.municipalityAlreadyCovered,
+        municipality_dane_code: r.municipalityDaneCode,
+        municipality_coverage_active: r.municipalityCoverageActive,
+        display_name: r.publicName ?? r.legalName,
+        service_types: r.serviceTypes,
+        coverage_pending_since: approvalDates.get(r.companyId)?.toISOString() ?? null,
         vehicle_count: r.vehicleCount,
         contact_email: r.contactEmail,
         submitted_at: r.submittedAt.toISOString(),
@@ -69,18 +87,20 @@ export class PlatformCompanyService {
     }
 
     const ttlSeconds = this.env.get('DOCUMENT_SIGNED_URL_TTL_SEC');
-    const [documents, reviews, conflictCompanyId] = await this.repo.runTransaction(async (tx) => {
+    const [documents, reviews, fares, commission] = await this.repo.runAsPlatform(async (tx) => {
       await this.repo.setTenantSession(tx, companyId);
       return Promise.all([
         this.repo.listDocuments(tx, companyId),
         this.repo.listReviews(tx, companyId),
-        this.activeCompanies.resolve(row.municipalityId, { tx, excludeCompanyId: companyId }),
+        Promise.all(
+          row.serviceTypes.map(async (serviceType) => ({
+            service_type: serviceType,
+            fare: toNullableFareDto(await this.fares.getCurrent(row.municipalityId, serviceType, tx)),
+          })),
+        ),
+        this.commissions.getCurrent(tx, companyId),
       ]);
     });
-    const conflictName =
-      conflictCompanyId !== null
-        ? (await this.repo.getDetail(conflictCompanyId))?.legalName ?? null
-        : null;
 
     const documentsWithDownload = documents.map((d) => ({
       company_document_id: d.companyDocumentId,
@@ -98,6 +118,11 @@ export class PlatformCompanyService {
       download_url_expires_at: new Date(Date.now() + ttlSeconds * 1000).toISOString(),
     }));
 
+    const approvalDate =
+      row.status === 'active' && !row.municipalityCoverageActive
+        ? ((await this.repo.findApprovalDates([companyId])).get(companyId) ?? null)
+        : null;
+
     return {
       company_id: row.companyId,
       legal_name: row.legalName,
@@ -106,13 +131,25 @@ export class PlatformCompanyService {
       municipality_id: row.municipalityId,
       municipality_name: row.municipalityName,
       municipality_already_covered: row.municipalityAlreadyCovered,
+      municipality_dane_code: row.municipalityDaneCode,
+      municipality_coverage_active: row.municipalityCoverageActive,
+      display_name: row.publicName ?? row.legalName,
+      service_types: row.serviceTypes,
+      coverage_pending_since: approvalDate ? approvalDate.toISOString() : null,
       vehicle_count: row.vehicleCount,
       contact_email: row.contactEmail,
       submitted_at: row.submittedAt.toISOString(),
       server_time: new Date().toISOString(),
       legal_form: row.legalForm,
       municipality_department: row.municipalityDepartment,
-      municipality_active_company_name: conflictName,
+      municipality_active_company_name: row.otherActiveCompanies[0]?.legalName ?? null,
+      public_name: row.publicName,
+      municipality_active_companies: row.otherActiveCompanies.map((c) => ({
+        company_id: c.companyId,
+        legal_name: c.legalName,
+      })),
+      municipality_fares: fares,
+      commission: commission ? toCommissionDto(commission) : null,
       contact_first_name: row.contactFirstName,
       contact_last_name: row.contactLastName,
       contact_phone: row.contactPhone,
@@ -135,91 +172,70 @@ export class PlatformCompanyService {
     dto: ApproveCompanyDTO,
     platformAdminUserId: number,
   ): Promise<CompanyDecisionResponse> {
-    const defaultParams = {
-      searchRadiusKm: this.env.get('SEARCH_RADIUS_KM'),
-      expansionRadiusKm: this.env.get('EXPANSION_RADIUS_KM'),
-      acceptanceTimeoutSec: this.env.get('ACCEPTANCE_TIMEOUT_SEC'),
-    };
     const temporaryPassword = generateTemporaryPassword();
 
-    const outcome = await this.repo.runTransaction(async (tx) => {
-      const activated = await this.repo.activateCompany(tx, companyId);
-      if (!activated) {
-        throw new ConflictException({
-          code: 'COMPANY_NOT_PENDING',
-          message: 'Esta solicitud ya fue resuelta',
-        });
-      }
-
-      const conflictCompanyId = await this.activeCompanies.resolve(activated.municipalityId, {
-        tx,
-        excludeCompanyId: activated.companyId,
-      });
-
-      let conflictName: string | null = null;
-      if (conflictCompanyId !== null) {
-        const conflict = await tx.company.findUnique({
-          where: { companyId: conflictCompanyId },
-          select: { legalName: true },
-        });
-        conflictName = conflict?.legalName ?? null;
-        if (!dto.acknowledge_routing_limitation) {
+    const outcome = await this.runApproval(() =>
+      this.repo.runAsPlatform(async (tx) => {
+        const activated = await this.repo.activateCompany(tx, companyId);
+        if (!activated) {
           throw new ConflictException({
-            code: 'MUNICIPALITY_ALREADY_COVERED',
-            message: `Este municipio ya tiene una empresa activa (${conflictName ?? 'otra empresa'})`,
-            municipality_active_company_name: conflictName ?? undefined,
+            code: 'COMPANY_NOT_PENDING',
+            message: 'Esta solicitud ya fue resuelta',
           });
         }
-      }
+        this.catalog.assertAllActive(activated.serviceTypes);
 
-      await this.repo.setTenantSession(tx, activated.companyId);
-      await this.repo.markAllDocumentsVerified(tx, activated.companyId, platformAdminUserId);
+        await this.repo.setTenantSession(tx, activated.companyId);
+        await this.repo.markAllDocumentsVerified(tx, activated.companyId, platformAdminUserId);
 
-      let finished;
-      try {
-        finished = await this.provisioning.finishProvisioning(
-          tx,
-          activated.companyId,
-          {
-            baseFare: dto.initial_fare.base_fare,
-            nightSurchargePct: dto.initial_fare.night_surcharge_pct,
-            holidaySurchargePct: dto.initial_fare.holiday_surcharge_pct,
-            commissionPct: dto.initial_fare.commission_pct,
-          },
-          defaultParams,
-          {
+        const serviceConfig = await this.serviceConfig.ensureForApproval(tx, {
+          companyId: activated.companyId,
+          municipalityId: activated.municipalityId,
+          serviceTypes: activated.serviceTypes,
+          initialFare: dto.initial_fare
+            ? {
+                baseFare: dto.initial_fare.base_fare,
+                nightSurchargePct: dto.initial_fare.night_surcharge_pct,
+                holidaySurchargePct: dto.initial_fare.holiday_surcharge_pct,
+              }
+            : null,
+          commissionPct: dto.commission_pct,
+          createdBy: platformAdminUserId,
+        });
+
+        let finished;
+        try {
+          finished = await this.provisioning.finishProvisioning(tx, activated.companyId, {
             firstName: activated.contactFirstName ?? activated.legalName,
             lastName: activated.contactLastName ?? '',
             email: activated.contactEmail ?? '',
             phone: activated.contactPhone ?? '',
             password: temporaryPassword,
-          },
-          platformAdminUserId,
-        );
-      } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
-          throw new ConflictException({
-            code: 'CONTACT_ACCOUNT_CONFLICT',
-            message: 'El contacto de esta empresa ya tiene una cuenta en VoyYa',
           });
+        } catch (error) {
+          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+            throw new ConflictException({
+              code: 'CONTACT_ACCOUNT_CONFLICT',
+              message: 'El contacto de esta empresa ya tiene una cuenta en VoyYa',
+            });
+          }
+          throw error;
         }
-        throw error;
-      }
 
-      const acknowledged = conflictCompanyId !== null && dto.acknowledge_routing_limitation === true;
-      const review = await this.repo.createReview(tx, {
-        companyId: activated.companyId,
-        decision: 'approved',
-        note: dto.note ?? null,
-        acknowledgedRoutingLimitation: acknowledged,
-        municipalityActiveCompanyId: conflictCompanyId,
-        municipalityActiveCompanyName: conflictName,
-        requestedDocumentTypes: [],
-        reviewedBy: platformAdminUserId,
-      });
+        const review = await this.repo.createReview(tx, {
+          companyId: activated.companyId,
+          decision: 'approved',
+          note: dto.note ?? null,
+          acknowledgedRoutingLimitation: false,
+          municipalityActiveCompanyId: null,
+          municipalityActiveCompanyName: null,
+          requestedDocumentTypes: [],
+          reviewedBy: platformAdminUserId,
+        });
 
-      return { activated, finished, review, acknowledged };
-    });
+        return { activated, finished, review, serviceConfig };
+      }),
+    );
 
     const delivery = await this.sendSafely(() =>
       approvedCompanyEmail({
@@ -234,14 +250,30 @@ export class PlatformCompanyService {
       status: 'active',
       decision: 'approved',
       decided_at: outcome.review.createdAt.toISOString(),
-      acknowledged_routing_limitation: outcome.acknowledged,
+      acknowledged_routing_limitation: false,
+      municipality_coverage_active: await this.repo.isCoverageActiveForCompany(outcome.activated.companyId),
       notification: { channel: 'email', to: outcome.finished.adminEmail, delivery },
       provisioning: {
-        fare_config_id: outcome.finished.fareConfigId,
+        fare_config_id: null,
+        municipality_fares: outcome.serviceConfig.municipalityFares.map((fare) => ({
+          service_type: fare.serviceType,
+          municipality_fare_id: fare.municipalityFareId,
+          created: fare.created,
+        })),
+        company_commission_id: outcome.serviceConfig.companyCommissionId,
         admin_user_id: outcome.finished.adminUserId,
         admin_email: outcome.finished.adminEmail,
       },
     };
+  }
+
+  private async runApproval<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await retryOnDeadlock(operation);
+    } catch (error) {
+      if (isDeadlock(error)) throw settingsConflict();
+      throw error;
+    }
   }
 
   async requestDocuments(
@@ -289,6 +321,7 @@ export class PlatformCompanyService {
       decision: 'documents_requested',
       decided_at: outcome.review.createdAt.toISOString(),
       acknowledged_routing_limitation: false,
+      municipality_coverage_active: await this.repo.isCoverageActiveForCompany(companyId),
       notification: { channel: 'email', to: outcome.company.contactEmail ?? '', delivery },
       provisioning: null,
     };
@@ -337,6 +370,7 @@ export class PlatformCompanyService {
       decision: 'rejected',
       decided_at: outcome.review.createdAt.toISOString(),
       acknowledged_routing_limitation: false,
+      municipality_coverage_active: await this.repo.isCoverageActiveForCompany(companyId),
       notification: { channel: 'email', to: outcome.rejected.contactEmail ?? '', delivery },
       provisioning: null,
     };

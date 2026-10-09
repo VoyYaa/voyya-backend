@@ -5,6 +5,7 @@ import type { AffiliationLinkService } from './affiliation-link.service';
 import { AffiliationRepository } from './affiliation.repository';
 import { AffiliationService } from './affiliation.service';
 import type { FileStorageProvider } from './ports/file-storage.port';
+import type { ServiceCatalog } from '../service-config/service-catalog';
 
 const STATED_STAT = {
   contentType: 'application/pdf',
@@ -22,12 +23,20 @@ function dto(overrides: Partial<CreateAffiliationApplicationDTO> = {}): CreateAf
     contact_last_name: 'Pérez',
     contact_email: 'contacto@cootrayal.test',
     contact_phone: '3001234567',
+    service_types: ['taxi'],
     documents: REQUIRED_COMPANY_DOCUMENT_TYPES.map((type) => ({
       type,
       storage_key: `staging/2026/01/01/${type}-uuid.pdf`,
     })),
     ...overrides,
   };
+}
+
+function fakeCatalog(): ServiceCatalog {
+  return {
+    assertAllActive: jest.fn(),
+    activeServiceTypes: jest.fn().mockReturnValue(['taxi']),
+  } as unknown as ServiceCatalog;
 }
 
 function fakeStorage(overrides: Partial<FileStorageProvider> = {}): FileStorageProvider {
@@ -45,7 +54,7 @@ function fakeStorage(overrides: Partial<FileStorageProvider> = {}): FileStorageP
 
 function fakeRepo(overrides: Record<string, unknown> = {}) {
   return {
-    getMunicipality: jest.fn().mockResolvedValue({ municipalityId: 1, name: 'Yarumal', status: 'active' }),
+    getMunicipality: jest.fn().mockResolvedValue({ municipalityId: 1, name: 'Yarumal', status: 'active', daneCode: '05887', daneType: 'municipality' }),
     findUserByPhone: jest.fn().mockResolvedValue(null),
     findUserByEmail: jest.fn().mockResolvedValue(null),
     findCompanyByTaxId: jest.fn().mockResolvedValue(null),
@@ -95,6 +104,7 @@ describe('AffiliationService.submitApplication — promote-before-transaction (C
     const service = new AffiliationService(
       repo as unknown as AffiliationRepository,
       fakeLinks(),
+      fakeCatalog(),
       storage,
     );
 
@@ -117,6 +127,7 @@ describe('AffiliationService.submitApplication — promote-before-transaction (C
     const service = new AffiliationService(
       repo as unknown as AffiliationRepository,
       fakeLinks(),
+      fakeCatalog(),
       storage,
     );
 
@@ -138,6 +149,7 @@ describe('AffiliationService.submitApplication — promote-before-transaction (C
     const service = new AffiliationService(
       repo as unknown as AffiliationRepository,
       fakeLinks(),
+      fakeCatalog(),
       storage,
     );
 
@@ -161,6 +173,7 @@ describe('AffiliationService.replaceDocument — promote-before-transaction (C-1
     const service = new AffiliationService(
       repo as unknown as AffiliationRepository,
       fakeLinks(),
+      fakeCatalog(),
       storage,
     );
 
@@ -182,6 +195,7 @@ describe('AffiliationService.replaceDocument — promote-before-transaction (C-1
     const service = new AffiliationService(
       repo as unknown as AffiliationRepository,
       fakeLinks(),
+      fakeCatalog(),
       storage,
     );
 

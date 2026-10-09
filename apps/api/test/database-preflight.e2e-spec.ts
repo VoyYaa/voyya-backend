@@ -9,7 +9,7 @@ const suite = url ? describe : describe.skip;
 const ownerUrl = process.env.PG_TEST_OWNER_URL;
 const tableOwnerOnlyIt = ownerUrl ? it : it.skip;
 
-suite('DatabasePreflightService against real Postgres — covers the 5 tenant-owned tables (ADR-018 closes B-05)', () => {
+suite('DatabasePreflightService against real Postgres — covers the 14 forced tables (ADR-018, ADR-027, ADR-032)', () => {
   let raw: PrismaClient;
   let owner: PrismaClient | null;
   let fakeEnv: EnvService;
@@ -32,7 +32,7 @@ suite('DatabasePreflightService against real Postgres — covers the 5 tenant-ow
     if (owner) await owner.$disconnect();
   });
 
-  it('the real 00_postgis_rls.sql state forces RLS on all 5 tables, including the two ADR-018 added', async () => {
+  it('the real 00_postgis_rls.sql state forces RLS on all 14 tables', async () => {
     const service = new DatabasePreflightService(raw as unknown as PrismaService, fakeEnv);
 
     await service.onApplicationBootstrap();
@@ -42,7 +42,7 @@ suite('DatabasePreflightService against real Postgres — covers the 5 tenant-ow
   });
 
   tableOwnerOnlyIt(
-    'ADR-027: hasForcedRls is false with only 9 of the 10 tables forced, true again once restored',
+    'ADR-027: hasForcedRls is false with only 13 of the 14 tables forced, true again once restored',
     async () => {
       class RolledBack extends Error {}
       const ownerClient = owner as PrismaClient;

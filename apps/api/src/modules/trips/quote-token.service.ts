@@ -3,8 +3,12 @@ import { Injectable } from '@nestjs/common';
 import type { FareBreakdown } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 
+export const QUOTE_TOKEN_VERSION = 2;
+
 export interface QuotePayload {
+  version: number;
   municipalityId: number;
+  municipalityFareId: number;
   serviceType: string;
   origin: { lat: number; lng: number };
   destination: { lat: number; lng: number };
@@ -33,9 +37,11 @@ function safeEqual(a: string, b: string): boolean {
 export class QuoteTokenService {
   constructor(private readonly env: EnvService) {}
 
-  sign(payload: Omit<QuotePayload, 'exp'>): string {
+  sign(payload: Omit<QuotePayload, 'exp' | 'version'>): string {
     const exp = Math.floor(Date.now() / 1000) + this.env.get('QUOTE_TOKEN_TTL_SECONDS');
-    const body = base64url(JSON.stringify({ ...payload, exp } satisfies QuotePayload));
+    const body = base64url(
+      JSON.stringify({ ...payload, version: QUOTE_TOKEN_VERSION, exp } satisfies QuotePayload),
+    );
     return `${body}.${this.signBody(body)}`;
   }
 
@@ -51,7 +57,11 @@ export class QuoteTokenService {
     } catch {
       return { ok: false, reason: 'invalid' };
     }
-    if (typeof payload.exp !== 'number' || payload.exp * 1000 < Date.now()) {
+    if (
+      payload.version !== QUOTE_TOKEN_VERSION ||
+      typeof payload.exp !== 'number' ||
+      payload.exp * 1000 < Date.now()
+    ) {
       return { ok: false, reason: 'expired' };
     }
     return { ok: true, payload };

@@ -3,10 +3,12 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  InternalServerErrorException,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import type { Prisma } from '@prisma/client';
 import {
   type AcceptAssignmentDTO,
   type AcceptAssignmentResult,
@@ -22,20 +24,27 @@ import {
   type CancelAssignmentByDriverResult,
   type DriverAssignedEvent,
   type RejectAssignmentDTO,
+  type ServiceType,
   type TripRequestCancelledEvent,
   type TripRequestCreatedEvent,
   type TripRequestNoDriverEvent,
   TRIPS_EVENTS,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
-import { ActiveCompanyResolver } from '../tenancy/active-company.resolver';
+import { isDeadlock, retryOnDeadlock } from '../../shared/deadlock';
+import { isUniqueViolation } from '../../shared/unique-violation';
+import { CompanyDirectory } from '../tenancy/company-directory';
+import { DispatchCompaniesResolver } from '../tenancy/dispatch-companies.resolver';
 import { calculateEta, haversineKm } from '../trips/domain/geo';
-import { AssignmentRepository, type TripRequestInfo } from './assignment.repository';
-import { CandidateRepository } from './candidate.repository';
+import { CompanyCommissionReader } from '../service-config/company-commission.reader';
 import {
   OperationalParamsService,
   type OperationalParams,
-} from './operational-params.service';
+} from '../service-config/operational-params.service';
+import { ASSIGNMENT_MESSAGES } from './assignment.messages';
+import { AssignmentRepository, type PassengerData, type TripRequestInfo } from './assignment.repository';
+import { CandidateRepository } from './candidate.repository';
+import { type CompanyCandidate, pickNearest } from './nearest-candidate';
 import { PUSH_PROVIDER, type PushProvider } from './ports/push-provider.port';
 import { TripClosingService } from './trip-closing.service';
 
@@ -46,18 +55,38 @@ export class TripRequestAlreadyTakenError extends Error {
   }
 }
 
+export class CompanyCommissionMissingError extends Error {
+  constructor(readonly companyId: number) {
+    super(`Company ${companyId} has no current commission`);
+    this.name = 'CompanyCommissionMissingError';
+  }
+}
+
+interface CurrentOffer {
+  assignmentId: number;
+  companyId: number;
+}
+
 interface ChainContext {
   tripRequestId: number;
-  companyId: number;
   municipalityId: number;
+  serviceType: ServiceType;
+  requestedCompanyId: number | null;
   origin: { lat: number; lng: number };
   info: TripRequestInfo;
   params: OperationalParams;
   attempted: Set<number>;
   order: number;
   expanded: boolean;
-  currentAssignment: number | null;
+  currentOffer: CurrentOffer | null;
 }
+
+type AcceptOutcome =
+  | { kind: 'not_found' }
+  | { kind: 'not_driver' }
+  | { kind: 'expired' }
+  | { kind: 'already_taken' }
+  | { kind: 'accepted'; tripRequestId: number; vehicleId: number; passenger: PassengerData | null };
 
 @Injectable()
 export class AssignmentService {
@@ -73,7 +102,9 @@ export class AssignmentService {
     private readonly emitter: EventEmitter2,
     @Inject(PUSH_PROVIDER) private readonly push: PushProvider,
     private readonly tripClosing: TripClosingService,
-    private readonly activeCompanyResolver: ActiveCompanyResolver,
+    private readonly dispatchCompanies: DispatchCompaniesResolver,
+    private readonly commissions: CompanyCommissionReader,
+    private readonly companyDirectory: CompanyDirectory,
   ) {}
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CREATED)
@@ -93,25 +124,19 @@ export class AssignmentService {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
     if (!info || info.status !== 'pending_assignment') return;
 
-    const companyId = await this.activeCompanyResolver.resolve(municipalityId);
-    if (companyId === null) {
-      this.logger.warn(`No active company in municipality=${municipalityId}`);
-      this.emitNoDriver(tripRequestId, 0, 0);
-      return;
-    }
-
-    const params = await this.paramsService.get(companyId);
+    const params = await this.paramsService.get(municipalityId, info.serviceType);
     const ctx: ChainContext = {
       tripRequestId,
-      companyId,
       municipalityId,
+      serviceType: info.serviceType,
+      requestedCompanyId: info.requestedCompanyId,
       origin,
       info,
       params,
       attempted: new Set<number>(),
       order: 0,
       expanded: false,
-      currentAssignment: null,
+      currentOffer: null,
     };
     this.chains.set(tripRequestId, ctx);
     await this.tryNext(ctx);
@@ -122,21 +147,7 @@ export class AssignmentService {
       return this.finishNoDriver(ctx);
     }
 
-    const radiusKm = ctx.expanded ? ctx.params.expansionRadiusKm : ctx.params.searchRadiusKm;
-    const candidates = await this.prisma.runInTenant(ctx.companyId, (tx) =>
-      this.candidateRepo.findCandidates(tx, {
-        companyId: ctx.companyId,
-        lat: ctx.origin.lat,
-        lng: ctx.origin.lng,
-        radiusKm,
-        tiebreakWindowHours: ctx.params.tiebreakWindowHours,
-        locationStaleMin: ctx.params.locationStaleMin,
-        limit: 1,
-        exclude: [...ctx.attempted],
-      }),
-    );
-
-    const cand = candidates[0];
+    const cand = await this.findNearestCandidate(ctx);
     if (!cand) {
       if (!ctx.expanded) {
         ctx.expanded = true;
@@ -145,21 +156,23 @@ export class AssignmentService {
       return this.finishNoDriver(ctx);
     }
 
-    ctx.order += 1;
-    ctx.attempted.add(cand.driverId);
-
     const expiresAt = new Date(Date.now() + ctx.params.acceptanceTimeoutSec * 1000);
-    const assignment = await this.prisma.runInTenant(ctx.companyId, (tx) =>
-      this.repo.createNotifiedAssignment(tx, {
+    const attemptOrder = ctx.order + 1;
+    const assignment = await this.prisma.runInTenant(cand.companyId, (tx) =>
+      this.repo.createOfferIfDriverFree(tx, {
         tripRequestId: ctx.tripRequestId,
         driverId: cand.driverId,
         vehicleId: cand.vehicleId,
-        companyId: ctx.companyId,
-        attemptOrder: ctx.order,
+        companyId: cand.companyId,
+        attemptOrder,
         expiresAt,
       }),
     );
-    ctx.currentAssignment = assignment.assignmentId;
+    ctx.attempted.add(cand.driverId);
+    if (!assignment) return this.tryNext(ctx);
+
+    ctx.order = attemptOrder;
+    ctx.currentOffer = { assignmentId: assignment.assignmentId, companyId: cand.companyId };
 
     const notification: AssignmentNotification = {
       assignment_id: assignment.assignmentId,
@@ -179,7 +192,7 @@ export class AssignmentService {
       assignment_id: assignment.assignmentId,
       trip_request_id: ctx.tripRequestId,
       driver_id: cand.driverId,
-      company_id: ctx.companyId,
+      company_id: cand.companyId,
       attempt_order: ctx.order,
       expires_at: expiresAt.toISOString(),
       occurred_at: new Date().toISOString(),
@@ -189,6 +202,32 @@ export class AssignmentService {
     this.armTimeout(assignment.assignmentId, ctx.tripRequestId, ctx.params.acceptanceTimeoutSec);
 
     await this.push.sendAssignment({ driverId: cand.driverId }, notification);
+  }
+
+  private async findNearestCandidate(ctx: ChainContext): Promise<CompanyCandidate | null> {
+    const companyIds = await this.dispatchCompanies.resolve(ctx.municipalityId, {
+      serviceType: ctx.serviceType,
+      requestedCompanyId: ctx.requestedCompanyId,
+    });
+    const radiusKm = ctx.expanded ? ctx.params.expansionRadiusKm : ctx.params.searchRadiusKm;
+    const nearestPerCompany: CompanyCandidate[] = [];
+    for (const companyId of companyIds) {
+      const [nearest] = await this.prisma.runInTenant(companyId, (tx) =>
+        this.candidateRepo.findCandidates(tx, {
+          companyId,
+          tripRequestId: ctx.tripRequestId,
+          lat: ctx.origin.lat,
+          lng: ctx.origin.lng,
+          radiusKm,
+          tiebreakWindowHours: ctx.params.tiebreakWindowHours,
+          locationStaleMin: ctx.params.locationStaleMin,
+          limit: 1,
+          exclude: [...ctx.attempted],
+        }),
+      );
+      if (nearest) nearestPerCompany.push({ ...nearest, companyId });
+    }
+    return pickNearest(nearestPerCompany);
   }
 
   private finishNoDriver(ctx: ChainContext): void {
@@ -226,12 +265,14 @@ export class AssignmentService {
   private async handleExpiration(assignmentId: number, tripRequestId: number): Promise<void> {
     this.clearTimer(assignmentId);
     const ctx = this.chains.get(tripRequestId);
-    if (!ctx) return;
+    const offer = ctx?.currentOffer;
+    if (!ctx || !offer || offer.assignmentId !== assignmentId) return;
     try {
-      const expired = await this.prisma.runInTenant(ctx.companyId, (tx) =>
-        this.repo.markTimeout(tx, assignmentId, ctx.companyId),
+      const expired = await this.prisma.runInTenant(offer.companyId, (tx) =>
+        this.repo.markTimeout(tx, assignmentId, offer.companyId),
       );
       if (!expired) return;
+      ctx.currentOffer = null;
 
       const ev: AssignmentExpiredEvent = {
         assignment_id: assignmentId,
@@ -253,84 +294,93 @@ export class AssignmentService {
     companyId: number,
     _dto: AcceptAssignmentDTO,
   ): Promise<AcceptAssignmentResult> {
-    type R =
-      | { kind: 'not_found' }
-      | { kind: 'not_driver' }
-      | { kind: 'expired' }
-      | { kind: 'already_taken' }
-      | { kind: 'accepted'; tripRequestId: number; vehicleId: number };
-
-    let result: R;
+    let outcome: AcceptOutcome;
     try {
-      result = await this.prisma.runInTenant<R>(companyId, async (tx) => {
-        const a = await this.repo.getAssignment(tx, assignmentId, companyId);
-        if (!a) return { kind: 'not_found' };
-        if (a.driverId !== driverId) return { kind: 'not_driver' };
-
-        const expired = a.expiresAt !== null && a.expiresAt.getTime() < Date.now();
-        if (a.status === 'timeout' || (expired && a.status === 'notified')) {
-          return { kind: 'expired' };
-        }
-        if (a.status !== 'notified') return { kind: 'already_taken' };
-
-        const taken = await this.repo.takeDriver(tx, driverId, companyId);
-        if (!taken) return { kind: 'already_taken' };
-
-        const acceptedOk = await this.repo.markAssignmentAccepted(tx, assignmentId, companyId);
-        if (!acceptedOk) throw new TripRequestAlreadyTakenError();
-        const assigned = await this.repo.markTripRequestAssigned(tx, a.tripRequestId);
-        if (!assigned) throw new TripRequestAlreadyTakenError();
-
-        return { kind: 'accepted', tripRequestId: a.tripRequestId, vehicleId: a.vehicleId };
-      });
+      outcome = await retryOnDeadlock(() => this.takeTrip(assignmentId, driverId, companyId));
     } catch (e) {
-      if (e instanceof TripRequestAlreadyTakenError) return this.alreadyTaken();
+      if (e instanceof CompanyCommissionMissingError) {
+        this.logger.error(`Take aborted assignment=${assignmentId} company=${e.companyId}: no current commission`);
+        throw new InternalServerErrorException({
+          code: 'COMMISSION_NOT_CONFIGURED',
+          message: ASSIGNMENT_MESSAGES.commissionNotConfigured,
+        });
+      }
+      if (e instanceof TripRequestAlreadyTakenError || isUniqueViolation(e)) return this.alreadyTaken();
+      if (isDeadlock(e)) {
+        this.logger.warn(`Take lost to a deadlock assignment=${assignmentId} company=${companyId}`);
+        return this.alreadyTaken();
+      }
       throw e;
     }
 
-    switch (result.kind) {
+    switch (outcome.kind) {
       case 'not_found':
         throw new NotFoundException({
           code: 'ASSIGNMENT_NOT_FOUND',
-          message: 'La asignación no existe',
+          message: ASSIGNMENT_MESSAGES.assignmentNotFound,
         });
       case 'not_driver':
         throw new ForbiddenException({
           code: 'NOT_THE_DRIVER',
-          message: 'No eres el conductor notificado',
+          message: ASSIGNMENT_MESSAGES.notTheDriver,
         });
       case 'expired':
-        return { result: 'expired', message: 'El tiempo para aceptar venció' };
+        return { result: 'expired', message: ASSIGNMENT_MESSAGES.offerExpired };
       case 'already_taken':
         return this.alreadyTaken();
       case 'accepted':
-        return this.finishAcceptance(
-          assignmentId,
-          driverId,
-          companyId,
-          result.tripRequestId,
-          result.vehicleId,
-        );
+        return this.finishAcceptance(assignmentId, driverId, companyId, outcome);
     }
   }
 
-  private async finishAcceptance(
+  private takeTrip(assignmentId: number, driverId: number, companyId: number): Promise<AcceptOutcome> {
+    return this.prisma.runInTenant<AcceptOutcome>(companyId, async (tx) => {
+      const a = await this.repo.getAssignment(tx, assignmentId, companyId);
+      if (!a) return { kind: 'not_found' };
+      if (a.driverId !== driverId) return { kind: 'not_driver' };
+
+      const expired = a.expiresAt !== null && a.expiresAt.getTime() < Date.now();
+      if (a.status === 'timeout' || (expired && a.status === 'notified')) {
+        return { kind: 'expired' };
+      }
+      if (a.status !== 'notified') return { kind: 'already_taken' };
+
+      const commission = await this.commissions.getCurrent(tx, companyId);
+      if (!commission) throw new CompanyCommissionMissingError(companyId);
+
+      const assigned = await this.repo.markTripRequestAssigned(tx, {
+        tripRequestId: a.tripRequestId,
+        assignmentId,
+        driverId,
+        companyId,
+      });
+      if (!assigned) return { kind: 'already_taken' };
+
+      const taken = await this.repo.takeDriver(tx, driverId, companyId);
+      if (!taken) throw new TripRequestAlreadyTakenError();
+
+      const acceptedOk = await this.repo.markAssignmentAccepted(tx, assignmentId, companyId);
+      if (!acceptedOk) throw new TripRequestAlreadyTakenError();
+
+      const passenger = await this.repo.getPassengerData(tx, a.tripRequestId);
+      return { kind: 'accepted', tripRequestId: a.tripRequestId, vehicleId: a.vehicleId, passenger };
+    });
+  }
+
+  private finishAcceptance(
     assignmentId: number,
     driverId: number,
     companyId: number,
-    tripRequestId: number,
-    vehicleId: number,
-  ): Promise<AcceptAssignmentResult> {
+    accepted: Extract<AcceptOutcome, { kind: 'accepted' }>,
+  ): AcceptAssignmentResult {
     this.clearTimer(assignmentId);
-    this.chains.delete(tripRequestId);
-
-    const data = await this.repo.getPassengerData(tripRequestId);
+    this.chains.delete(accepted.tripRequestId);
 
     const ev: DriverAssignedEvent = {
-      trip_request_id: tripRequestId,
+      trip_request_id: accepted.tripRequestId,
       assignment_id: assignmentId,
       driver_id: driverId,
-      vehicle_id: vehicleId,
+      vehicle_id: accepted.vehicleId,
       company_id: companyId,
       occurred_at: new Date().toISOString(),
     };
@@ -339,18 +389,18 @@ export class AssignmentService {
     return {
       result: 'accepted',
       assignment_id: assignmentId,
-      trip_request_id: tripRequestId,
+      trip_request_id: accepted.tripRequestId,
       trip_request_status: 'assigned',
       passenger: {
-        name: data?.name ?? '',
-        contact_phone: data?.phone ?? null,
-        pickup_address: data?.pickupAddress ?? '',
+        name: accepted.passenger?.name ?? '',
+        contact_phone: accepted.passenger?.phone ?? null,
+        pickup_address: accepted.passenger?.pickupAddress ?? '',
       },
     };
   }
 
   private alreadyTaken(): AcceptAssignmentResult {
-    return { result: 'already_taken', message: 'La solicitud ya fue tomada' };
+    return { result: 'already_taken', message: ASSIGNMENT_MESSAGES.alreadyTaken };
   }
 
   async getAssignedDriverSummary(
@@ -358,10 +408,11 @@ export class AssignmentService {
     includeContact: boolean,
   ): Promise<AssignedDriverSummary | null> {
     const info = await this.repo.getTripRequestInfo(tripRequestId);
-    if (!info) return null;
+    if (!info || info.companyId === null) return null;
+    const companyId = info.companyId;
 
-    const companyId = await this.activeCompanyResolver.resolve(info.municipalityId);
-    if (companyId === null) return null;
+    const company = await this.companyDirectory.getRef(companyId);
+    if (!company) return null;
 
     const row = await this.prisma.runInTenant(companyId, (tx) =>
       this.repo.getAssignedDriver(tx, tripRequestId, companyId),
@@ -375,10 +426,11 @@ export class AssignmentService {
         model: row.model,
         contact_phone: null,
         eta: null,
+        company,
       };
     }
 
-    const params = await this.paramsService.get(companyId);
+    const params = await this.paramsService.get(info.municipalityId, info.serviceType);
     const eta =
       row.lat !== null && row.lng !== null
         ? calculateEta(
@@ -396,18 +448,18 @@ export class AssignmentService {
       model: row.model,
       contact_phone: row.phone,
       eta,
+      company,
     };
   }
 
-  async getAcceptedAssignment(
+  getOwnedAssignment(
+    tx: Prisma.TransactionClient,
     tripRequestId: number,
     driverId: number,
     companyId: number,
     allow: readonly AssignmentStatus[] = ['accepted'],
   ): Promise<{ assignmentId: number } | null> {
-    return this.prisma.runInTenant(companyId, (tx) =>
-      this.repo.getAssignmentForDriver(tx, tripRequestId, driverId, companyId, allow),
-    );
+    return this.repo.getAssignmentForDriver(tx, tripRequestId, driverId, companyId, allow);
   }
 
   async listNearby(driverId: number, companyId: number): Promise<AssignmentNotification[]> {
@@ -453,13 +505,16 @@ export class AssignmentService {
     });
 
     if (r.kind === 'not_found') {
-      throw new NotFoundException({ code: 'ASSIGNMENT_NOT_FOUND', message: 'No existe' });
+      throw new NotFoundException({
+        code: 'ASSIGNMENT_NOT_FOUND',
+        message: ASSIGNMENT_MESSAGES.assignmentNotFound,
+      });
     }
     if (r.kind === 'not_driver') {
-      throw new ForbiddenException({ code: 'NOT_THE_DRIVER', message: 'No eres el conductor' });
+      throw new ForbiddenException({ code: 'NOT_THE_DRIVER', message: ASSIGNMENT_MESSAGES.notTheDriver });
     }
     if (r.kind === 'invalid_status') {
-      throw new ConflictException({ code: 'INVALID_STATUS', message: 'Ya no está notificada' });
+      throw new ConflictException({ code: 'INVALID_STATUS', message: ASSIGNMENT_MESSAGES.notNotified });
     }
 
     this.clearTimer(assignmentId);
@@ -473,7 +528,10 @@ export class AssignmentService {
     this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_REJECTED, ev);
 
     const ctx = this.chains.get(r.tripRequestId);
-    if (ctx) await this.tryNext(ctx);
+    if (ctx) {
+      ctx.currentOffer = null;
+      await this.tryNext(ctx);
+    }
     return { ok: true };
   }
 
@@ -517,13 +575,16 @@ export class AssignmentService {
     });
 
     if (r.kind === 'not_found') {
-      throw new NotFoundException({ code: 'ASSIGNMENT_NOT_FOUND', message: 'No existe' });
+      throw new NotFoundException({
+        code: 'ASSIGNMENT_NOT_FOUND',
+        message: ASSIGNMENT_MESSAGES.assignmentNotFound,
+      });
     }
     if (r.kind === 'not_driver') {
-      throw new ForbiddenException({ code: 'NOT_THE_DRIVER', message: 'No eres el conductor' });
+      throw new ForbiddenException({ code: 'NOT_THE_DRIVER', message: ASSIGNMENT_MESSAGES.notTheDriver });
     }
     if (r.kind === 'invalid_status') {
-      throw new ConflictException({ code: 'INVALID_STATUS', message: 'La asignación no está aceptada' });
+      throw new ConflictException({ code: 'INVALID_STATUS', message: ASSIGNMENT_MESSAGES.notAccepted });
     }
 
     this.clearTimer(assignmentId);
@@ -548,10 +609,19 @@ export class AssignmentService {
   }
 
   @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_CANCELLED)
-  onTripRequestCancelled(ev: TripRequestCancelledEvent): void {
+  async onTripRequestCancelled(ev: TripRequestCancelledEvent): Promise<void> {
     const ctx = this.chains.get(ev.trip_request_id);
-    if (ctx?.currentAssignment != null) this.clearTimer(ctx.currentAssignment);
     this.chains.delete(ev.trip_request_id);
+    const offer = ctx?.currentOffer;
+    if (!offer) return;
+    this.clearTimer(offer.assignmentId);
+    try {
+      await this.prisma.runInTenant(offer.companyId, (tx) =>
+        this.repo.cancelOffer(tx, offer.assignmentId, offer.companyId),
+      );
+    } catch (e) {
+      this.logger.error(`Offer cancellation failed assignment=${offer.assignmentId}: ${msg(e)}`);
+    }
   }
 }
 

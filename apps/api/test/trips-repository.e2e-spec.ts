@@ -110,6 +110,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
         dropoffLng: 0.2,
         fare: 10000,
         commission: 800,
+        companyId,
         status,
       },
     });
@@ -123,7 +124,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('applies assigned -> driver_en_route and persists the new status', async () => {
       const trip = await makeTrip('assigned');
 
-      const outcome = await repo.markEnRoute(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markEnRoute(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('applied');
       expect((await getTrip(trip.tripRequestId))?.status).toBe('driver_en_route');
@@ -132,7 +133,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('is idempotent when the trip is already driver_en_route', async () => {
       const trip = await makeTrip('driver_en_route');
 
-      const outcome = await repo.markEnRoute(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markEnRoute(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('idempotent');
     });
@@ -140,13 +141,13 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('rejects when the trip is not yet assigned', async () => {
       const trip = await makeTrip('pending_assignment');
 
-      const outcome = await repo.markEnRoute(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markEnRoute(tx, trip.tripRequestId));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'pending_assignment' });
     });
 
     it('rejects with status=expired when the trip does not exist', async () => {
-      const outcome = await repo.markEnRoute(999_999_999);
+      const outcome = await withTenant((tx) => repo.markEnRoute(tx, 999_999_999));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'expired' });
     });
@@ -156,7 +157,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('applies driver_en_route (arrived_at null) -> sets arrived_at, keeps status driver_en_route', async () => {
       const trip = await makeTrip('driver_en_route');
 
-      const outcome = await repo.markArrived(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markArrived(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('applied');
       const persisted = await getTrip(trip.tripRequestId);
@@ -166,10 +167,10 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
 
     it('is idempotent once arrived_at is already set', async () => {
       const trip = await makeTrip('driver_en_route');
-      const first = await repo.markArrived(trip.tripRequestId);
+      const first = await withTenant((tx) => repo.markArrived(tx, trip.tripRequestId));
       expect(first.kind).toBe('applied');
 
-      const second = await repo.markArrived(trip.tripRequestId);
+      const second = await withTenant((tx) => repo.markArrived(tx, trip.tripRequestId));
 
       expect(second.kind).toBe('idempotent');
       if (first.kind !== 'rejected' && second.kind !== 'rejected') {
@@ -180,7 +181,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('rejects when the driver has not yet reported en-route', async () => {
       const trip = await makeTrip('assigned');
 
-      const outcome = await repo.markArrived(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markArrived(tx, trip.tripRequestId));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'assigned' });
     });
@@ -190,7 +191,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('applies driver_en_route -> in_progress', async () => {
       const trip = await makeTrip('driver_en_route');
 
-      const outcome = await repo.markStarted(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('applied');
       expect((await getTrip(trip.tripRequestId))?.status).toBe('in_progress');
@@ -199,7 +200,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('is idempotent when already in_progress', async () => {
       const trip = await makeTrip('in_progress');
 
-      const outcome = await repo.markStarted(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('idempotent');
     });
@@ -207,83 +208,54 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('rejects when the trip skipped driver_en_route', async () => {
       const trip = await makeTrip('assigned');
 
-      const outcome = await repo.markStarted(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'assigned' });
     });
   });
 
-  describe('getActiveFareConfig (ADR-014 regression: NULLS FIRST no longer wins; ADR-018: scoped by company_id)', () => {
-    it('an older, already-closed fareConfig row does not shadow the open one (B-13: one open row per company+service)', async () => {
-      await withTenant((tx) => tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'taxi' } }));
-      const old = await withTenant((tx) =>
-        tx.fareConfig.create({
-          data: {
-            companyId,
-            serviceType: 'taxi',
-            baseFare: 5000,
-            validFrom: new Date('2020-01-01'),
-            validTo: new Date('2020-01-02'),
-          },
-        }),
-      );
-      const fresh = await withTenant((tx) =>
-        tx.fareConfig.create({
-          data: { companyId, serviceType: 'taxi', baseFare: 9000 },
-        }),
-      );
-
-      const active = await repo.getActiveFareConfig(companyId, 'taxi');
-
-      expect(active?.fareConfigId).toBe(fresh.fareConfigId);
-      expect(Number(active?.baseFare)).toBe(9000);
-      expect(active?.fareConfigId).not.toBe(old.fareConfigId);
-    });
-
-    it('two versions valid the same day: the higher fareConfigId wins the tiebreak', async () => {
-      await withTenant((tx) => tx.fareConfig.deleteMany({ where: { companyId, serviceType: 'comfort' } }));
-      const today = new Date();
-      const first = await withTenant((tx) =>
-        tx.fareConfig.create({
-          data: { companyId, serviceType: 'comfort', baseFare: 6000, validTo: today },
-        }),
-      );
-      const second = await withTenant((tx) =>
-        tx.fareConfig.create({ data: { companyId, serviceType: 'comfort', baseFare: 7000 } }),
-      );
-      expect(second.fareConfigId).toBeGreaterThan(first.fareConfigId);
-
-      const active = await repo.getActiveFareConfig(companyId, 'comfort');
-
-      expect(active?.fareConfigId).toBe(second.fareConfigId);
-      expect(Number(active?.baseFare)).toBe(7000);
-    });
-
-    it('a fare config from another company is never resolved, even with the same municipality (RLS + WHERE)', async () => {
-      const otherCompany = await raw.company.upsert({
-        where: { taxId: '_trips-repo-test-other' },
-        update: { status: 'active' },
-        create: {
-          legalName: '_TripsRepoTestCoOther',
-          taxId: '_trips-repo-test-other',
-          type: 'cooperative',
+  describe('markNoDriverIfUnassigned (MD-05)', () => {
+    it('moves a pending trip without company to no_driver', async () => {
+      const trip = await raw.tripRequest.create({
+        data: {
+          passengerId: await createFreshPassenger(raw),
           municipalityId,
-          status: 'active',
+          serviceType: 'taxi',
+          paymentMethod: 'cash',
+          pickupAddress: 'A',
+          dropoffAddress: 'B',
+          pickupLat: 0.1,
+          pickupLng: 0.1,
+          dropoffLat: 0.2,
+          dropoffLng: 0.2,
+          fare: 10000,
+          commission: 0,
+          status: 'pending_assignment',
         },
       });
-      await raw.$transaction(async (tx) => {
-        await tx.$executeRaw`SELECT set_config('app.current_company', ${String(otherCompany.companyId)}, true)`;
-        await tx.fareConfig.deleteMany({
-          where: { companyId: otherCompany.companyId, serviceType: 'delivery' },
-        });
-        await tx.fareConfig.create({
-          data: { companyId: otherCompany.companyId, serviceType: 'delivery', baseFare: 4000 },
-        });
-      });
 
-      const active = await repo.getActiveFareConfig(companyId, 'delivery');
+      const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
 
-      expect(active).toBeNull();
+      expect(applied).toBe(true);
+      expect((await getTrip(trip.tripRequestId))?.status).toBe('no_driver');
+    });
+
+    it('never overwrites a trip that a company already took', async () => {
+      const trip = await makeTrip('assigned');
+
+      const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
+
+      expect(applied).toBe(false);
+      expect((await getTrip(trip.tripRequestId))?.status).toBe('assigned');
+    });
+
+    it('never overwrites a pending trip that already carries a company', async () => {
+      const trip = await makeTrip('pending_assignment');
+
+      const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
+
+      expect(applied).toBe(false);
+      expect((await getTrip(trip.tripRequestId))?.status).toBe('pending_assignment');
     });
   });
 
@@ -291,7 +263,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('applies completed (cash_collected_at null) -> sets cash_collected_at', async () => {
       const trip = await makeTrip('completed');
 
-      const outcome = await repo.markCashCollected(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markCashCollected(tx, trip.tripRequestId));
 
       expect(outcome.kind).toBe('applied');
       expect((await getTrip(trip.tripRequestId))?.cashCollectedAt).not.toBeNull();
@@ -299,10 +271,10 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
 
     it('is idempotent once cash_collected_at is already set', async () => {
       const trip = await makeTrip('completed');
-      const first = await repo.markCashCollected(trip.tripRequestId);
+      const first = await withTenant((tx) => repo.markCashCollected(tx, trip.tripRequestId));
       expect(first.kind).toBe('applied');
 
-      const second = await repo.markCashCollected(trip.tripRequestId);
+      const second = await withTenant((tx) => repo.markCashCollected(tx, trip.tripRequestId));
 
       expect(second.kind).toBe('idempotent');
     });
@@ -310,7 +282,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('rejects when the trip is not completed yet', async () => {
       const trip = await makeTrip('in_progress');
 
-      const outcome = await repo.markCashCollected(trip.tripRequestId);
+      const outcome = await withTenant((tx) => repo.markCashCollected(tx, trip.tripRequestId));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'in_progress' });
     });

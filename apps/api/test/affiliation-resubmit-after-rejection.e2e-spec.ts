@@ -8,6 +8,7 @@ import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { createMunicipality, openFares, commissionsOf } from './support/platform-fixtures';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
 const url = process.env.PG_TEST_URL;
@@ -44,27 +45,7 @@ suite('Reintento tras rechazo — misma fila, historial acumulado (ADR-021 §3.4
   let storage: FileStorageProvider;
 
   async function freshMunicipality(): Promise<number> {
-    const suffix = uniqueSuffix();
-    const municipality = await prisma.municipality.create({
-      data: {
-        name: `_ResubmitMuni-${suffix}`,
-        department: 'Test',
-        coveragePolygon: {
-          type: 'Polygon',
-          coordinates: [
-            [
-              [0, 0],
-              [0, 1],
-              [1, 1],
-              [1, 0],
-              [0, 0],
-            ],
-          ],
-        },
-        status: 'active',
-      },
-    });
-    return municipality.municipalityId;
+    return createMunicipality(prisma, '_ResubmitMuni', { status: 'catalog' });
   }
 
   beforeAll(async () => {
@@ -163,7 +144,7 @@ suite('Reintento tras rechazo — misma fila, historial acumulado (ADR-021 §3.4
     const approval = await request(app.getHttpServer())
       .post(`/platform/companies/${companyId}/approve`)
       .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 9000 } });
+      .send({ initial_fare: { base_fare: 9000 }, commission_pct: 8 });
     expect(approval.status).toBe(200);
 
     const reviews = await prisma.$transaction(async (tx) => {
@@ -239,7 +220,7 @@ suite('Reintento tras rechazo — misma fila, historial acumulado (ADR-021 §3.4
     const approval = await request(app.getHttpServer())
       .post(`/platform/companies/${first.body.company_id}/approve`)
       .set('Authorization', platformAdminAuth)
-      .send({ initial_fare: { base_fare: 9000 } });
+      .send({ initial_fare: { base_fare: 9000 }, commission_pct: 8 });
     expect(approval.status).toBe(200);
 
     const second = await request(app.getHttpServer())
