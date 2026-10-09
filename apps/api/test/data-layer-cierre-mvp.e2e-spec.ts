@@ -347,7 +347,7 @@ suite('Cierre del MVP data layer against real Postgres as app_voyya (ADR-027, 02
   describe('consent ledger (ADR-029 section 2)', () => {
     it('keeps several asientos per user, purpose and version', async () => {
       const userId = await createFreshPassenger(prisma);
-      const data = { userId, purpose: 'location' as const, noticeVersion: 'location-notice-v2' };
+      const data = { userId, purpose: 'location' as const, noticeVersion: 'location-notice-v3' };
       await prisma.consentRecord.create({ data: { ...data, action: 'granted' } });
       await prisma.consentRecord.create({ data: { ...data, action: 'revoked' } });
       await prisma.consentRecord.create({ data: { ...data, action: 'granted' } });

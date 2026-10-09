@@ -9,6 +9,7 @@ import { stagingKey } from '../src/modules/affiliation/document-key';
 import { FILE_STORAGE, type FileStorageProvider } from '../src/modules/affiliation/ports/file-storage.port';
 import { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-companies.resolver';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { startCodeOf } from './support/window-trip';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 import { grantLocationConsent } from './support/grant-location-consent';
 import { seedCommission, seedOpenFare } from './support/platform-fixtures';
@@ -284,7 +285,7 @@ suite(
       const started = await request(app.getHttpServer())
         .post(`/trips/${tripRequestId}/start`)
         .set(driverHeaders())
-        .send({});
+        .send({ start_code: await startCodeOf(prisma, tripRequestId) });
       expect(started.status).toBe(200);
       expect(started.body.status).toBe('in_progress');
 

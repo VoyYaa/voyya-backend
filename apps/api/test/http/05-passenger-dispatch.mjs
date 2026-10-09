@@ -6,6 +6,7 @@ import {
   flushResults,
   grantLocationConsent,
   http,
+  lifecycleBody,
   offersFor,
   passengerLogin,
   psql,
@@ -71,7 +72,7 @@ async function anyOfferFor(tripId, nationalIds, timeoutMs = 5000) {
 
 async function lifecycle(tripId, token, { cash = true } = {}) {
   for (const step of ['en-route', 'arrived', 'start']) {
-    const r = await http('POST', `/trips/${tripId}/${step}`, { token, body: {} });
+    const r = await http('POST', `/trips/${tripId}/${step}`, { token, body: lifecycleBody(step, tripId) });
     if (r.status !== 200) throw new Error(`${step} ${r.status} ${r.text}`);
   }
   return http('POST', `/trips/${tripId}/complete`, { token, body: { cash_collected: cash } });

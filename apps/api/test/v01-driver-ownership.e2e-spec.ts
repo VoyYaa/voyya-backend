@@ -16,6 +16,7 @@ import type { DispatchCompaniesResolver } from '../src/modules/tenancy/dispatch-
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 import { createFreshPassenger } from './support/fresh-passenger';
 import { ensureCommissionWithClient } from './support/platform-fixtures';
+import { startCodeOf } from './support/window-trip';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -284,7 +285,9 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
 
     await tripLifecycle.markEnRoute(tripRequestId, driverBId, companyId);
     await tripLifecycle.markArrived(tripRequestId, driverBId, companyId);
-    await tripLifecycle.markStarted(tripRequestId, driverBId, companyId);
+    await tripLifecycle.markStarted(tripRequestId, driverBId, companyId, {
+      start_code: await startCodeOf(raw, tripRequestId),
+    });
     expect(await getTripStatus(tripRequestId)).toBe('in_progress');
 
     await expect(tripLifecycle.markEnRoute(tripRequestId, driverAId, companyId)).rejects.toBeInstanceOf(
@@ -293,7 +296,7 @@ suite('V-01 · a driver cannot hijack another driver\'s trip after cancelling (r
     await expect(tripLifecycle.markArrived(tripRequestId, driverAId, companyId)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
-    await expect(tripLifecycle.markStarted(tripRequestId, driverAId, companyId)).rejects.toBeInstanceOf(
+    await expect(tripLifecycle.markStarted(tripRequestId, driverAId, companyId, {})).rejects.toBeInstanceOf(
       ForbiddenException,
     );
     await expect(tripLifecycle.declareNoShow(tripRequestId, driverAId, companyId)).rejects.toBeInstanceOf(

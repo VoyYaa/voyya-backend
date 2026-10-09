@@ -24,6 +24,7 @@ import {
   waitForLockWaiters,
 } from './support/dispatch-world';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
+import { startCodeOf } from './support/window-trip';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -337,7 +338,8 @@ suite('Toma entre empresas, comisión y cancelación contra Postgres real como a
       const offerOne = await createOffer(world.prisma, completedTrip.tripRequestId, driver, company);
       expect((await accept(offerOne, driver, company)).body.result).toBe('accepted');
       for (const step of ['en-route', 'arrived', 'start']) {
-        expect((await http.post(`/trips/${completedTrip.tripRequestId}/${step}`).set('Authorization', auth).send({})).status).toBe(200);
+        const body = step === 'start' ? { start_code: await startCodeOf(world.prisma, completedTrip.tripRequestId) } : {};
+        expect((await http.post(`/trips/${completedTrip.tripRequestId}/${step}`).set('Authorization', auth).send(body)).status).toBe(200);
       }
       expect(
         (await http.post(`/trips/${completedTrip.tripRequestId}/complete`).set('Authorization', auth).send({ cash_collected: true })).status,

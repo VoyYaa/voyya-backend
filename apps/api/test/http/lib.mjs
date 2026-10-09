@@ -50,6 +50,14 @@ export async function http(method, path, { token, body, form, headers = {} } = {
   return { status: response.status, body: json, text, headers: response.headers };
 }
 
+export function startCodeOf(tripId) {
+  return psql(`SELECT start_code FROM trips.trip_request WHERE trip_request_id=${tripId}`);
+}
+
+export function lifecycleBody(step, tripId) {
+  return step === 'start' ? { start_code: startCodeOf(tripId) } : {};
+}
+
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -147,7 +155,7 @@ export const DROPOFF = {
 export async function grantLocationConsent(token) {
   const response = await http('POST', '/consents', {
     token,
-    body: { purpose: 'location', notice_version: 'location-notice-v2' },
+    body: { purpose: 'location', notice_version: 'location-notice-v3' },
   });
   return response;
 }
