@@ -204,3 +204,43 @@ describe('validateEnv — ACTIVE_SERVICE_TYPES (ADR-032 section 4.6, MD-17)', ()
     },
   );
 });
+
+describe('validateEnv — driver location sharing', () => {
+  it('defaults to 15 s, 45 s and 300 s without being mandatory', () => {
+    const env = validateEnv({ ...base });
+    expect([
+      env.DRIVER_LOCATION_SHARE_INTERVAL_SEC,
+      env.DRIVER_LOCATION_SHARE_STALE_SEC,
+      env.DRIVER_LOCATION_SHARE_HIDE_SEC,
+    ]).toEqual([15, 45, 300]);
+  });
+
+  it.each([
+    ['DRIVER_LOCATION_SHARE_INTERVAL_SEC', '9'],
+    ['DRIVER_LOCATION_SHARE_INTERVAL_SEC', '16'],
+    ['DRIVER_LOCATION_SHARE_STALE_SEC', '29'],
+    ['DRIVER_LOCATION_SHARE_STALE_SEC', '121'],
+    ['DRIVER_LOCATION_SHARE_HIDE_SEC', '119'],
+    ['DRIVER_LOCATION_SHARE_HIDE_SEC', '601'],
+  ])('rejects %s=%s', (key, value) => {
+    expect(failureOf({ ...base, [key]: value })).toContain(key);
+  });
+
+  it('requires the stale threshold to cover three missed reports', () => {
+    expect(
+      failureOf({ ...base, DRIVER_LOCATION_SHARE_INTERVAL_SEC: '15', DRIVER_LOCATION_SHARE_STALE_SEC: '44' }),
+    ).toContain('DRIVER_LOCATION_SHARE_STALE_SEC');
+    expect(
+      failureOf({ ...base, DRIVER_LOCATION_SHARE_INTERVAL_SEC: '15', DRIVER_LOCATION_SHARE_STALE_SEC: '45' }),
+    ).toBe('');
+  });
+
+  it('requires the hide threshold to be at least twice the stale threshold', () => {
+    expect(
+      failureOf({ ...base, DRIVER_LOCATION_SHARE_STALE_SEC: '100', DRIVER_LOCATION_SHARE_HIDE_SEC: '199' }),
+    ).toContain('DRIVER_LOCATION_SHARE_HIDE_SEC');
+    expect(
+      failureOf({ ...base, DRIVER_LOCATION_SHARE_STALE_SEC: '100', DRIVER_LOCATION_SHARE_HIDE_SEC: '200' }),
+    ).toBe('');
+  });
+});

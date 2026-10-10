@@ -18,6 +18,7 @@ import {
   waitForLockWaiters,
 } from './support/dispatch-world';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
+import { startCodeOf } from './support/window-trip';
 
 const url = process.env.PG_TEST_URL;
 const suite = url ? describe : describe.skip;
@@ -246,7 +247,11 @@ suite('Reparto entre empresas contra Postgres real como app_voyya (ADR-032 §1, 
         const auth = driverAuth(world.jwt, driver.driverId, companyB);
         expect((await http.post(`/trips/${trip.tripRequestId}/en-route`).set('Authorization', auth).send({})).status).toBe(200);
         expect((await http.post(`/trips/${trip.tripRequestId}/arrived`).set('Authorization', auth).send({})).status).toBe(200);
-        expect((await http.post(`/trips/${trip.tripRequestId}/start`).set('Authorization', auth).send({})).status).toBe(200);
+        const startCode = await startCodeOf(world.prisma, trip.tripRequestId);
+        expect(
+          (await http.post(`/trips/${trip.tripRequestId}/start`).set('Authorization', auth).send({ start_code: startCode }))
+            .status,
+        ).toBe(200);
         const completed = await http
           .post(`/trips/${trip.tripRequestId}/complete`)
           .set('Authorization', auth)

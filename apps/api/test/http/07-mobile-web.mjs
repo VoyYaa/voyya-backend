@@ -5,6 +5,7 @@ import {
   check,
   flushResults,
   http,
+  lifecycleBody,
   logMark,
   offersFor,
   psql,
@@ -245,7 +246,7 @@ try {
 
   const lifecycle = ['en-route', 'arrived', 'start'];
   for (const step of lifecycle)
-    await http('POST', `/trips/${tripId}/${step}`, { token: driverToken('82000001'), body: {} });
+    await http('POST', `/trips/${tripId}/${step}`, { token: driverToken('82000001'), body: lifecycleBody(step, tripId) });
   await http('POST', `/trips/${tripId}/complete`, {
     token: driverToken('82000001'),
     body: { cash_collected: true },

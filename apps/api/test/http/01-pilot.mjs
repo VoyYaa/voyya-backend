@@ -7,6 +7,7 @@ import {
   flushResults,
   grantLocationConsent,
   http,
+  lifecycleBody,
   passengerLogin,
   psql,
   quote,
@@ -136,7 +137,7 @@ check(
 );
 
 for (const step of ['en-route', 'arrived', 'start']) {
-  const r = await http('POST', `/trips/${tripId}/${step}`, { token: winner.token, body: {} });
+  const r = await http('POST', `/trips/${tripId}/${step}`, { token: winner.token, body: lifecycleBody(step, tripId) });
   check('RT-3', `conductor ${step} -> 200`, r.status === 200, r.text);
 }
 const done = await http('POST', `/trips/${tripId}/complete`, {

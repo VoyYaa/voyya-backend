@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AllExceptionsFilter } from '../src/shared/all-exceptions.filter';
 import { PrismaService } from '../src/infrastructure/prisma/prisma.service';
+import { startCodeOf } from './support/window-trip';
 import { grantLocationConsent } from './support/grant-location-consent';
 
 const url = process.env.PG_TEST_URL;
@@ -240,7 +241,7 @@ suite('Driver + trip lifecycle over real HTTP (TenantGuard + Roles + Zod + Postg
         .send({ lat: 6.961, lng: -75.421 });
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ ok: true });
+      expect(res.body).toEqual({ ok: true, location_sharing: null });
     });
 
     it('GET /driver/me shows the shift with no active trip yet', async () => {
@@ -316,7 +317,7 @@ suite('Driver + trip lifecycle over real HTTP (TenantGuard + Roles + Zod + Postg
       const res = await request(app.getHttpServer())
         .post(`/trips/${tripRequestId}/start`)
         .set(driverHeaders(driver1Id))
-        .send({});
+        .send({ start_code: await startCodeOf(prisma, tripRequestId) });
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ status: 'in_progress', idempotent: false });

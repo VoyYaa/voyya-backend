@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { check, flushResults, http, psql, sleep, waitForOffer } from './lib.mjs';
+import { check, flushResults, http, lifecycleBody, psql, sleep, waitForOffer } from './lib.mjs';
 import { loadState } from './state.mjs';
 import {
   allOffShift,
@@ -182,7 +182,7 @@ try {
   for (const step of ['en-route', 'arrived', 'start'])
     await http('POST', `/trips/${anyTrip}/${step}`, {
       token: driverTokenOf(state, second.nationalId),
-      body: {},
+      body: lifecycleBody(step, anyTrip),
     });
   await http('POST', `/trips/${anyTrip}/complete`, {
     token: driverTokenOf(state, second.nationalId),

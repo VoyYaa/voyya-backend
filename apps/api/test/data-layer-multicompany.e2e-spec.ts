@@ -278,7 +278,7 @@ suite('ADR-032 data layer against real Postgres as app_voyya (B1)', () => {
       return new DatabasePreflightService(client as PrismaService, env);
     }
 
-    it('every flag is true, including the three new ones and 14 forced tables', async () => {
+    it('every flag is true, including the new ones and 14 forced tables', async () => {
       const service = preflight(prisma);
 
       await service.onApplicationBootstrap();
@@ -294,6 +294,7 @@ suite('ADR-032 data layer against real Postgres as app_voyya (B1)', () => {
         hasMunicipalityCatalog: true,
         hasServiceConfig: true,
         hasTripCompanyScope: true,
+        hasTripStartCode: true,
       });
       expect(service.isHealthy()).toBe(true);
     });

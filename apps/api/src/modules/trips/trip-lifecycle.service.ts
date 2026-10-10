@@ -1,10 +1,17 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import type { Prisma } from '@prisma/client';
 import type {
   AssignmentStatus,
   ServiceType,
   CompleteTripDTO,
+  StartTripDTO,
   TripRequestCompletedEvent,
   TripRequestNoShowEvent,
   TripStatus,
@@ -17,7 +24,7 @@ import { AssignmentService } from '../assignment/assignment.service';
 import { OperationalParamsService } from '../service-config/operational-params.service';
 import { TripClosingService } from '../assignment/trip-closing.service';
 import { TRIPS_MESSAGES } from './trips.messages';
-import type { TripTransitionOutcome } from './trips.repository';
+import type { StartOutcome, TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
 
 const CLOSED_ASSIGNMENT_STATUSES: readonly AssignmentStatus[] = ['completed'];
@@ -87,11 +94,12 @@ export class TripLifecycleService {
     tripRequestId: number,
     driverId: number,
     companyId: number,
+    dto: StartTripDTO,
   ): Promise<TripTransitionResult> {
     const outcome = await this.inOwnedTrip(tripRequestId, driverId, companyId, ['accepted'], (tx) =>
-      this.repo.markStarted(tx, tripRequestId),
+      this.repo.startWithCode(tx, tripRequestId, dto.start_code ?? null),
     );
-    return this.fromTransitionOutcome(tripRequestId, 'in_progress', outcome, {});
+    return this.fromStartOutcome(tripRequestId, outcome);
   }
 
   async confirmCashCollected(
@@ -246,6 +254,40 @@ export class TripLifecycleService {
       });
     }
     return tripRequest;
+  }
+
+  private fromStartOutcome(tripRequestId: number, outcome: StartOutcome): TripTransitionResult {
+    switch (outcome.kind) {
+      case 'started':
+      case 'idempotent':
+        return {
+          trip_request_id: tripRequestId,
+          status: 'in_progress',
+          idempotent: outcome.kind === 'idempotent',
+        };
+      case 'code_required':
+        throw new UnprocessableEntityException({
+          code: 'START_CODE_REQUIRED',
+          message: TRIPS_MESSAGES.startCodeRequired,
+        });
+      case 'code_invalid':
+        throw new UnprocessableEntityException({
+          code: 'START_CODE_INVALID',
+          message: TRIPS_MESSAGES.startCodeInvalid(outcome.attemptsRemaining),
+          attempts_remaining: outcome.attemptsRemaining,
+        });
+      case 'blocked':
+        throw new ConflictException({
+          code: 'START_CODE_BLOCKED',
+          message: TRIPS_MESSAGES.startCodeBlocked,
+          blocked_at: outcome.blockedAt.toISOString(),
+        });
+      case 'rejected':
+        throw new ConflictException({
+          code: 'INVALID_TRIP_TRANSITION',
+          message: TRIPS_MESSAGES.invalidTransition(outcome.status),
+        });
+    }
   }
 
   private fromTransitionOutcome<T extends { updatedAt: Date }>(

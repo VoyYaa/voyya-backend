@@ -1,4 +1,5 @@
 import {
+  DRIVER_LOCATION_SHARING_NOTICE_VERSIONS,
   type ConsentPurpose,
   type ConsentState,
   type ConsentStatus,
@@ -9,6 +10,14 @@ export interface ConsentLedgerEntry {
   action: 'granted' | 'revoked';
   noticeVersion: string;
   recordedAt: Date;
+}
+
+export function coversLocationSharing(status: ConsentStatus): boolean {
+  return (
+    status.state === 'granted' &&
+    status.notice_version !== null &&
+    (DRIVER_LOCATION_SHARING_NOTICE_VERSIONS as readonly string[]).includes(status.notice_version)
+  );
 }
 
 export function buildConsentStatus(

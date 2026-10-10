@@ -9,10 +9,10 @@ import { ConsentService } from './consent.service';
 const STATUS: ConsentStatus = {
   purpose: 'location',
   state: 'granted',
-  notice_version: 'location-notice-v2',
+  notice_version: 'location-notice-v3',
   granted_at: '2026-10-08T10:00:00.000Z',
   revoked_at: null,
-  current_notice_version: 'location-notice-v2',
+  current_notice_version: 'location-notice-v3',
   requires_acceptance: false,
 };
 
@@ -35,14 +35,14 @@ function build(known = true) {
 const driver: AuthenticatedUser = { userId: 5, role: 'driver', companyId: 3 };
 const passenger: AuthenticatedUser = { userId: 6, role: 'passenger' };
 const admin: AuthenticatedUser = { userId: 1, role: 'admin', companyId: 3 };
-const grantDto = { purpose: 'location', notice_version: 'location-notice-v2' } as const;
+const grantDto = { purpose: 'location', notice_version: 'location-notice-v3' } as const;
 
 describe('ConsentService', () => {
   it('derives the audience from the role when granting', async () => {
     const { service, repo, notices } = build();
     await service.grant(driver, grantDto);
-    expect(notices.isKnown).toHaveBeenCalledWith('location', 'location-notice-v2', 'driver');
-    expect(repo.grant).toHaveBeenCalledWith(5, 'location', 'location-notice-v2', 'driver');
+    expect(notices.isKnown).toHaveBeenCalledWith('location', 'location-notice-v3', 'driver');
+    expect(repo.grant).toHaveBeenCalledWith(5, 'location', 'location-notice-v3', 'driver');
   });
 
   it('rejects an unknown version with 422 NOTICE_VERSION_UNKNOWN and writes nothing', async () => {

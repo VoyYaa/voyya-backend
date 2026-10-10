@@ -15,6 +15,7 @@ import {
   tripRow,
 } from './support/dispatch-world';
 import { createFreshPassenger } from './support/fresh-passenger';
+import { startCodeOf } from './support/window-trip';
 import { createCompany, createMunicipality } from './support/platform-fixtures';
 import { purgeMunicipalitiesByNamePrefix } from './support/purge-test-fixtures';
 
@@ -442,7 +443,8 @@ suite('HU-MS-16 · Cootrayal sola en su municipio: el comportamiento y los repor
     expect(whileAssigned.body.requested_company).toBeNull();
 
     for (const step of ['en-route', 'arrived', 'start']) {
-      expect((await http.post(`/trips/${tripRequestId}/${step}`).set('Authorization', driverToken).send({})).status).toBe(200);
+      const body = step === 'start' ? { start_code: await startCodeOf(world.prisma, tripRequestId) } : {};
+      expect((await http.post(`/trips/${tripRequestId}/${step}`).set('Authorization', driverToken).send(body)).status).toBe(200);
     }
     const completed = await http
       .post(`/trips/${tripRequestId}/complete`)

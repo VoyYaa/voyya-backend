@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AmountCop, Coordinate, FareBreakdown, TripStatus } from './trips';
+import { AmountCop, Coordinate, FareBreakdown, StartCode, TripStatus } from './trips';
 
 export const DriverStatus = z.enum([
   'available',
@@ -19,6 +19,21 @@ export type UpdateDriverShiftDTO = z.infer<typeof UpdateDriverShiftDTO>;
 
 export const ReportDriverLocationDTO = Coordinate;
 export type ReportDriverLocationDTO = z.infer<typeof ReportDriverLocationDTO>;
+
+export const StartTripDTO = z.object({ start_code: StartCode.optional() });
+export type StartTripDTO = z.infer<typeof StartTripDTO>;
+
+export const DriverLocationSharing = z.object({
+  trip_request_id: z.number().int().positive(),
+  interval_sec: z.number().int().min(10).max(15),
+});
+export type DriverLocationSharing = z.infer<typeof DriverLocationSharing>;
+
+export const ReportDriverLocationResult = z.object({
+  ok: z.literal(true),
+  location_sharing: DriverLocationSharing.nullable().default(null),
+});
+export type ReportDriverLocationResult = z.infer<typeof ReportDriverLocationResult>;
 
 export const DriverShiftState = z.object({
   status: DriverStatus,
@@ -42,6 +57,12 @@ export const DriverTripView = z.object({
   arrived_at: z.string().datetime().nullable(),
   no_show_available_at: z.string().datetime().nullable(),
   cash_collected_at: z.string().datetime().nullable(),
+  start_code_required: z.boolean().default(false),
+  start_attempts_remaining: z.number().int().min(0).max(5).nullable().default(null),
+  start_blocked: z.boolean().default(false),
+  pickup_location: Coordinate.nullable().default(null),
+  dropoff_location: Coordinate.nullable().default(null),
+  location_sharing: DriverLocationSharing.nullable().default(null),
 });
 export type DriverTripView = z.infer<typeof DriverTripView>;
 

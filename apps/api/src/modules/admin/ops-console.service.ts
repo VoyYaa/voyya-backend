@@ -55,6 +55,8 @@ export class OpsConsoleService {
         driver: r.driver
           ? { driver_id: r.driver.driverId, name: r.driver.name, plate: r.driver.plate }
           : null,
+        start_failed_attempts: r.startFailedAttempts,
+        start_blocked_at: r.startBlockedAt ? r.startBlockedAt.toISOString() : null,
       })),
     };
   }
@@ -88,8 +90,11 @@ export class OpsConsoleService {
         assigned_at: row.assignedAt ? row.assignedAt.toISOString() : null,
         arrived_at: row.arrivedAt ? row.arrivedAt.toISOString() : null,
         finished_at: row.finishedAt ? row.finishedAt.toISOString() : null,
+        started_at: row.startedAt ? row.startedAt.toISOString() : null,
       },
       cash_collected_at: row.cashCollectedAt ? row.cashCollectedAt.toISOString() : null,
+      start_failed_attempts: row.startFailedAttempts,
+      start_blocked_at: row.startBlockedAt ? row.startBlockedAt.toISOString() : null,
     };
   }
 

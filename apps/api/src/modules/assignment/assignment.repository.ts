@@ -17,6 +17,7 @@ export interface TripRequestInfo {
   serviceType: ServiceType;
   requestedCompanyId: number | null;
   companyId: number | null;
+  pickupDistanceAtAssignmentM: number | null;
 }
 
 export interface PassengerData {
@@ -86,6 +87,7 @@ export class AssignmentRepository {
         serviceType: true,
         requestedCompanyId: true,
         companyId: true,
+        pickupDistanceAtAssignmentM: true,
       },
     });
     if (!t) return null;
@@ -333,7 +335,12 @@ export class AssignmentRepository {
              updated_at = (now() AT TIME ZONE 'UTC'),
              company_id = ${take.companyId},
              commission_pct = k.commission_pct,
-             commission = round(t.fare * k.commission_pct / 100)
+             commission = round(t.fare * k.commission_pct / 100),
+             pickup_distance_at_assignment_m = (
+               SELECT round(ST_Distance(d.current_location, t.pickup_location))::int
+                 FROM fleet.driver d
+                WHERE d.driver_id = ${take.driverId} AND d.company_id = ${take.companyId}
+             )
         FROM tenancy.company_commission k
        WHERE t.trip_request_id = ${take.tripRequestId}
          AND t.status = 'pending_assignment'
@@ -483,7 +490,7 @@ export class AssignmentRepository {
              updated_at = (now() AT TIME ZONE 'UTC'),
              net_earnings = CASE WHEN ${params.to} = 'completed' THEN fare - commission ELSE net_earnings END,
              cash_collected_at = CASE WHEN ${params.cashCollected} THEN (now() AT TIME ZONE 'UTC') ELSE cash_collected_at END,
-             penalty_recorded = penalty_recorded OR ${params.penaltyRecorded}
+             penalty_recorded = penalty_recorded OR (${params.penaltyRecorded} AND start_code_blocked_at IS NULL)
        WHERE trip_request_id = ${params.tripRequestId}
          AND status = ANY(${[...params.from]}::trips."TripStatus"[])
          AND (NOT ${unownedOnly} OR company_id IS NULL)

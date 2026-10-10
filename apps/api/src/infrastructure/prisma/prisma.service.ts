@@ -16,7 +16,7 @@ export class PrismaService
   private readonly logger = new Logger(PrismaService.name);
 
   constructor(private readonly env: EnvService) {
-    super();
+    super({ omit: { tripRequest: { startCode: true } } });
   }
 
   async onModuleInit(): Promise<void> {

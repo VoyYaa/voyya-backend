@@ -210,6 +210,42 @@ export const AssignedDriverSummary = z.object({
 });
 export type AssignedDriverSummary = z.infer<typeof AssignedDriverSummary>;
 
+export const START_CODE_LENGTH = 4;
+export const START_CODE_MAX_FAILED_ATTEMPTS = 5;
+
+export const StartCode = z.string().regex(/^[0-9]{4}$/);
+export type StartCode = z.infer<typeof StartCode>;
+
+export const StartCodeState = z.enum(['not_applicable', 'active', 'not_required', 'blocked']);
+export type StartCodeState = z.infer<typeof StartCodeState>;
+
+export const DriverPosition = Coordinate.extend({
+  age_sec: z.number().int().nonnegative(),
+});
+export type DriverPosition = z.infer<typeof DriverPosition>;
+
+export const DriverTracking = z.object({
+  window_age_sec: z.number().int().nonnegative(),
+  stale_after_sec: z.number().int().positive(),
+  hide_after_sec: z.number().int().positive(),
+  position: DriverPosition.nullable(),
+});
+export type DriverTracking = z.infer<typeof DriverTracking>;
+
+export type DriverTrackingView = 'locating' | 'live' | 'stale' | 'hidden';
+
+export function driverTrackingView(
+  tracking: DriverTracking,
+  elapsedSec: number,
+): DriverTrackingView {
+  if (tracking.position === null) {
+    return tracking.window_age_sec + elapsedSec < tracking.stale_after_sec ? 'locating' : 'hidden';
+  }
+  const age = tracking.position.age_sec + elapsedSec;
+  if (age < tracking.stale_after_sec) return 'live';
+  return age < tracking.hide_after_sec ? 'stale' : 'hidden';
+}
+
 export const TripRequestStatus = z.object({
   trip_request_id: z.number().int().positive(),
   status: TripStatus,
@@ -222,6 +258,9 @@ export const TripRequestStatus = z.object({
   free_cancellation_until: z.string().datetime().nullable(),
   updated_at: z.string().datetime(),
   server_time: z.string().datetime(),
+  start_code: StartCode.nullable().default(null),
+  start_code_state: StartCodeState.default('not_applicable'),
+  driver_tracking: DriverTracking.nullable().default(null),
 });
 export type TripRequestStatus = z.infer<typeof TripRequestStatus>;
 
@@ -252,6 +291,9 @@ export const TripErrorCode = z.enum([
   'NO_SHOW_GRACE_PENDING',
   'SERVICE_NOT_AVAILABLE',
   'COMPANY_NOT_AVAILABLE',
+  'START_CODE_REQUIRED',
+  'START_CODE_INVALID',
+  'START_CODE_BLOCKED',
 ]);
 export type TripErrorCode = z.infer<typeof TripErrorCode>;
 
@@ -260,6 +302,8 @@ export const TripError = z.object({
   message: z.string(),
   remaining_seconds: z.number().int().nonnegative().optional(),
   active_trip: ActiveTripRef.optional(),
+  attempts_remaining: z.number().int().min(1).max(4).optional(),
+  blocked_at: z.string().datetime().optional(),
 });
 export type TripError = z.infer<typeof TripError>;
 

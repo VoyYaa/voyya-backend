@@ -242,6 +242,8 @@ export const OpsQueueRow = z.object({
   dropoff_address: z.string(),
   fare_total: AmountCop,
   driver: OpsAssignedDriver.nullable(),
+  start_failed_attempts: z.number().int().min(0).max(5).default(0),
+  start_blocked_at: z.string().datetime().nullable().default(null),
 });
 export type OpsQueueRow = z.infer<typeof OpsQueueRow>;
 
@@ -256,6 +258,7 @@ export const OpsTripTimeline = z.object({
   assigned_at: z.string().datetime().nullable(),
   arrived_at: z.string().datetime().nullable(),
   finished_at: z.string().datetime().nullable(),
+  started_at: z.string().datetime().nullable().default(null),
 });
 export type OpsTripTimeline = z.infer<typeof OpsTripTimeline>;
 
@@ -272,6 +275,8 @@ export const OpsTripDetail = z.object({
   driver: OpsAssignedDriver.nullable(),
   timeline: OpsTripTimeline,
   cash_collected_at: z.string().datetime().nullable(),
+  start_failed_attempts: z.number().int().min(0).max(5).default(0),
+  start_blocked_at: z.string().datetime().nullable().default(null),
 });
 export type OpsTripDetail = z.infer<typeof OpsTripDetail>;
 

@@ -14,6 +14,7 @@ function baseResult(overrides: Partial<Record<string, boolean>> = {}): Record<st
     hasMunicipalityCatalog: true,
     hasServiceConfig: true,
     hasTripCompanyScope: true,
+    hasTripStartCode: true,
     ...overrides,
   };
 }
@@ -95,7 +96,8 @@ describe.each([
   ['hasMunicipalityCatalog', 'has_municipality_catalog'],
   ['hasServiceConfig', 'has_service_config'],
   ['hasTripCompanyScope', 'has_trip_company_scope'],
-])('DatabasePreflightService — %s (ADR-032 section 12.3)', (flag, invariant) => {
+  ['hasTripStartCode', 'has_trip_start_code'],
+])('DatabasePreflightService — %s (ADR-032 section 12.3, ADR-033 section 6.2)', (flag, invariant) => {
   it('missing in production -> aborts startup naming the invariant', async () => {
     const service = new DatabasePreflightService(
       fakePrisma(baseResult({ [flag]: false })),
@@ -123,8 +125,7 @@ describe('DatabasePreflightService — residual GUC probe (MD-01)', () => {
 
     await service.onApplicationBootstrap();
 
-    expect(probe).toHaveBeenCalledTimes(1);
-    const sql = String(probe.mock.calls[0]?.[0]);
+    const sql = probe.mock.calls.map((call) => String(call[0])).find((text) => text.includes('set_config')) ?? '';
     expect(sql).toContain("set_config('app.current_company', '', true)");
     expect(sql).toContain('EXPLAIN SELECT count(*) FROM trips.trip_request');
     expect(service.getLastResult()?.hasTripCompanyScope).toBe(true);
@@ -149,7 +150,32 @@ describe('DatabasePreflightService — residual GUC probe (MD-01)', () => {
 
     await service.onApplicationBootstrap();
 
-    expect(probe).not.toHaveBeenCalled();
+    expect(probe.mock.calls.some((call) => String(call[0]).includes('set_config'))).toBe(false);
+    expect(service.isHealthy()).toBe(false);
+  });
+});
+
+describe('DatabasePreflightService — start code functional probe (ADR-033)', () => {
+  it('a probe that errors -> hasTripStartCode false and production aborts', async () => {
+    const probe = jest.fn().mockImplementation((sql: string) =>
+      String(sql).includes('new_start_code') ? Promise.reject(new Error('function does not exist')) : Promise.resolve(0),
+    );
+    const service = new DatabasePreflightService(fakePrisma(baseResult(), probe), fakeEnv('production'));
+
+    await expect(service.onApplicationBootstrap()).rejects.toThrow(/has_trip_start_code/);
+    expect(service.getLastResult()?.hasTripStartCode).toBe(false);
+  });
+
+  it('skips the probe when the static start code checks already failed', async () => {
+    const probe = jest.fn().mockResolvedValue(0);
+    const service = new DatabasePreflightService(
+      fakePrisma(baseResult({ hasTripStartCode: false }), probe),
+      fakeEnv('test'),
+    );
+
+    await service.onApplicationBootstrap();
+
+    expect(probe.mock.calls.some((call) => String(call[0]).includes('new_start_code'))).toBe(false);
     expect(service.isHealthy()).toBe(false);
   });
 });

@@ -44,6 +44,8 @@ suite('PII in database error logs and Sentry events against real Postgres (ADR-0
   let municipalityId: number;
   let passengerId: number;
   let tripRequestId: number;
+  let windowTripId: number;
+  let windowPassengerId: number;
   const logLines: string[] = [];
   const sentryEnvelopes: string[] = [];
   const stdStreams: string[] = [];
@@ -92,6 +94,23 @@ suite('PII in database error logs and Sentry events against real Postgres (ADR-0
       },
     });
     tripRequestId = trip.tripRequestId;
+    windowPassengerId = await createFreshPassenger(prisma);
+    const windowTrip = await prisma.tripRequest.create({
+      data: {
+        passengerId: windowPassengerId,
+        municipalityId,
+        pickupAddress: ADDRESS,
+        dropoffAddress: DROPOFF,
+        pickupLat: 6.96123417,
+        pickupLng: -75.41759902,
+        dropoffLat: 6.97711208,
+        dropoffLng: -75.40088341,
+        fare: 8000,
+        commission: 640,
+        status: 'driver_en_route',
+      },
+    });
+    windowTripId = windowTrip.tripRequestId;
 
     const destination = new Writable({
       write(chunk: Buffer, _encoding, callback) {
@@ -138,7 +157,7 @@ suite('PII in database error logs and Sentry events against real Postgres (ADR-0
   afterAll(async () => {
     Logger.overrideLogger(false);
     await Sentry.close(1000);
-    await prisma.tripRequest.deleteMany({ where: { passengerId } });
+    await prisma.tripRequest.deleteMany({ where: { passengerId: { in: [passengerId, windowPassengerId] } } });
     await purgeMunicipalitiesByNamePrefix(prisma, PREFIX);
     await prisma.$disconnect();
   });
@@ -259,5 +278,29 @@ suite('PII in database error logs and Sentry events against real Postgres (ADR-0
 
     expect(sentryEnvelopes.length).toBeGreaterThan(0);
     expectNone(sentryEnvelopes.join(''), USER_SENSITIVE);
+  });
+
+  it('leaves no start code, address or coordinate when a CHECK fails on a trip that holds a live code (ADR-033 C-2)', async () => {
+    const rows = await prisma.$queryRaw<Array<{ start_code: string }>>`
+      SELECT start_code FROM trips.trip_request WHERE trip_request_id = ${windowTripId}`;
+    const code = rows[0]?.start_code ?? '';
+    expect(code).toMatch(/^[0-9]{4}$/);
+    const error = await capture(
+      () =>
+        prisma.$executeRaw`UPDATE trips.trip_request SET start_code_failed_attempts = 6 WHERE trip_request_id = ${windowTripId}`,
+    );
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).toContain('trip_request_start_code_attempts');
+
+    await runThroughFilterAndSentry(error);
+
+    const outputs = [logLines.join(''), sentryEnvelopes.join(''), stdStreams.join('')];
+    for (const output of outputs) {
+      expectNone(output, TRIP_SENSITIVE);
+      expect(output).not.toContain(`'${code}'`);
+      expect(output).not.toContain(`"${code}"`);
+      expect(output).not.toContain(`, ${code},`);
+    }
+    const entry = JSON.parse(logLines.find((line) => line.includes('unhandled_error')) ?? '{}') as Record<string, unknown>;
+    expect(entry).toMatchObject({ sqlstate: '23514', constraint: 'trip_request_start_code_attempts' });
   });
 });

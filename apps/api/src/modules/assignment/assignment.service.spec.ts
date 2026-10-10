@@ -555,10 +555,11 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
       serviceType: 'taxi',
       requestedCompanyId: null,
       companyId,
+      pickupDistanceAtAssignmentM: null,
     };
   }
 
-  function build(row: AssignedDriverRow | null, companyId: number | null = 1) {
+  function build(row: AssignedDriverRow | null, companyId: number | null = 1, frozenM: number | null = null) {
     const tenants: number[] = [];
     const prisma = {
       runInTenant: async <T>(c: number, fn: (tx: unknown) => Promise<T>): Promise<T> => {
@@ -567,7 +568,7 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
       },
     } as unknown as PrismaService;
     const repo = {
-      getTripRequestInfo: async () => info(companyId),
+      getTripRequestInfo: async () => ({ ...info(companyId), pickupDistanceAtAssignmentM: frozenM }),
       getAssignedDriver: async (): Promise<AssignedDriverRow | null> => row,
     } as unknown as AssignmentRepository;
     const params = { get: async () => ({ avgSpeedKmh: 20 }) as never } as unknown as OperationalParamsService;
@@ -581,6 +582,27 @@ describe('AssignmentService.getAssignedDriverSummary (V-02: contact info only wh
     expect(r?.plate).toBe('ABC123');
     expect(r?.contact_phone).toBe('3001234567');
     expect(r?.eta).not.toBeNull();
+  });
+
+  it('uses the distance frozen at acceptance: the ETA does not change when the driver moves (ADR-033 section 3.4)', async () => {
+    const far = { ...ROW, lat: 7.1, lng: -75.6 };
+    const near = { ...ROW, lat: 6.9641, lng: -75.4186 };
+
+    const whileFar = await build(far, 1, 3000).service.getAssignedDriverSummary(1, true);
+    const whileNear = await build(near, 1, 3000).service.getAssignedDriverSummary(1, true);
+
+    expect(whileNear?.eta).toEqual(whileFar?.eta);
+    expect(whileFar?.eta).toEqual({ min_minutes: 7, max_minutes: 12, is_estimate: true });
+  });
+
+  it('without a frozen distance (legacy trips) it falls back to the current position', async () => {
+    const far = { ...ROW, lat: 7.1, lng: -75.6 };
+    const near = { ...ROW, lat: 6.9641, lng: -75.4186 };
+
+    const whileFar = await build(far).service.getAssignedDriverSummary(1, true);
+    const whileNear = await build(near).service.getAssignedDriverSummary(1, true);
+
+    expect(whileFar?.eta).not.toEqual(whileNear?.eta);
   });
 
   it('includeContact=false -> hides contact_phone and eta, keeps name/plate/model (HU-VJ-11)', async () => {
@@ -675,6 +697,7 @@ describe('AssignmentService chain · reparto between companies (ADR-032 §1)', (
     serviceType: 'taxi',
     requestedCompanyId: null,
     companyId: null,
+    pickupDistanceAtAssignmentM: null,
   };
 
   interface ChainHarness {
@@ -845,6 +868,7 @@ describe('AssignmentService.onTripRequestCreated · push never gates the assignm
       serviceType: 'taxi',
       requestedCompanyId: null,
       companyId: null,
+      pickupDistanceAtAssignmentM: null,
     };
 
     const candidate: DbCandidate = {

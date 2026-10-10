@@ -1,8 +1,13 @@
-import { ConflictException, ForbiddenException, HttpException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  HttpException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import type { AssignmentStatus, TripStatus } from '@voyyaa/shared';
 import { TripLifecycleService } from './trip-lifecycle.service';
-import type { TripTransitionOutcome } from './trips.repository';
+import type { StartOutcome, TripTransitionOutcome } from './trips.repository';
 import { TripsRepository } from './trips.repository';
 import type { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import type { AssignmentService } from '../assignment/assignment.service';
@@ -98,7 +103,7 @@ describe('TripLifecycleService · transition on an already closed trip (BUG-5)',
       buildEmitter(),
     );
 
-    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
+    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {}));
 
     expect(e).toBeInstanceOf(ConflictException);
     expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
@@ -115,7 +120,7 @@ describe('TripLifecycleService · transition on an already closed trip (BUG-5)',
       buildEmitter(),
     );
 
-    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
+    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {}));
 
     expect(e).toBeInstanceOf(ForbiddenException);
     expect(e.getResponse()).toMatchObject({ code: 'NOT_THE_DRIVER' });
@@ -254,61 +259,123 @@ describe('TripLifecycleService.markArrived', () => {
 });
 
 describe('TripLifecycleService.markStarted', () => {
-  it('applied -> idempotent=false, status in_progress', async () => {
-    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
-      kind: 'applied',
-      row: { updatedAt: new Date() },
-    };
-    const service = new TripLifecycleService(
+  function serviceReturning(outcome: StartOutcome, seen: { code: string | null }[] = []): TripLifecycleService {
+    return new TripLifecycleService(
       buildPrisma(),
-      buildRepo({ markStarted: async () => outcome }),
+      buildRepo({
+        startWithCode: async (_tx: unknown, _id: number, code: string | null) => {
+          seen.push({ code });
+          return outcome;
+        },
+      }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
       buildParams(),
       buildEmitter(),
     );
+  }
 
-    const r = await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
-    expect(r.status).toBe('in_progress');
-    expect(r.idempotent).toBe(false);
+  it('started -> idempotent=false, status in_progress', async () => {
+    const r = await serviceReturning({ kind: 'started' }).markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {
+      start_code: '4821',
+    });
+    expect(r).toEqual({ trip_request_id: TRIP_REQUEST_ID, status: 'in_progress', idempotent: false });
   });
 
   it('repeated call -> idempotent=true, no error', async () => {
-    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
-      kind: 'idempotent',
-      row: { updatedAt: new Date() },
-    };
-    const service = new TripLifecycleService(
-      buildPrisma(),
-      buildRepo({ markStarted: async () => outcome }),
-      buildAssignment(true),
-      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
-      buildParams(),
-      buildEmitter(),
-    );
-
-    const r = await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    const r = await serviceReturning({ kind: 'idempotent' }).markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {});
     expect(r.idempotent).toBe(true);
     expect(r.status).toBe('in_progress');
   });
 
+  it('passes the code, or null when the body has none, to the repository', async () => {
+    const seen: { code: string | null }[] = [];
+    const service = serviceReturning({ kind: 'started' }, seen);
+
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { start_code: '0042' });
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {});
+
+    expect(seen).toEqual([{ code: '0042' }, { code: null }]);
+  });
+
+  it('code required -> 422 START_CODE_REQUIRED with the es-CO message', async () => {
+    const e = await capture(
+      serviceReturning({ kind: 'code_required' }).markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {}),
+    );
+    expect(e).toBeInstanceOf(UnprocessableEntityException);
+    expect(e.getResponse()).toMatchObject({
+      code: 'START_CODE_REQUIRED',
+      message: expect.stringContaining('pídele el código al pasajero'),
+    });
+  });
+
+  it.each([
+    [4, 'Código incorrecto. Te quedan 4 intentos.'],
+    [1, 'Código incorrecto. Último intento.'],
+  ])('wrong code with %i attempts left -> 422 START_CODE_INVALID', async (attemptsRemaining, message) => {
+    const e = await capture(
+      serviceReturning({ kind: 'code_invalid', attemptsRemaining }).markStarted(
+        TRIP_REQUEST_ID,
+        DRIVER_ID,
+        COMPANY_ID,
+        { start_code: '1111' },
+      ),
+    );
+    expect(e).toBeInstanceOf(UnprocessableEntityException);
+    expect(e.getResponse()).toEqual({ code: 'START_CODE_INVALID', message, attempts_remaining: attemptsRemaining });
+  });
+
+  it('blocked -> 409 START_CODE_BLOCKED with blocked_at, and never carries the code', async () => {
+    const blockedAt = new Date('2026-10-09T12:00:00.000Z');
+    const e = await capture(
+      serviceReturning({ kind: 'blocked', blockedAt }).markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {
+        start_code: '1111',
+      }),
+    );
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'START_CODE_BLOCKED', blocked_at: blockedAt.toISOString() });
+    expect(JSON.stringify(e.getResponse())).not.toContain('1111');
+  });
+
   it('wrong order (driver never marked en-route) -> 409 INVALID_TRIP_TRANSITION', async () => {
-    const rejected: TripTransitionOutcome<{ updatedAt: Date }> = {
-      kind: 'rejected',
-      status: 'assigned' as TripStatus,
-    };
+    const e = await capture(
+      serviceReturning({ kind: 'rejected', status: 'assigned' }).markStarted(
+        TRIP_REQUEST_ID,
+        DRIVER_ID,
+        COMPANY_ID,
+        {},
+      ),
+    );
+    expect(e).toBeInstanceOf(ConflictException);
+    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
+  });
+
+  it('throws only after the transaction callback has returned, so the failed attempt is committed', async () => {
+    const events: string[] = [];
+    const prisma = {
+      runInTenant: async (_companyId: number, fn: (tx: unknown) => Promise<unknown>) => {
+        const result = await fn({});
+        events.push('commit');
+        return result;
+      },
+    } as unknown as PrismaService;
     const service = new TripLifecycleService(
-      buildPrisma(),
-      buildRepo({ markStarted: async () => rejected }),
+      prisma,
+      buildRepo({
+        startWithCode: async () => {
+          events.push('attempt counted');
+          return { kind: 'code_invalid', attemptsRemaining: 3 } as StartOutcome;
+        },
+      }),
       buildAssignment(true),
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
       buildParams(),
       buildEmitter(),
     );
 
-    const e = await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID));
-    expect(e).toBeInstanceOf(ConflictException);
-    expect(e.getResponse()).toMatchObject({ code: 'INVALID_TRIP_TRANSITION' });
+    await capture(service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { start_code: '1111' }));
+
+    expect(events).toEqual(['attempt counted', 'commit']);
   });
 });
 
@@ -535,20 +602,16 @@ describe('TripLifecycleService · allow-list forwarded to getOwnedAssignment (V-
 
   it('markStarted -> allow=["accepted"]', async () => {
     const { assignment, spy } = buildAssignmentSpy();
-    const outcome: TripTransitionOutcome<{ updatedAt: Date }> = {
-      kind: 'applied',
-      row: { updatedAt: new Date() },
-    };
     const service = new TripLifecycleService(
       buildPrisma(),
-      buildRepo({ markStarted: async () => outcome }),
+      buildRepo({ startWithCode: async () => ({ kind: 'started' }) as StartOutcome }),
       assignment,
       buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
       buildParams(),
       buildEmitter(),
     );
 
-    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {});
 
     expect(spy).toHaveBeenCalledWith(expect.anything(), TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, ['accepted']);
   });
@@ -631,10 +694,6 @@ describe('TripLifecycleService · allow-list forwarded to getOwnedAssignment (V-
       kind: 'applied',
       row: { arrivedAt: new Date() },
     };
-    const startedOutcome: TripTransitionOutcome<{ updatedAt: Date }> = {
-      kind: 'applied',
-      row: { updatedAt: new Date() },
-    };
     const cashOutcome: TripTransitionOutcome<{ cashCollectedAt: Date }> = {
       kind: 'applied',
       row: { cashCollectedAt: new Date() },
@@ -644,7 +703,7 @@ describe('TripLifecycleService · allow-list forwarded to getOwnedAssignment (V-
       buildRepo({
         markEnRoute: async () => enRouteOutcome,
         markArrived: async () => arrivedOutcome,
-        markStarted: async () => startedOutcome,
+        startWithCode: async () => ({ kind: 'started' }) as StartOutcome,
         markCashCollected: async () => cashOutcome,
       }),
       assignment,
@@ -663,7 +722,7 @@ describe('TripLifecycleService · allow-list forwarded to getOwnedAssignment (V-
 
     await service.markEnRoute(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
     await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
-    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+    await service.markStarted(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, {});
     await service.complete(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID, { cash_collected: false });
     await service.declareNoShow(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
     await service.confirmCashCollected(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);

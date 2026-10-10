@@ -187,20 +187,27 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     });
   });
 
-  describe('markStarted', () => {
-    it('applies driver_en_route -> in_progress', async () => {
+  describe('startWithCode', () => {
+    async function codeOf(tripRequestId: number): Promise<string> {
+      const rows = await raw.$queryRaw<Array<{ start_code: string }>>`
+        SELECT start_code FROM trips.trip_request WHERE trip_request_id = ${tripRequestId}`;
+      return rows[0]?.start_code ?? '';
+    }
+
+    it('applies driver_en_route -> in_progress with the right code', async () => {
       const trip = await makeTrip('driver_en_route');
+      const code = await codeOf(trip.tripRequestId);
 
-      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
+      const outcome = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, code));
 
-      expect(outcome.kind).toBe('applied');
+      expect(outcome.kind).toBe('started');
       expect((await getTrip(trip.tripRequestId))?.status).toBe('in_progress');
     });
 
     it('is idempotent when already in_progress', async () => {
       const trip = await makeTrip('in_progress');
 
-      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
+      const outcome = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, null));
 
       expect(outcome.kind).toBe('idempotent');
     });
@@ -208,9 +215,29 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
     it('rejects when the trip skipped driver_en_route', async () => {
       const trip = await makeTrip('assigned');
 
-      const outcome = await withTenant((tx) => repo.markStarted(tx, trip.tripRequestId));
+      const outcome = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, '1234'));
 
       expect(outcome).toMatchObject({ kind: 'rejected', status: 'assigned' });
+    });
+
+    it('asks for the code without spending an attempt', async () => {
+      const trip = await makeTrip('driver_en_route');
+
+      const outcome = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, null));
+
+      expect(outcome.kind).toBe('code_required');
+    });
+
+    it('counts a wrong code and reports the attempts left', async () => {
+      const trip = await makeTrip('driver_en_route');
+      const code = await codeOf(trip.tripRequestId);
+      const wrong = code === '0000' ? '0001' : '0000';
+
+      const first = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, wrong));
+      const second = await withTenant((tx) => repo.startWithCode(tx, trip.tripRequestId, wrong));
+
+      expect(first).toEqual({ kind: 'code_invalid', attemptsRemaining: 4 });
+      expect(second).toEqual({ kind: 'code_invalid', attemptsRemaining: 3 });
     });
   });
 
