@@ -71,7 +71,12 @@ export const ChangeDriverPinDTO = z
   });
 export type ChangeDriverPinDTO = z.infer<typeof ChangeDriverPinDTO>;
 
-export const OtpCode = z.string().regex(/^\d{4,8}$/, 'Código OTP inválido');
+export const OTP_LENGTH = 6;
+
+export const OtpCode = z
+  .string()
+  .regex(/^\d*$/, 'Código OTP inválido')
+  .length(OTP_LENGTH, 'Código OTP inválido');
 
 export const JwtAccessPayload = z.object({
   sub: z.number().int().positive(),
