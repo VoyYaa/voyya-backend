@@ -29,12 +29,13 @@ import {
   type SessionResponse,
   type SessionStartedEvent,
   type SessionUser,
+  TENANT_SCOPED_ROLES,
   type VerifyOtpDTO,
 } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
 import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
-import { accountBlocked, invalidCredentials, temporaryPinExpired } from './auth-errors';
+import { accountBlocked, invalidCredentials, invalidOtp, temporaryPinExpired } from './auth-errors';
 import { AuthRepository } from './auth.repository';
 import { HASHER, type Hasher } from './hasher.service';
 import { lockoutAfterFailure } from './login-lockout';
@@ -108,7 +109,7 @@ export class AuthService {
     const ok = await this.hasher.compare(dto.code, otp.codeHash);
     if (!ok) {
       await this.repo.incrementOtpAttempts(otp.id);
-      throw new UnauthorizedException({ code: 'OTP_INVALID', message: 'Código incorrecto' });
+      throw invalidOtp();
     }
 
     const consumed = await this.repo.consumeOtp(otp.id);
@@ -116,9 +117,11 @@ export class AuthService {
       throw new UnauthorizedException({ code: 'OTP_INVALID', message: 'Código ya utilizado' });
     }
 
-    let user = await this.repo.getUserByPhone(phone);
-    if (!user) {
-      user = await this.repo.createPassengerAutoRegister(phone);
+    const user =
+      (await this.repo.getUserByPhone(phone)) ?? (await this.repo.createPassengerAutoRegister(phone));
+    if (user.role !== 'passenger') {
+      this.logger.warn(`OTP rejected for a non-passenger account user_id=${user.userId} role=${user.role}`);
+      throw invalidOtp();
     }
     if (user.accountStatus === 'suspended') {
       throw new ForbiddenException({ code: 'ACCOUNT_SUSPENDED', message: 'Cuenta suspendida' });
@@ -294,6 +297,9 @@ export class AuthService {
     pinChangeRequired = false,
   ): Promise<SessionResponse> {
     const role = Role.parse(user.role);
+    if (companyId === null && isTenantScoped(role)) {
+      throw new InternalServerErrorException('Tenant-scoped role without a company_id');
+    }
     const access = this.signAccess(user.userId, role, companyId ?? undefined, pinChangeRequired);
     const refresh = await this.refreshTokens.issue(user.userId, userAgent);
 
@@ -378,6 +384,10 @@ export class AuthService {
       HttpStatus.TOO_MANY_REQUESTS,
     );
   }
+}
+
+function isTenantScoped(role: Role): boolean {
+  return (TENANT_SCOPED_ROLES as readonly Role[]).includes(role);
 }
 
 function isExpired(expiresAt: Date | null): boolean {

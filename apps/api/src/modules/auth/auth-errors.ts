@@ -7,6 +7,10 @@ export function invalidCredentials(): UnauthorizedException {
   });
 }
 
+export function invalidOtp(): UnauthorizedException {
+  return new UnauthorizedException({ code: 'OTP_INVALID', message: 'Código incorrecto' });
+}
+
 export function temporaryPinExpired(): UnauthorizedException {
   return new UnauthorizedException({
     code: 'TEMPORARY_PIN_EXPIRED',

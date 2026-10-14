@@ -2,6 +2,8 @@ import {
   ForbiddenException,
   GoneException,
   HttpException,
+  InternalServerErrorException,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
@@ -646,5 +648,316 @@ describe('AuthService.refresh / logout / revocation', () => {
       occurred_at: new Date().toISOString(),
     });
     expect((refreshTokens as RefreshMock).revokeAllForUser).toHaveBeenCalledWith(5);
+  });
+});
+
+const OTP_PHONE = '3009900011';
+const OTP_CODE = '4821';
+const STAFF_ROLES = ['driver', 'admin', 'operator', 'platform_admin', 'company'] as const;
+const INVALID_OTP_RESPONSE = { code: 'OTP_INVALID', message: 'Código incorrecto' };
+
+function liveOtp(otpCode = OTP_CODE) {
+  return { id: 9, codeHash: `hashed:${otpCode}`, attempts: 0, expiresAt: inFuture() };
+}
+
+function accountWithRole(role: string, overrides: Record<string, unknown> = {}) {
+  return {
+    userId: 42,
+    firstName: 'Ana',
+    lastName: 'Pérez',
+    email: null,
+    passwordHash: null,
+    role,
+    accountStatus: 'active',
+    companyId: null,
+    companyStatus: null,
+    failedAttempts: 0,
+    blockedUntil: null,
+    ...overrides,
+  };
+}
+
+async function wrongCodeRejection(): Promise<HttpException> {
+  const { service, repo } = create();
+  (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+  return capture(service.verifyOtp({ phone: OTP_PHONE, code: '0000' }));
+}
+
+describe('AuthService.verifyOtp: the OTP only opens passenger sessions (S-01)', () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('existing passenger gets the session without regression', async () => {
+    const { service, repo, refreshTokens, emitter } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole('passenger'));
+
+    const r = await service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE });
+
+    expect(r.user.role).toBe('passenger');
+    expect(r.user.tenant).toBeNull();
+    expect(r.tokens.refresh_token).toBe('refresh-1');
+    expect((refreshTokens as RefreshMock).issue).toHaveBeenCalledTimes(1);
+    expect((emitter as { emit: jest.Mock }).emit).toHaveBeenCalledTimes(1);
+    expect((repo as RepoMock).createPassengerAutoRegister).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(STAFF_ROLES)(
+    '%s with the right code -> 401 OTP_INVALID, no session, no refresh token, no event',
+    async (role) => {
+      const { service, repo, refreshTokens, jwt, emitter } = create();
+      (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role, { companyId: 3 }));
+
+      const e = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+      expect(e).toBeInstanceOf(UnauthorizedException);
+      expect(e.getStatus()).toBe(401);
+      expect(code(e)).toBe('OTP_INVALID');
+      expect((refreshTokens as RefreshMock).issue).not.toHaveBeenCalled();
+      expect((jwt as { sign: jest.Mock }).sign).not.toHaveBeenCalled();
+      expect((emitter as { emit: jest.Mock }).emit).not.toHaveBeenCalled();
+      expect((repo as RepoMock).getCompanyIdentity).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(STAFF_ROLES)(
+    '%s rejection is the exact response of a wrong code (same status, same body, same key order)',
+    async (role) => {
+      const wrong = await wrongCodeRejection();
+      const { service, repo } = create();
+      (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role));
+
+      const byRole = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+      expect(byRole.getStatus()).toBe(wrong.getStatus());
+      expect(JSON.stringify(byRole.getResponse())).toBe(JSON.stringify(wrong.getResponse()));
+      expect(byRole.getResponse()).toEqual(INVALID_OTP_RESPONSE);
+    },
+  );
+
+  it.each(STAFF_ROLES)(
+    '%s rejection consumes the OTP and does not count an attempt nor touch the account',
+    async (role) => {
+      const { service, repo } = create();
+      (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role));
+
+      await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+      expect((repo as RepoMock).consumeOtp).toHaveBeenCalledWith(9);
+      expect((repo as RepoMock).incrementOtpAttempts).not.toHaveBeenCalled();
+      expect((repo as RepoMock).registerAdminFailure).not.toHaveBeenCalled();
+      expect((repo as RepoMock).registerDriverFailure).not.toHaveBeenCalled();
+      expect((repo as RepoMock).resetAdminAttempts).not.toHaveBeenCalled();
+      expect((repo as RepoMock).createPassengerAutoRegister).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['ghost', '', 'PASSENGER', 'passenger '])(
+    'role outside the enum (%j) -> 401 OTP_INVALID, never an internal error (allow list)',
+    async (role) => {
+      const { service, repo, refreshTokens } = create();
+      (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role));
+
+      const e = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+      expect(e).toBeInstanceOf(UnauthorizedException);
+      expect(e.getResponse()).toEqual(INVALID_OTP_RESPONSE);
+      expect((refreshTokens as RefreshMock).issue).not.toHaveBeenCalled();
+    },
+  );
+
+  it('the role rejection never uses the "Código ya utilizado" text', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole('driver'));
+
+    const e = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+    expect(JSON.stringify(e.getResponse())).not.toContain('utilizado');
+  });
+
+  it('wrong code never reads the user nor consumes the OTP (order: code, consume, role)', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+
+    await capture(service.verifyOtp({ phone: OTP_PHONE, code: '0000' }));
+
+    expect((repo as RepoMock).getUserByPhone).not.toHaveBeenCalled();
+    expect((repo as RepoMock).createPassengerAutoRegister).not.toHaveBeenCalled();
+    expect((repo as RepoMock).consumeOtp).not.toHaveBeenCalled();
+    expect((repo as RepoMock).incrementOtpAttempts).toHaveBeenCalledWith(9);
+  });
+
+  it('the OTP is consumed before the user is read', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole('driver'));
+
+    await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+    const consumedAt = (repo as RepoMock).consumeOtp.mock.invocationCallOrder[0] ?? Infinity;
+    const readAt = (repo as RepoMock).getUserByPhone.mock.invocationCallOrder[0] ?? -Infinity;
+    expect(consumedAt).toBeLessThan(readAt);
+  });
+
+  it.each([
+    ['a wrong code', '0000', 'passenger'],
+    ['the right code of a staff account', OTP_CODE, 'driver'],
+  ])('the same cryptographic work for %s: one compare, no hash', async (_case, submitted, role) => {
+    const { service, repo, hasher } = create();
+    (hasher.hash as jest.Mock).mockClear();
+    (hasher.compare as jest.Mock).mockClear();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role));
+
+    await capture(service.verifyOtp({ phone: OTP_PHONE, code: submitted }));
+
+    expect(hasher.compare).toHaveBeenCalledTimes(1);
+    expect(hasher.hash).not.toHaveBeenCalled();
+  });
+
+  it.each(STAFF_ROLES)('%s rejection logs user_id and role, never the phone nor the code', async (role) => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role, { userId: 77 }));
+
+    await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const line = String(warn.mock.calls[0]?.[0]);
+    expect(line).toContain('user_id=77');
+    expect(line).toContain(`role=${role}`);
+    expect(line).not.toContain(OTP_PHONE);
+    expect(line).not.toContain(OTP_CODE);
+  });
+
+  it('suspended passenger -> 403 ACCOUNT_SUSPENDED (as before)', async () => {
+    const { service, repo, refreshTokens } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(
+      accountWithRole('passenger', { accountStatus: 'suspended' }),
+    );
+
+    const e = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+    expect(e).toBeInstanceOf(ForbiddenException);
+    expect(code(e)).toBe('ACCOUNT_SUSPENDED');
+    expect((refreshTokens as RefreshMock).issue).not.toHaveBeenCalled();
+  });
+
+  it.each(['driver', 'admin', 'operator', 'platform_admin'])(
+    'suspended %s -> 401 OTP_INVALID: the role is evaluated before the suspension',
+    async (role) => {
+      const { service, repo } = create();
+      (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(
+        accountWithRole(role, { accountStatus: 'suspended' }),
+      );
+
+      const e = await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+
+      expect(e).toBeInstanceOf(UnauthorizedException);
+      expect(e.getResponse()).toEqual(INVALID_OTP_RESPONSE);
+    },
+  );
+
+  it('new phone is still auto-registered as a passenger and gets a session', async () => {
+    const { service, repo } = create();
+    (repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (repo as RepoMock).getUserByPhone.mockResolvedValue(null);
+    (repo as RepoMock).createPassengerAutoRegister.mockResolvedValue(newPassengerUser);
+
+    const r = await service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE });
+
+    expect((repo as RepoMock).createPassengerAutoRegister).toHaveBeenCalledWith(OTP_PHONE);
+    expect(r.user.role).toBe('passenger');
+  });
+
+  it('keeps the OTP error ladder: expired 410, attempts cap 429, consume lost 401 "Código ya utilizado"', async () => {
+    const expired = create();
+    (expired.repo as RepoMock).getActiveOtp.mockResolvedValue({ ...liveOtp(), expiresAt: new Date(0) });
+    const expiredError = await capture(expired.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+    expect(expiredError.getStatus()).toBe(410);
+
+    const capped = create();
+    (capped.repo as RepoMock).getActiveOtp.mockResolvedValue({ ...liveOtp(), attempts: 3 });
+    const cappedError = await capture(capped.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+    expect(cappedError.getStatus()).toBe(429);
+
+    const lost = create();
+    (lost.repo as RepoMock).getActiveOtp.mockResolvedValue(liveOtp());
+    (lost.repo as RepoMock).consumeOtp.mockResolvedValue(false);
+    const lostError = await capture(lost.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+    expect(lostError.getResponse()).toEqual({ code: 'OTP_INVALID', message: 'Código ya utilizado' });
+  });
+});
+
+describe('AuthService.requestOtp: does not branch on who owns the phone (D-S01-1)', () => {
+  it('never reads an account and sends the SMS for any phone', async () => {
+    const { service, repo, sms } = create();
+    (repo as RepoMock).countOtpSince.mockResolvedValue(0);
+    (repo as RepoMock).lastOtpCreatedAt.mockResolvedValue(null);
+    (repo as RepoMock).createOtp.mockResolvedValue(undefined);
+
+    const r = await service.requestOtp({ phone: OTP_PHONE });
+
+    expect(r).toEqual({ sent: true, resend_in_sec: 30, expires_in_sec: 300 });
+    expect((sms as { send: jest.Mock }).send).toHaveBeenCalledTimes(1);
+    expect((repo as RepoMock).getUserByPhone).not.toHaveBeenCalled();
+    expect((repo as RepoMock).getUserByEmail).not.toHaveBeenCalled();
+    expect((repo as RepoMock).getUser).not.toHaveBeenCalled();
+    expect((repo as RepoMock).getDriverByNationalId).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService.issueSession: company roles need a company (S-01, defense in depth)', () => {
+  const profile = (role: string) => ({ userId: 42, firstName: 'Ana', lastName: 'P', role });
+
+  it.each(['driver', 'admin', 'operator', 'company'])(
+    '%s without a company -> 500, no JWT, no refresh token, no event',
+    async (role) => {
+      const { service, refreshTokens, jwt, emitter } = create();
+
+      const e = await capture(service.issueSession(profile(role), null));
+
+      expect(e).toBeInstanceOf(InternalServerErrorException);
+      expect(e.getStatus()).toBe(500);
+      expect((jwt as { sign: jest.Mock }).sign).not.toHaveBeenCalled();
+      expect((refreshTokens as RefreshMock).issue).not.toHaveBeenCalled();
+      expect((emitter as { emit: jest.Mock }).emit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['passenger', 'platform_admin'])('%s without a company still gets the session', async (role) => {
+    const { service, refreshTokens, emitter } = create();
+
+    const r = await service.issueSession(profile(role), null);
+
+    expect(r.user.role).toBe(role);
+    expect(r.user.tenant).toBeNull();
+    expect((refreshTokens as RefreshMock).issue).toHaveBeenCalledTimes(1);
+    expect((emitter as { emit: jest.Mock }).emit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['driver', 'admin', 'operator'])('%s with a company gets the session with its tenant', async (role) => {
+    const { service, repo } = create();
+    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(7));
+
+    const r = await service.issueSession(profile(role), 7);
+
+    expect(r.user.role).toBe(role);
+    expect(r.user.tenant?.company_id).toBe(7);
   });
 });

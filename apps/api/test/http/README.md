@@ -19,6 +19,15 @@ Limites conocidos del entorno: el PIN temporal y la contrasena temporal salen re
 scripts los reemplazan por SQL como superusuario; los limites de frecuencia de la API (3 OTP por minuto, 3 solicitudes de
 afiliacion por hora) se absorben con reintentos y reiniciando la API entre corridas.
 
+## La OTP solo abre sesion de pasajero (hotfix S-01)
+
+`11-otp-passenger-only.mjs` no entra en `run-all.sh`: crea personal con telefonos fijos (conductor por `POST /admin/drivers`, operador y
+`company` por SQL), asi que se corre una vez por base recien reiniciada con `reset-verification-db.sh`. Pide la OTP de los cinco roles de
+personal y comprueba que cada uno recibe el mismo `401 OTP_INVALID` que un codigo incorrecto, sin `refresh_token`, con la OTP consumida y con el
+log de rechazo (`user_id` y rol, sin telefono ni codigo); tambien repite el acceso del pasajero, el de cedula y PIN, el de correo y contrasena y
+el refresh por rol. Cada peticion lleva `X-Forwarded-For` propio para no chocar con los limites por IP. La version permanente, con Postgres
+real como `app_voyya`, es `test/otp-passenger-only.e2e-spec.ts`.
+
 ## Migracion desde el estado del piloto (HU-MS-16)
 
 `migration-upgrade-pilot-data.sql` siembra, sobre una base con solo las migraciones y el SQL de `main`, el estado de Cootrayal en Yarumal
