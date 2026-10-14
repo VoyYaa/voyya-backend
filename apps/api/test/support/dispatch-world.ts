@@ -7,6 +7,7 @@ import { TRIPS_EVENTS } from '@voyyaa/shared';
 import { randomInt, randomUUID } from 'node:crypto';
 import { PrismaService } from '../../src/infrastructure/prisma/prisma.service';
 import { AssignmentService } from '../../src/modules/assignment/assignment.service';
+import { PUSH_TRANSPORT, type PushTransport } from '../../src/modules/notifications/ports/push-transport.port';
 import { AllExceptionsFilter } from '../../src/shared/all-exceptions.filter';
 import { createFreshPassenger } from './fresh-passenger';
 import { createCompany, seedCommission, seedOpenFare, uniqueSuffix } from './platform-fixtures';
@@ -19,10 +20,14 @@ export interface World {
   assignment: AssignmentService;
 }
 
-export async function bootWorld(options: { keepChainListener?: boolean } = {}): Promise<World> {
+export async function bootWorld(
+  options: { keepChainListener?: boolean; pushTransport?: PushTransport } = {},
+): Promise<World> {
   process.env.DATABASE_URL = process.env.PG_TEST_URL;
   const { AppModule } = await import('../../src/app.module');
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  const builder = Test.createTestingModule({ imports: [AppModule] });
+  if (options.pushTransport) builder.overrideProvider(PUSH_TRANSPORT).useValue(options.pushTransport);
+  const moduleRef = await builder.compile();
   const app = moduleRef.createNestApplication();
   app.useGlobalFilters(new AllExceptionsFilter());
   await app.init();

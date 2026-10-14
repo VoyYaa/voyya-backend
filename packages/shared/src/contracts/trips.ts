@@ -314,6 +314,7 @@ export const TRIPS_EVENTS = {
   TRIP_REQUEST_EXPIRED: 'trip_request.expired',
   TRIP_REQUEST_COMPLETED: 'trip_request.completed',
   TRIP_REQUEST_NO_SHOW: 'trip_request.no_show',
+  TRIP_REQUEST_DRIVER_ARRIVED: 'trip_request.driver_arrived',
 } as const;
 export type TripsEventName = (typeof TRIPS_EVENTS)[keyof typeof TRIPS_EVENTS];
 
@@ -337,6 +338,7 @@ export type TripRequestCancelledEvent = z.infer<typeof TripRequestCancelledEvent
 
 export const TripRequestNoDriverEvent = z.object({
   trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
   attempts_made: z.number().int().nonnegative(),
   final_radius_km: z.number().positive(),
   occurred_at: z.string().datetime(),
@@ -369,3 +371,13 @@ export const TripRequestNoShowEvent = z.object({
   occurred_at: z.string().datetime(),
 });
 export type TripRequestNoShowEvent = z.infer<typeof TripRequestNoShowEvent>;
+
+export const TripRequestDriverArrivedEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
+  driver_id: z.number().int().positive(),
+  company_id: z.number().int().positive(),
+  arrived_at: z.string().datetime(),
+  occurred_at: z.string().datetime(),
+});
+export type TripRequestDriverArrivedEvent = z.infer<typeof TripRequestDriverArrivedEvent>;

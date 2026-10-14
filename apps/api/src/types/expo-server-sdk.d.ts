@@ -12,6 +12,8 @@ declare module 'expo-server-sdk' {
     priority?: 'default' | 'normal' | 'high';
     channelId?: string;
     ttl?: number;
+    tag?: string;
+    collapseId?: string;
   }
 
   export interface ExpoPushSuccessTicket {

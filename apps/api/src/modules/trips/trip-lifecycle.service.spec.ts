@@ -258,6 +258,115 @@ describe('TripLifecycleService.markArrived', () => {
   });
 });
 
+describe('TripLifecycleService.markArrived · driver_arrived event (ADR-034 E3)', () => {
+  const arrivedAt = new Date('2026-01-05T10:00:00.000Z');
+
+  function arrive(
+    outcome: TripTransitionOutcome<{ arrivedAt: Date }>,
+    passengerId = 91,
+  ): { service: TripLifecycleService; emitter: EventEmitter2 } {
+    const emitter = buildEmitter();
+    const service = new TripLifecycleService(
+      buildPrisma(),
+      buildRepo({
+        markArrived: async () => outcome,
+        getTripRequest: async () => ({ passengerId, municipalityId: 1, serviceType: 'taxi' }) as never,
+      }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      emitter,
+    );
+    return { service, emitter };
+  }
+
+  it('applied -> emits trip_request.driver_arrived with the passenger the server read from the trip', async () => {
+    const { service, emitter } = arrive({ kind: 'applied', row: { arrivedAt } }, 91);
+
+    await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(emitter.emit).toHaveBeenCalledTimes(1);
+    expect(emitter.emit).toHaveBeenCalledWith('trip_request.driver_arrived', {
+      trip_request_id: TRIP_REQUEST_ID,
+      passenger_id: 91,
+      driver_id: DRIVER_ID,
+      company_id: COMPANY_ID,
+      arrived_at: arrivedAt.toISOString(),
+      occurred_at: expect.any(String),
+    });
+  });
+
+  it('idempotent (second tap) -> emits nothing', async () => {
+    const { service, emitter } = arrive({ kind: 'idempotent', row: { arrivedAt } });
+
+    const result = await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(result.idempotent).toBe(true);
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('rejected -> 409 and emits nothing', async () => {
+    const { service, emitter } = arrive({ kind: 'rejected', status: 'assigned' });
+
+    await expect(service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID)).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('emits after the tenant transaction settled, never inside it', async () => {
+    const order: string[] = [];
+    const prisma = {
+      runInTenant: async (_companyId: number, fn: (tx: unknown) => Promise<unknown>) => {
+        order.push('tx:start');
+        const result = await fn({});
+        order.push('tx:commit');
+        return result;
+      },
+    } as unknown as PrismaService;
+    const emitter = { emit: jest.fn(() => order.push('emit')) } as unknown as EventEmitter2;
+    const service = new TripLifecycleService(
+      prisma,
+      buildRepo({
+        markArrived: async () => ({ kind: 'applied', row: { arrivedAt } }),
+        getTripRequest: async () => ({ passengerId: 91, municipalityId: 1, serviceType: 'taxi' }) as never,
+      }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      emitter,
+    );
+
+    await service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID);
+
+    expect(order).toEqual(['tx:start', 'tx:commit', 'emit']);
+  });
+
+  it('a transaction that rolls back never emits', async () => {
+    const prisma = {
+      runInTenant: async (_companyId: number, fn: (tx: unknown) => Promise<unknown>) => {
+        await fn({});
+        throw new Error('rollback');
+      },
+    } as unknown as PrismaService;
+    const emitter = buildEmitter();
+    const service = new TripLifecycleService(
+      prisma,
+      buildRepo({
+        markArrived: async () => ({ kind: 'applied', row: { arrivedAt } }),
+        getTripRequest: async () => ({ passengerId: 91, municipalityId: 1, serviceType: 'taxi' }) as never,
+      }),
+      buildAssignment(true),
+      buildTripClosing({ kind: 'rejected', reason: 'invalid_status', status: 'assigned' }),
+      buildParams(5),
+      emitter,
+    );
+
+    await expect(service.markArrived(TRIP_REQUEST_ID, DRIVER_ID, COMPANY_ID)).rejects.toThrow('rollback');
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+});
+
 describe('TripLifecycleService.markStarted', () => {
   function serviceReturning(outcome: StartOutcome, seen: { code: string | null }[] = []): TripLifecycleService {
     return new TripLifecycleService(

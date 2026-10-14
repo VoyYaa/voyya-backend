@@ -22,6 +22,8 @@ const ActiveServiceTypesFromEnv = z
     return [...new Set(parsed.data)];
   });
 
+const PUSH_TOKEN_TTL_DAYS_MAX = 60;
+
 const BaseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_PORT: z.coerce.number().int().positive().default(3000),
@@ -123,7 +125,11 @@ const BaseEnvSchema = z.object({
 
   EXPO_ACCESS_TOKEN: z.string().min(1).optional(),
   PUSH_SEND_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
-  PUSH_TOKEN_TTL_DAYS: z.coerce.number().int().nonnegative().default(60),
+  PUSH_TOKEN_TTL_DAYS: z.coerce.number().int().nonnegative().default(PUSH_TOKEN_TTL_DAYS_MAX),
+  PASSENGER_PUSH_TTL_SEC: z.coerce.number().int().positive().default(300),
+  PASSENGER_PUSH_MAX_PER_TRIP: z.coerce.number().int().positive().default(10),
+
+  RAILWAY_GIT_COMMIT_SHA: z.string().optional(),
 
   PG_TEST_URL: z.string().min(1).optional(),
 });
@@ -185,6 +191,13 @@ export const EnvSchema = BaseEnvSchema.superRefine((env, ctx) => {
         code: z.ZodIssueCode.custom,
         path: ['TRIP_COORDINATES_RETENTION_DAYS'],
         message: `TRIP_COORDINATES_RETENTION_DAYS debe ser ${TRIP_COORDINATES_RETENTION_DAYS} en producción (el aviso promete ese plazo)`,
+      });
+    }
+    if (env.PUSH_TOKEN_TTL_DAYS < 1 || env.PUSH_TOKEN_TTL_DAYS > PUSH_TOKEN_TTL_DAYS_MAX) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PUSH_TOKEN_TTL_DAYS'],
+        message: `PUSH_TOKEN_TTL_DAYS debe estar entre 1 y ${PUSH_TOKEN_TTL_DAYS_MAX} en producción (0 apaga la purga del token de notificaciones)`,
       });
     }
     const origins = parseCorsOrigins(env.CORS_ORIGINS);

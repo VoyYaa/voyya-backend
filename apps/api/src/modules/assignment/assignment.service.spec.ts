@@ -1,4 +1,9 @@
-import { ForbiddenException, InternalServerErrorException, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  InternalServerErrorException,
+  NotFoundException,
+} from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
 import type { AssignmentStatus, TripRequestCreatedEvent } from '@voyyaa/shared';
@@ -6,6 +11,7 @@ import { AssignmentService } from './assignment.service';
 import type {
   AssignedDriverRow,
   AssignmentRepository,
+  PassengerData,
   TripRequestInfo,
   TripTake,
 } from './assignment.repository';
@@ -189,8 +195,8 @@ function buildConcurrentService(db: FakeDb): AssignmentService {
     async markTripRequestAssigned(tx: FakeTx, take: TripTake): Promise<boolean> {
       return db.assignTripRequest(tx, take);
     },
-    async getPassengerData(): Promise<{ name: string; phone: string; pickupAddress: string }> {
-      return { name: 'Ana', phone: '3000000000', pickupAddress: 'Cra 1' };
+    async getPassengerData(): Promise<PassengerData> {
+      return { passengerId: 88, name: 'Ana', phone: '3000000000', pickupAddress: 'Cra 1' };
     },
   } as unknown as AssignmentRepository;
 
@@ -351,7 +357,12 @@ describe('AssignmentService.accept · the take of ADR-032 §2', () => {
         calls.push('assignment');
         return true;
       }),
-      getPassengerData: jest.fn(async () => ({ name: 'Ana', phone: '3000000000', pickupAddress: 'Cra 1' })),
+      getPassengerData: jest.fn(async () => ({
+        passengerId: 88,
+        name: 'Ana',
+        phone: '3000000000',
+        pickupAddress: 'Cra 1',
+      })),
     };
     const commissions = {
       getCurrent: jest.fn(async () => ('commission' in options ? options.commission : { commissionPct: 8 })),
@@ -819,7 +830,7 @@ describe('AssignmentService chain · reparto between companies (ADR-032 §1)', (
 
     await h.service.onTripRequestCreated(tripEvent);
 
-    expect(h.events.map((e) => e.name)).toEqual(['trip_request.no_driver']);
+    expect(h.events.map((e) => e.name)).toEqual(['assignment.search_exhausted']);
     expect(h.offers).not.toHaveBeenCalled();
   });
 
@@ -830,7 +841,7 @@ describe('AssignmentService chain · reparto between companies (ADR-032 §1)', (
 
     const radii = h.findCandidates.mock.calls.map((call) => call[1].radiusKm);
     expect(radii).toEqual([5, 5, 10, 10]);
-    expect(h.events.map((e) => e.name)).toEqual(['trip_request.no_driver']);
+    expect(h.events.map((e) => e.name)).toEqual(['assignment.search_exhausted']);
   });
 
   it('the passenger cancelling cancels the live offer in the tenant of the offering company', async () => {
@@ -962,5 +973,246 @@ describe('AssignmentService.onTripRequestCreated · push never gates the assignm
 
     await expect(service.onTripRequestCreated(tripEvent)).resolves.toBeUndefined();
     expect(events).toHaveLength(1);
+  });
+});
+
+describe('AssignmentService · events carry the passenger the server read inside the transaction (ADR-034 section 2)', () => {
+  const OFFER_ROW = {
+    assignmentId: 70,
+    tripRequestId: TRIP_REQUEST,
+    driverId: 7,
+    vehicleId: 5,
+    companyId: COMPANY,
+    status: 'notified',
+    expiresAt: inFuture(),
+  };
+
+  interface EventHarness {
+    service: AssignmentService;
+    log: string[];
+    events: Array<{ name: string; payload: Record<string, unknown> }>;
+    repo: Record<string, jest.Mock>;
+  }
+
+  type ClosingOutcome = Awaited<ReturnType<TripClosingService['closeTripInTx']>>;
+
+  function harness(
+    options: {
+      passenger?: PassengerData | null;
+      assigned?: boolean;
+      closing?: ClosingOutcome;
+      reopened?: boolean;
+      offer?: Record<string, unknown>;
+      tripPassengerId?: number | null;
+    } = {},
+  ): EventHarness {
+    const log: string[] = [];
+    const events: EventHarness['events'] = [];
+    const prisma = {
+      runInTenant: async <T>(_c: number, fn: (tx: unknown) => Promise<T>): Promise<T> => {
+        log.push('tx:start');
+        const result = await fn({});
+        log.push('tx:commit');
+        return result;
+      },
+    } as unknown as PrismaService;
+    const repo = {
+      getAssignment: jest.fn(async () => ({ ...OFFER_ROW, ...options.offer })),
+      markTripRequestAssigned: jest.fn(async () => options.assigned ?? true),
+      takeDriver: jest.fn(async () => true),
+      markAssignmentAccepted: jest.fn(async () => true),
+      getPassengerData: jest.fn(async () =>
+        options.passenger === undefined
+          ? { passengerId: 88, name: 'Ana', phone: '3000000000', pickupAddress: 'Cra 1' }
+          : options.passenger,
+      ),
+      getTripPassengerId: jest.fn(async () =>
+        options.tripPassengerId === undefined ? 91 : options.tripPassengerId,
+      ),
+      reopenTripRequest: jest.fn(async () => options.reopened ?? false),
+      markCancelledByDriver: jest.fn(async () => true),
+      releaseDriver: jest.fn(async () => undefined),
+    };
+    const closing: ClosingOutcome = options.closing ?? {
+      kind: 'rejected',
+      reason: 'invalid_status',
+      status: 'completed',
+    };
+    const tripClosing = { closeTripInTx: jest.fn(async () => closing) };
+    const emitter = {
+      emit: (name: string, payload: Record<string, unknown>) => {
+        log.push(`emit:${name}`);
+        events.push({ name, payload });
+        return true;
+      },
+    } as unknown as EventEmitter2;
+    const service = buildService({
+      prisma,
+      repo: repo as unknown as AssignmentRepository,
+      emitter,
+      tripClosing: tripClosing as unknown as TripClosingService,
+    });
+    return { service, log, events, repo };
+  }
+
+  const appliedClose: ClosingOutcome = {
+    kind: 'applied',
+    status: 'cancelled_by_driver',
+    arrivedAt: null,
+    finishedAt: new Date(),
+    netEarnings: null,
+    cashCollectedAt: null,
+    penaltyRecorded: false,
+  };
+
+  describe('accept (E1)', () => {
+    it('emits assignment.driver_assigned once, with the passenger id read in the take transaction', async () => {
+      const h = harness();
+
+      await h.service.accept(70, 7, COMPANY, {});
+
+      expect(h.events).toHaveLength(1);
+      expect(h.events[0]).toEqual({
+        name: 'assignment.driver_assigned',
+        payload: {
+          trip_request_id: TRIP_REQUEST,
+          passenger_id: 88,
+          assignment_id: 70,
+          driver_id: 7,
+          vehicle_id: 5,
+          company_id: COMPANY,
+          occurred_at: expect.any(String),
+        },
+      });
+    });
+
+    it('emits only after the transaction committed', async () => {
+      const h = harness();
+
+      await h.service.accept(70, 7, COMPANY, {});
+
+      expect(h.log).toEqual(['tx:start', 'tx:commit', 'emit:assignment.driver_assigned']);
+    });
+
+    it('a lost take (already_taken) emits nothing', async () => {
+      const h = harness({ assigned: false });
+
+      const result = await h.service.accept(70, 7, COMPANY, {});
+
+      expect(result.result).toBe('already_taken');
+      expect(h.events).toEqual([]);
+    });
+
+    it('an expired offer emits nothing', async () => {
+      const h = harness({ offer: { status: 'timeout' } });
+
+      await h.service.accept(70, 7, COMPANY, {});
+
+      expect(h.events).toEqual([]);
+    });
+
+    it('a trip without a passenger aborts the take instead of emitting an event without recipient', async () => {
+      const h = harness({ passenger: null });
+
+      await expect(h.service.accept(70, 7, COMPANY, {})).rejects.toThrow(/no passenger/);
+      expect(h.events).toEqual([]);
+    });
+  });
+
+  describe('cancelByDriver (E2a and E2b)', () => {
+    const ACCEPTED = { status: 'accepted' };
+
+    it('E2a: reopened trip -> emits cancelled_by_driver with pending_assignment and the passenger of the trip', async () => {
+      const h = harness({ offer: ACCEPTED, reopened: true, tripPassengerId: 91 });
+
+      const result = await h.service.cancelByDriver(70, 7, COMPANY, { reason: 'zz-centinela-razon-8841' });
+
+      expect(result).toMatchObject({ trip_request_status: 'pending_assignment', searching_again: true });
+      expect(h.events).toEqual([
+        {
+          name: 'assignment.cancelled_by_driver',
+          payload: {
+            assignment_id: 70,
+            trip_request_id: TRIP_REQUEST,
+            passenger_id: 91,
+            driver_id: 7,
+            reason: 'zz-centinela-razon-8841',
+            trip_request_status: 'pending_assignment',
+            occurred_at: expect.any(String),
+          },
+        },
+      ]);
+    });
+
+    it('E2b applied -> emits cancelled_by_driver with cancelled_by_driver', async () => {
+      const h = harness({ offer: ACCEPTED, reopened: false, closing: appliedClose, tripPassengerId: 92 });
+
+      const result = await h.service.cancelByDriver(70, 7, COMPANY, { reason: 'no puedo seguir' });
+
+      expect(result).toMatchObject({ trip_request_status: 'cancelled_by_driver', searching_again: false });
+      expect(h.events).toHaveLength(1);
+      expect(h.events[0]?.payload).toMatchObject({
+        passenger_id: 92,
+        trip_request_status: 'cancelled_by_driver',
+      });
+    });
+
+    it('E2b idempotent -> answers the driver as before but emits nothing', async () => {
+      const h = harness({
+        offer: ACCEPTED,
+        reopened: false,
+        closing: { ...appliedClose, kind: 'idempotent' },
+      });
+
+      const result = await h.service.cancelByDriver(70, 7, COMPANY, { reason: 'repetido' });
+
+      expect(result).toMatchObject({ trip_request_status: 'cancelled_by_driver', searching_again: false });
+      expect(h.events).toEqual([]);
+    });
+
+    it('a closing that is rejected -> 409 and nothing is emitted', async () => {
+      const h = harness({ offer: ACCEPTED, reopened: false });
+
+      await expect(
+        h.service.cancelByDriver(70, 7, COMPANY, { reason: 'motivo' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(h.events).toEqual([]);
+    });
+
+    it('an assignment that is not accepted -> 409 and nothing is emitted', async () => {
+      const h = harness({ offer: { status: 'notified' } });
+
+      await expect(
+        h.service.cancelByDriver(70, 7, COMPANY, { reason: 'motivo' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(h.events).toEqual([]);
+    });
+
+    it('reads the passenger BEFORE reopening the trip (the reopened row is invisible to the company)', async () => {
+      const h = harness({ offer: ACCEPTED, reopened: true });
+
+      await h.service.cancelByDriver(70, 7, COMPANY, { reason: 'motivo' });
+
+      const readOrder = h.repo.getTripPassengerId?.mock.invocationCallOrder[0] ?? Infinity;
+      const reopenOrder = h.repo.reopenTripRequest?.mock.invocationCallOrder[0] ?? 0;
+      expect(readOrder).toBeLessThan(reopenOrder);
+    });
+
+    it('emits only after the transaction committed', async () => {
+      const h = harness({ offer: ACCEPTED, reopened: true });
+
+      await h.service.cancelByDriver(70, 7, COMPANY, { reason: 'motivo' });
+
+      expect(h.log).toEqual(['tx:start', 'tx:commit', 'emit:assignment.cancelled_by_driver']);
+    });
+
+    it('a trip that cannot be read in the transaction -> 404 and nothing is emitted', async () => {
+      const h = harness({ offer: ACCEPTED, tripPassengerId: null });
+
+      await expect(
+        h.service.cancelByDriver(70, 7, COMPANY, { reason: 'motivo' }),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(h.events).toEqual([]);
+    });
   });
 });

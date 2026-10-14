@@ -165,16 +165,17 @@ export class TripsRepository {
     });
   }
 
-  async markNoDriverIfUnassigned(tripRequestId: number): Promise<boolean> {
-    const rows = await this.prisma.$queryRaw<Array<{ trip_request_id: number }>>`
+  async markNoDriverIfUnassigned(tripRequestId: number): Promise<{ passengerId: number } | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ passenger_id: number }>>`
       UPDATE trips.trip_request
          SET status = 'no_driver'::trips."TripStatus", updated_at = (now() AT TIME ZONE 'UTC')
        WHERE trip_request_id = ${tripRequestId}
          AND status = 'pending_assignment'::trips."TripStatus"
          AND company_id IS NULL
-      RETURNING trip_request_id
+      RETURNING passenger_id
     `;
-    return rows.length === 1;
+    const row = rows[0];
+    return row ? { passengerId: row.passenger_id } : null;
   }
 
   async markEnRoute(

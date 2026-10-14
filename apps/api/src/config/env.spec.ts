@@ -244,3 +244,60 @@ describe('validateEnv — driver location sharing', () => {
     ).toBe('');
   });
 });
+
+describe('validateEnv — passenger push (ADR-034 sections 3.3, 4.3, 8.1, 11)', () => {
+  it('defaults the notice lifetime to 300 s and the cap to 10 per trip without being mandatory', () => {
+    const env = validateEnv({ ...production });
+    expect([env.PASSENGER_PUSH_TTL_SEC, env.PASSENGER_PUSH_MAX_PER_TRIP]).toEqual([300, 10]);
+  });
+
+  it('reads the new variables when they are set', () => {
+    const env = validateEnv({ ...base, PASSENGER_PUSH_TTL_SEC: '120', PASSENGER_PUSH_MAX_PER_TRIP: '4' });
+    expect([env.PASSENGER_PUSH_TTL_SEC, env.PASSENGER_PUSH_MAX_PER_TRIP]).toEqual([120, 4]);
+  });
+
+  it.each([
+    ['PASSENGER_PUSH_TTL_SEC', '0'],
+    ['PASSENGER_PUSH_TTL_SEC', '-5'],
+    ['PASSENGER_PUSH_TTL_SEC', '1.5'],
+    ['PASSENGER_PUSH_MAX_PER_TRIP', '0'],
+    ['PASSENGER_PUSH_MAX_PER_TRIP', 'ten'],
+  ])('rejects %s=%s', (key, value) => {
+    expect(failureOf({ ...base, [key]: value })).toContain(key);
+  });
+
+  describe('PUSH_TOKEN_TTL_DAYS in production (C-10)', () => {
+    it('defaults to 60, which production accepts', () => {
+      expect(validateEnv({ ...production }).PUSH_TOKEN_TTL_DAYS).toBe(60);
+    });
+
+    it.each(['1', '30', '60'])('accepts %s days in production', (value) => {
+      expect(failureOf({ ...production, PUSH_TOKEN_TTL_DAYS: value })).toBe('');
+    });
+
+    it.each(['0', '61', '365'])('rejects %s days in production: 0 would silently switch the purge off', (value) => {
+      expect(failureOf({ ...production, PUSH_TOKEN_TTL_DAYS: value })).toContain('PUSH_TOKEN_TTL_DAYS');
+    });
+
+    it.each(['development', 'test'])('keeps 0 as "disabled" in %s', (nodeEnv) => {
+      expect(validateEnv({ ...base, NODE_ENV: nodeEnv, PUSH_TOKEN_TTL_DAYS: '0' }).PUSH_TOKEN_TTL_DAYS).toBe(0);
+    });
+  });
+
+  describe('RAILWAY_GIT_COMMIT_SHA (C-9)', () => {
+    it('is optional in every environment', () => {
+      expect(validateEnv({ ...production }).RAILWAY_GIT_COMMIT_SHA).toBeUndefined();
+      expect(validateEnv({ ...base }).RAILWAY_GIT_COMMIT_SHA).toBeUndefined();
+    });
+
+    it('is read as given when present; the health endpoint decides what to expose', () => {
+      expect(validateEnv({ ...production, RAILWAY_GIT_COMMIT_SHA: '65c2d01e3f5b' }).RAILWAY_GIT_COMMIT_SHA).toBe(
+        '65c2d01e3f5b',
+      );
+    });
+
+    it('a malformed value never stops the API from starting', () => {
+      expect(failureOf({ ...production, RAILWAY_GIT_COMMIT_SHA: 'not a sha' })).toBe('');
+    });
+  });
+});

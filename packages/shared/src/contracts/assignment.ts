@@ -129,6 +129,7 @@ export const ASSIGNMENT_EVENTS = {
   ASSIGNMENT_REJECTED: 'assignment.rejected',
   ASSIGNMENT_EXPIRED: 'assignment.expired',
   ASSIGNMENT_CANCELLED_BY_DRIVER: 'assignment.cancelled_by_driver',
+  SEARCH_EXHAUSTED: 'assignment.search_exhausted',
 } as const;
 export type AssignmentEventName = (typeof ASSIGNMENT_EVENTS)[keyof typeof ASSIGNMENT_EVENTS];
 
@@ -145,6 +146,7 @@ export type AssignmentCreatedEvent = z.infer<typeof AssignmentCreatedEvent>;
 
 export const DriverAssignedEvent = z.object({
   trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
   assignment_id: z.number().int().positive(),
   driver_id: z.number().int().positive(),
   vehicle_id: z.number().int().positive(),
@@ -174,9 +176,18 @@ export type AssignmentExpiredEvent = z.infer<typeof AssignmentExpiredEvent>;
 export const AssignmentCancelledByDriverEvent = z.object({
   assignment_id: z.number().int().positive(),
   trip_request_id: z.number().int().positive(),
+  passenger_id: z.number().int().positive(),
   driver_id: z.number().int().positive(),
   reason: z.string(),
   trip_request_status: TripStatus,
   occurred_at: z.string().datetime(),
 });
 export type AssignmentCancelledByDriverEvent = z.infer<typeof AssignmentCancelledByDriverEvent>;
+
+export const AssignmentSearchExhaustedEvent = z.object({
+  trip_request_id: z.number().int().positive(),
+  attempts_made: z.number().int().nonnegative(),
+  final_radius_km: z.number().positive(),
+  occurred_at: z.string().datetime(),
+});
+export type AssignmentSearchExhaustedEvent = z.infer<typeof AssignmentSearchExhaustedEvent>;

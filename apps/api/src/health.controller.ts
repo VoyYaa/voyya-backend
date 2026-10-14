@@ -1,11 +1,20 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { EnvService } from './config/env.service';
 import { Public } from './modules/auth/decorators/public.decorator';
 import {
   DatabasePreflightService,
   type DatabasePreflightResult,
 } from './infrastructure/prisma/database-preflight.service';
 import { PrismaService } from './infrastructure/prisma/prisma.service';
+import { toShortCommit } from './shared/short-commit';
+
+interface HealthResponse {
+  status: 'ok';
+  service: 'voyya-api';
+  ts: string;
+  commit: string | null;
+}
 
 interface DbHealthResponse {
   status: 'ok' | 'degraded';
@@ -19,11 +28,17 @@ export class HealthController {
   constructor(
     private readonly prisma: PrismaService,
     private readonly preflight: DatabasePreflightService,
+    private readonly env: EnvService,
   ) {}
 
   @Get()
-  check(): { status: 'ok'; service: 'voyya-api'; ts: string } {
-    return { status: 'ok', service: 'voyya-api', ts: new Date().toISOString() };
+  check(): HealthResponse {
+    return {
+      status: 'ok',
+      service: 'voyya-api',
+      ts: new Date().toISOString(),
+      commit: toShortCommit(this.env.get('RAILWAY_GIT_COMMIT_SHA')),
+    };
   }
 
   @Get('db')

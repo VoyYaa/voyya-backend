@@ -21,6 +21,7 @@ export interface TripRequestInfo {
 }
 
 export interface PassengerData {
+  passengerId: number;
   name: string;
   phone: string;
   pickupAddress: string;
@@ -108,6 +109,7 @@ export class AssignmentRepository {
     const t = await tx.tripRequest.findUnique({
       where: { tripRequestId },
       select: {
+        passengerId: true,
         pickupAddress: true,
         passenger: {
           select: { user: { select: { firstName: true, lastName: true, phone: true } } },
@@ -117,10 +119,22 @@ export class AssignmentRepository {
     if (!t) return null;
     const u = t.passenger.user;
     return {
+      passengerId: t.passengerId,
       name: `${u.firstName} ${u.lastName}`.trim(),
       phone: u.phone,
       pickupAddress: requireTripLocation(t.pickupAddress),
     };
+  }
+
+  async getTripPassengerId(
+    tx: Prisma.TransactionClient,
+    tripRequestId: number,
+  ): Promise<number | null> {
+    const t = await tx.tripRequest.findUnique({
+      where: { tripRequestId },
+      select: { passengerId: true },
+    });
+    return t ? t.passengerId : null;
   }
 
   async createOfferIfDriverFree(

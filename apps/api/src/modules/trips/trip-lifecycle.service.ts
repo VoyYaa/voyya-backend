@@ -13,6 +13,7 @@ import type {
   CompleteTripDTO,
   StartTripDTO,
   TripRequestCompletedEvent,
+  TripRequestDriverArrivedEvent,
   TripRequestNoShowEvent,
   TripStatus,
   TripTransitionResult,
@@ -62,16 +63,20 @@ export class TripLifecycleService {
     driverId: number,
     companyId: number,
   ): Promise<TripTransitionResult> {
-    const { outcome, graceMin } = await this.inOwnedTrip(
+    const { outcome, graceMin, passengerId } = await this.inOwnedTrip(
       tripRequestId,
       driverId,
       companyId,
       ['accepted'],
       async (tx) => {
         const marked = await this.repo.markArrived(tx, tripRequestId);
-        if (marked.kind === 'rejected') return { outcome: marked, graceMin: 0 };
+        if (marked.kind === 'rejected') return { outcome: marked, graceMin: 0, passengerId: null };
         const trip = await this.getTripRequestOrThrow(tripRequestId, tx);
-        return { outcome: marked, graceMin: await this.noShowGraceMinOf(trip, tx) };
+        return {
+          outcome: marked,
+          graceMin: await this.noShowGraceMinOf(trip, tx),
+          passengerId: trip.passengerId,
+        };
       },
     );
     if (outcome.kind === 'rejected') {
@@ -81,6 +86,17 @@ export class TripLifecycleService {
       });
     }
     const arrivedAt = outcome.row.arrivedAt;
+    if (outcome.kind === 'applied' && passengerId !== null) {
+      const ev: TripRequestDriverArrivedEvent = {
+        trip_request_id: tripRequestId,
+        passenger_id: passengerId,
+        driver_id: driverId,
+        company_id: companyId,
+        arrived_at: arrivedAt.toISOString(),
+        occurred_at: new Date().toISOString(),
+      };
+      this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_DRIVER_ARRIVED, ev);
+    }
     return {
       trip_request_id: tripRequestId,
       status: 'driver_en_route',

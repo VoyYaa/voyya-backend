@@ -1,6 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
-import { PushTokenPurgeService } from '../src/modules/assignment/push-token-purge.service';
-import { PushTokenRepository } from '../src/modules/assignment/push-token.repository';
+import { PushTokenPurgeService } from '../src/modules/notifications/push-token-purge.service';
+import { PushTokenRepository } from '../src/modules/notifications/push-token.repository';
 import type { EnvService } from '../src/config/env.service';
 import type { PrismaService } from '../src/infrastructure/prisma/prisma.service';
 

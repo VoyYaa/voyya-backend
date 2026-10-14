@@ -12,6 +12,7 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import {
   type ActiveTripResponse,
   type AssignmentCancelledByDriverEvent,
+  type AssignmentSearchExhaustedEvent,
   type CancelTripRequestDTO,
   type CreateTripRequestDTO,
   type FareBreakdown,
@@ -353,9 +354,9 @@ export class TripsService {
     };
   }
 
-  @OnEvent(TRIPS_EVENTS.TRIP_REQUEST_NO_DRIVER)
-  async onNoDriver(ev: TripRequestNoDriverEvent): Promise<void> {
-    await this.markNoDriver(ev.trip_request_id);
+  @OnEvent(ASSIGNMENT_EVENTS.SEARCH_EXHAUSTED)
+  async onSearchExhausted(ev: AssignmentSearchExhaustedEvent): Promise<void> {
+    await this.markNoDriver(ev);
   }
 
   @OnEvent(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER)
@@ -366,11 +367,22 @@ export class TripsService {
     this.emitTripRequestCreated(tripRequest);
   }
 
-  private async markNoDriver(tripRequestId: number): Promise<void> {
-    const applied = await this.repo.markNoDriverIfUnassigned(tripRequestId);
+  private async markNoDriver(exhausted: AssignmentSearchExhaustedEvent): Promise<void> {
+    const applied = await this.repo.markNoDriverIfUnassigned(exhausted.trip_request_id);
     if (!applied) {
-      this.logger.warn(`no_driver ignored tripRequest=${tripRequestId}: no longer pending without a company`);
+      this.logger.warn(
+        `no_driver ignored tripRequest=${exhausted.trip_request_id}: no longer pending without a company`,
+      );
+      return;
     }
+    const ev: TripRequestNoDriverEvent = {
+      trip_request_id: exhausted.trip_request_id,
+      passenger_id: applied.passengerId,
+      attempts_made: exhausted.attempts_made,
+      final_radius_km: exhausted.final_radius_km,
+      occurred_at: new Date().toISOString(),
+    };
+    this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_NO_DRIVER, ev);
   }
 
   private emitTripRequestCreated(tripRequest: TripRequest): void {

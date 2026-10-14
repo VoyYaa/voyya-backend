@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { Prisma } from '@prisma/client';
-import type { AssignedDriverSummary, CreateTripRequestDTO, DriverTracking } from '@voyyaa/shared';
+import type {
+  AssignedDriverSummary,
+  AssignmentSearchExhaustedEvent,
+  CreateTripRequestDTO,
+  DriverTracking,
+} from '@voyyaa/shared';
 import type { EnvService } from '../../config/env.service';
 import { RequestContextService } from '../../infrastructure/observability/request-context.service';
 import type { AssignmentService } from '../assignment/assignment.service';
@@ -151,9 +156,9 @@ function fakeRepo(state: FakeState, calls: FakeRepoCalls): TripsRepository {
     async getTripRequestForPassenger(): Promise<unknown> {
       return state.tripRequest ?? state.activeRow ?? null;
     },
-    async markNoDriverIfUnassigned(tripRequestId: number): Promise<boolean> {
+    async markNoDriverIfUnassigned(tripRequestId: number): Promise<{ passengerId: number } | null> {
       calls.noDriver.push(tripRequestId);
-      return state.noDriverApplied ?? true;
+      return (state.noDriverApplied ?? true) ? { passengerId: 55 } : null;
     },
   } as unknown as TripsRepository;
 }
@@ -868,31 +873,51 @@ describe('TripsService.getStatus · company fields (ADR-032 §7.2)', () => {
   });
 });
 
-describe('TripsService.onNoDriver (MD-05)', () => {
+describe('TripsService.onSearchExhausted (MD-05, ADR-034 E4)', () => {
+  const exhausted = (tripRequestId = 12): AssignmentSearchExhaustedEvent => ({
+    trip_request_id: tripRequestId,
+    attempts_made: 3,
+    final_radius_km: 5,
+    occurred_at: new Date().toISOString(),
+  });
+
   it('moves the trip to no_driver through the conditional update', async () => {
     const { service, calls } = createService();
 
-    await service.onNoDriver({
-      trip_request_id: 12,
-      attempts_made: 3,
-      final_radius_km: 5,
-      occurred_at: new Date().toISOString(),
-    });
+    await service.onSearchExhausted(exhausted());
 
     expect(calls.noDriver).toEqual([12]);
   });
 
-  it('a trip that was taken meanwhile is left alone and nothing throws', async () => {
-    const { service } = createService({ noDriverApplied: false });
+  it('applied -> emits trip_request.no_driver with the passenger the update returned', async () => {
+    const { service, emitter } = createService();
 
-    await expect(
-      service.onNoDriver({
-        trip_request_id: 12,
-        attempts_made: 3,
-        final_radius_km: 5,
-        occurred_at: new Date().toISOString(),
-      }),
-    ).resolves.toBeUndefined();
+    await service.onSearchExhausted(exhausted());
+
+    expect(emitter.emit).toHaveBeenCalledTimes(1);
+    expect(emitter.emit).toHaveBeenCalledWith('trip_request.no_driver', {
+      trip_request_id: 12,
+      passenger_id: 55,
+      attempts_made: 3,
+      final_radius_km: 5,
+      occurred_at: expect.any(String),
+    });
+  });
+
+  it('a trip that was taken meanwhile is left alone: nothing throws and no event is emitted', async () => {
+    const { service, emitter } = createService({ noDriverApplied: false });
+
+    await expect(service.onSearchExhausted(exhausted())).resolves.toBeUndefined();
+    expect(emitter.emit).not.toHaveBeenCalled();
+  });
+
+  it('is no longer subscribed to trip_request.no_driver: an emitted fact does not re-apply the transition', () => {
+    const subscribed = Reflect.getMetadata(
+      'EVENT_LISTENER_METADATA',
+      TripsService.prototype.onSearchExhausted,
+    ) as Array<{ event: string }>;
+
+    expect(subscribed.map((entry) => entry.event)).toEqual(['assignment.search_exhausted']);
   });
 });
 

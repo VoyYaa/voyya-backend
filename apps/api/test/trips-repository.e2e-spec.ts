@@ -263,7 +263,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
 
       const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
 
-      expect(applied).toBe(true);
+      expect(applied).toEqual({ passengerId: trip.passengerId });
       expect((await getTrip(trip.tripRequestId))?.status).toBe('no_driver');
     });
 
@@ -272,7 +272,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
 
       const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
 
-      expect(applied).toBe(false);
+      expect(applied).toBeNull();
       expect((await getTrip(trip.tripRequestId))?.status).toBe('assigned');
     });
 
@@ -281,7 +281,7 @@ suite('TripsRepository raw SQL transitions against real Postgres (ADR-009)', () 
 
       const applied = await repo.markNoDriverIfUnassigned(trip.tripRequestId);
 
-      expect(applied).toBe(false);
+      expect(applied).toBeNull();
       expect((await getTrip(trip.tripRequestId))?.status).toBe('pending_assignment');
     });
   });

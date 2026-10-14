@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { EnvService } from '../../config/env.service';
 import { AuthModule } from '../auth/auth.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 import { AssignmentController } from './assignment.controller';
 import { AssignmentRepository } from './assignment.repository';
 import { AssignmentService } from './assignment.service';
@@ -14,16 +15,13 @@ import { DriverShiftService } from './driver-shift.service';
 import { DriverTrackingService } from './driver-tracking.service';
 import { PUSH_PROVIDER } from './ports/push-provider.port';
 import { SMS_PROVIDER } from './ports/sms-provider.port';
-import { createPushProvider } from './providers/push.factory';
+import { AssignmentPushProvider } from './providers/assignment-push.provider';
 import { createSmsProvider } from './providers/sms.factory';
-import { PushTokenController } from './push-token.controller';
-import { PushTokenPurgeService } from './push-token-purge.service';
-import { PushTokenRepository } from './push-token.repository';
 import { TripClosingService } from './trip-closing.service';
 
 @Module({
-  imports: [AuthModule],
-  controllers: [AssignmentController, DriverController, PushTokenController],
+  imports: [AuthModule, NotificationsModule],
+  controllers: [AssignmentController, DriverController],
   providers: [
     AssignmentService,
     AssignmentRepository,
@@ -35,9 +33,7 @@ import { TripClosingService } from './trip-closing.service';
     DriverRepository,
     DriverLocationPurgeService,
     ConsentRevokedListener,
-    PushTokenRepository,
-    PushTokenPurgeService,
-    { provide: PUSH_PROVIDER, useFactory: createPushProvider, inject: [EnvService, PushTokenRepository] },
+    { provide: PUSH_PROVIDER, useClass: AssignmentPushProvider },
     { provide: SMS_PROVIDER, useFactory: createSmsProvider, inject: [EnvService] },
   ],
   exports: [AssignmentService, TripClosingService, DriverAvailabilityService, DriverTrackingService],

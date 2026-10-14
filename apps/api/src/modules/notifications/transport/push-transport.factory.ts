@@ -1,21 +1,21 @@
 import { EnvService } from '../../../config/env.service';
-import type { PushProvider } from '../ports/push-provider.port';
+import type { PushTransport } from '../ports/push-transport.port';
 import { PushTokenRepository } from '../push-token.repository';
-import { ExpoPushProvider } from './expo-push.provider';
-import { NoopPushProvider } from './noop-push.provider';
+import { ExpoPushTransport } from './expo-push.transport';
+import { NoopPushTransport } from './noop-push.transport';
 
-export function createPushProvider(env: EnvService, tokens: PushTokenRepository): PushProvider {
+export function createPushTransport(env: EnvService, tokens: PushTokenRepository): PushTransport {
   if (env.get('PUSH_PROVIDER') === 'expo') {
     const accessToken = env.get('EXPO_ACCESS_TOKEN');
     if (!accessToken) {
       throw new Error('PUSH: PUSH_PROVIDER=expo requires EXPO_ACCESS_TOKEN.');
     }
-    return new ExpoPushProvider(env, tokens, accessToken);
+    return new ExpoPushTransport(env, tokens, accessToken);
   }
 
   if (env.get('NODE_ENV') === 'production') {
     throw new Error('PUSH: the stub is forbidden in production. Set PUSH_PROVIDER=expo.');
   }
 
-  return new NoopPushProvider(env);
+  return new NoopPushTransport(env);
 }

@@ -12,6 +12,7 @@ import { AdminModule } from './modules/admin/admin.module';
 import { AffiliationModule } from './modules/affiliation/affiliation.module';
 import { AssignmentModule } from './modules/assignment/assignment.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 import { JwtAuthGuard } from './modules/auth/guards/jwt-auth.guard';
 import { PinChangeGuard } from './modules/auth/guards/pin-change.guard';
 import { RolesGuard } from './modules/auth/guards/roles.guard';
@@ -36,6 +37,7 @@ import { buildThrottlers } from './shared/throttlers';
     ServiceConfigModule,
     AuthModule,
     TripsModule,
+    NotificationsModule,
     AssignmentModule,
     AffiliationModule,
     AdminModule,

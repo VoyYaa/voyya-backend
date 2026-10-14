@@ -536,7 +536,7 @@ suite('Toma entre empresas, comisión y cancelación contra Postgres real como a
       const offerId = await createOffer(world.prisma, trip.tripRequestId, driver, companyA);
       expect((await accept(offerId, driver, companyA)).body.result).toBe('accepted');
 
-      await world.moduleRef.get(EventEmitter2).emitAsync('trip_request.no_driver', {
+      await world.moduleRef.get(EventEmitter2).emitAsync('assignment.search_exhausted', {
         trip_request_id: trip.tripRequestId,
         attempts_made: 3,
         final_radius_km: 5,

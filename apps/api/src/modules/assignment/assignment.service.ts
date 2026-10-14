@@ -17,6 +17,7 @@ import {
   type AssignmentExpiredEvent,
   type AssignmentNotification,
   type AssignmentRejectedEvent,
+  type AssignmentSearchExhaustedEvent,
   type AssignmentStatus,
   ASSIGNMENT_EVENTS,
   type AssignedDriverSummary,
@@ -27,7 +28,6 @@ import {
   type ServiceType,
   type TripRequestCancelledEvent,
   type TripRequestCreatedEvent,
-  type TripRequestNoDriverEvent,
   TRIPS_EVENTS,
 } from '@voyyaa/shared';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
@@ -92,7 +92,7 @@ type AcceptOutcome =
   | { kind: 'not_driver' }
   | { kind: 'expired' }
   | { kind: 'already_taken' }
-  | { kind: 'accepted'; tripRequestId: number; vehicleId: number; passenger: PassengerData | null };
+  | { kind: 'accepted'; tripRequestId: number; vehicleId: number; passenger: PassengerData };
 
 @Injectable()
 export class AssignmentService {
@@ -243,13 +243,13 @@ export class AssignmentService {
   }
 
   private emitNoDriver(tripRequestId: number, attempts: number, finalRadiusKm: number): void {
-    const ev: TripRequestNoDriverEvent = {
+    const ev: AssignmentSearchExhaustedEvent = {
       trip_request_id: tripRequestId,
       attempts_made: attempts,
       final_radius_km: finalRadiusKm > 0 ? finalRadiusKm : 1,
       occurred_at: new Date().toISOString(),
     };
-    this.emitter.emit(TRIPS_EVENTS.TRIP_REQUEST_NO_DRIVER, ev);
+    this.emitter.emit(ASSIGNMENT_EVENTS.SEARCH_EXHAUSTED, ev);
   }
 
   private armTimeout(assignmentId: number, tripRequestId: number, seconds: number): void {
@@ -369,6 +369,7 @@ export class AssignmentService {
       if (!acceptedOk) throw new TripRequestAlreadyTakenError();
 
       const passenger = await this.repo.getPassengerData(tx, a.tripRequestId);
+      if (!passenger) throw new Error(`Trip request ${a.tripRequestId} has no passenger`);
       return { kind: 'accepted', tripRequestId: a.tripRequestId, vehicleId: a.vehicleId, passenger };
     });
   }
@@ -384,6 +385,7 @@ export class AssignmentService {
 
     const ev: DriverAssignedEvent = {
       trip_request_id: accepted.tripRequestId,
+      passenger_id: accepted.passenger.passengerId,
       assignment_id: assignmentId,
       driver_id: driverId,
       vehicle_id: accepted.vehicleId,
@@ -398,9 +400,9 @@ export class AssignmentService {
       trip_request_id: accepted.tripRequestId,
       trip_request_status: 'assigned',
       passenger: {
-        name: accepted.passenger?.name ?? '',
-        contact_phone: accepted.passenger?.phone ?? null,
-        pickup_address: accepted.passenger?.pickupAddress ?? '',
+        name: accepted.passenger.name,
+        contact_phone: accepted.passenger.phone,
+        pickup_address: accepted.passenger.pickupAddress,
       },
     };
   }
@@ -559,6 +561,9 @@ export class AssignmentService {
       if (a.driverId !== driverId) return { kind: 'not_driver' as const };
       if (a.status !== 'accepted') return { kind: 'invalid_status' as const };
 
+      const passengerId = await this.repo.getTripPassengerId(tx, a.tripRequestId);
+      if (passengerId === null) return { kind: 'not_found' as const };
+
       const reopened = await this.repo.reopenTripRequest(tx, a.tripRequestId);
       if (reopened) {
         await this.repo.markCancelledByDriver(tx, assignmentId, companyId, dto.reason);
@@ -566,7 +571,9 @@ export class AssignmentService {
         return {
           kind: 'ok' as const,
           tripRequestId: a.tripRequestId,
+          passengerId,
           status: 'pending_assignment' as const,
+          applied: true,
         };
       }
 
@@ -580,7 +587,9 @@ export class AssignmentService {
         return {
           kind: 'ok' as const,
           tripRequestId: a.tripRequestId,
+          passengerId,
           status: 'cancelled_by_driver' as const,
+          applied: closed.kind === 'applied',
         };
       }
       return { kind: 'invalid_status' as const };
@@ -602,15 +611,18 @@ export class AssignmentService {
     this.clearTimer(assignmentId);
     this.chains.delete(r.tripRequestId);
 
-    const ev: AssignmentCancelledByDriverEvent = {
-      assignment_id: assignmentId,
-      trip_request_id: r.tripRequestId,
-      driver_id: driverId,
-      reason: dto.reason,
-      trip_request_status: r.status,
-      occurred_at: new Date().toISOString(),
-    };
-    this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER, ev);
+    if (r.applied) {
+      const ev: AssignmentCancelledByDriverEvent = {
+        assignment_id: assignmentId,
+        trip_request_id: r.tripRequestId,
+        passenger_id: r.passengerId,
+        driver_id: driverId,
+        reason: dto.reason,
+        trip_request_status: r.status,
+        occurred_at: new Date().toISOString(),
+      };
+      this.emitter.emit(ASSIGNMENT_EVENTS.ASSIGNMENT_CANCELLED_BY_DRIVER, ev);
+    }
 
     return {
       assignment_id: assignmentId,
