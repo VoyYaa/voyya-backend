@@ -153,7 +153,7 @@ suite('S-01: the OTP login only opens passenger sessions (real Postgres as app_v
       },
     );
 
-    it.each(STAFF_ROLES)('%s: the OTP is consumed and no attempt is counted', async (role) => {
+    it.each(STAFF_ROLES)('%s: the OTP is consumed and the right code counted one reserved attempt', async (role) => {
       const account = await createStaff(role);
       const otp = await requestCode(account.phone);
 
@@ -164,7 +164,7 @@ suite('S-01: the OTP login only opens passenger sessions (real Postgres as app_v
         orderBy: { id: 'desc' },
       });
       expect(row.consumed).toBe(true);
-      expect(row.attempts).toBe(0);
+      expect(row.attempts).toBe(1);
       const again = await verify(account.phone, otp);
       expect(again.status).toBe(410);
       expect(again.body.code).toBe('OTP_EXPIRED');

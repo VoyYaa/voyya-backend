@@ -74,7 +74,7 @@ try {
   await page.getByRole('button', { name: 'Enviar código' }).click();
   const otp = (
     await waitForLog(
-      new RegExp(String.raw`to=\*+${PHONE.slice(-4)} message=Tu código VoyYa es (\d+)`),
+      new RegExp(String.raw`to=\*+${PHONE.slice(-4)} message=Tu código VoyYa es (\d{6})`),
       mark,
       8000,
     )

@@ -53,7 +53,7 @@ async function requestOtp(phone) {
   const mark = Math.max(logMark() - 1, 0);
   const response = await http('POST', '/auth/otp/request', { body: { phone }, headers: asClient() });
   if (response.status !== 200) throw new Error(`otp request ${response.status} ${response.text}`);
-  const pattern = new RegExp(String.raw`to=\*+${phone.slice(-4)} message=Tu código VoyYa es (\d+)`);
+  const pattern = new RegExp(String.raw`to=\*+${phone.slice(-4)} message=Tu código VoyYa es (\d{6})`);
   const match = await waitForLog(pattern, mark, 4000);
   return { code: match[1], mark };
 }
@@ -241,8 +241,8 @@ for (const member of staff) {
   );
   check(
     'HU-S01-02',
-    `${member.role}: OTP consumida y sin intento extra (consumed=t, attempts=1 por el código incorrecto previo)`,
-    otpRow(member.phone) === 't|1',
+    `${member.role}: OTP consumida y con los dos intentos reservados (consumed=t, attempts=2: el código incorrecto previo y el correcto)`,
+    otpRow(member.phone) === 't|2',
     otpRow(member.phone),
   );
   const again = await verifyOtp(member.phone, code);

@@ -4,6 +4,7 @@ import { runMonitoredJob } from '../../infrastructure/observability/run-monitore
 import { cronOptions, SCHEDULED_JOBS } from '../../infrastructure/observability/scheduled-jobs';
 import { runWithAdvisoryLock } from '../../infrastructure/prisma/advisory-lock';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { otpRetentionSeconds } from './otp-policy';
 
 const LOCK_KEY = 91_001;
 
@@ -21,7 +22,8 @@ export class AuthCleanupService {
   private async run(): Promise<void> {
     await runWithAdvisoryLock(this.prisma, LOCK_KEY, async (tx) => {
       const otp = await tx.$executeRaw`
-        DELETE FROM auth.otp_code WHERE expires_at < now() OR consumed = true
+        DELETE FROM auth.otp_code
+         WHERE created_at <= timezone('utc', now()) - make_interval(secs => ${otpRetentionSeconds()}::int)
       `;
       const refresh = await tx.$executeRaw`
         DELETE FROM auth.refresh_token WHERE expires_at < now() OR revoked = true

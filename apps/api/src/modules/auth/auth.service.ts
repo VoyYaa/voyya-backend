@@ -1,8 +1,6 @@
 import {
   ForbiddenException,
-  GoneException,
   HttpException,
-  HttpStatus,
   Inject,
   Injectable,
   InternalServerErrorException,
@@ -21,6 +19,7 @@ import {
   type DriverSuspendedEvent,
   type LogoutDTO,
   type LogoutResponse,
+  OTP_LENGTH,
   type RefreshDTO,
   type RefreshResponse,
   type RequestOtpDTO,
@@ -33,12 +32,34 @@ import {
   type VerifyOtpDTO,
 } from '@voyyaa/shared';
 import { EnvService } from '../../config/env.service';
+import { captureError } from '../../infrastructure/observability/sentry';
 import { generateNumericCode } from '../../shared/numeric-code';
 import { SMS_PROVIDER, type SmsProvider } from '../assignment/ports/sms-provider.port';
-import { accountBlocked, invalidCredentials, invalidOtp, temporaryPinExpired } from './auth-errors';
-import { AuthRepository } from './auth.repository';
+import {
+  accountBlocked,
+  invalidCredentials,
+  invalidOtp,
+  OtpGlobalDailyCapReachedError,
+  otpExpired,
+  otpMaxAttempts,
+  otpRateLimit,
+  temporaryPinExpired,
+} from './auth-errors';
+import { AuthRepository, type IssueOtpOutcome } from './auth.repository';
 import { HASHER, type Hasher } from './hasher.service';
 import { lockoutAfterFailure } from './login-lockout';
+import { OtpIssueLimiter, OtpIssueSaturatedError } from './otp-issue-limiter';
+import {
+  crossesGlobalWarning,
+  decideRefusal,
+  OTP_GLOBAL_CAP_ALERT_INTERVAL_MS,
+  OTP_ISSUE_SATURATED_RETRY_SEC,
+  type OtpIssuancePolicy,
+  type OtpIssuanceVerdict,
+  type OtpRefusalCap,
+  reachesGlobalLimit,
+  readOtpIssuancePolicy,
+} from './otp-policy';
 import { RefreshTokenService } from './refresh-token.service';
 
 export interface SessionProfile {
@@ -52,6 +73,9 @@ export interface SessionProfile {
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
   private readonly dummyHash: Promise<string>;
+  private readonly issuing = new Set<string>();
+  private readonly issueLimiter = new OtpIssueLimiter();
+  private lastGlobalCapAlertAt: number | null = null;
 
   constructor(
     private readonly repo: AuthRepository,
@@ -68,51 +92,54 @@ export class AuthService {
   async requestOtp(dto: RequestOtpDTO): Promise<RequestOtpResponse> {
     const phone = normalizePhone(dto.phone);
 
-    const windowSec = this.env.get('OTP_RATE_LIMIT_WINDOW_SECONDS');
-    const since = new Date(Date.now() - windowSec * 1000);
-    const issued = await this.repo.countOtpSince(phone, since);
-    if (issued >= this.env.get('OTP_RATE_LIMIT_MAX')) {
-      throw this.otpRateLimit(windowSec);
-    }
-    const cooldown = this.env.get('OTP_RESEND_COOLDOWN_SECONDS');
-    const last = await this.repo.lastOtpCreatedAt(phone);
-    if (last) {
-      const elapsed = (Date.now() - last.getTime()) / 1000;
-      if (elapsed < cooldown) {
-        throw this.otpRateLimit(Math.ceil(cooldown - elapsed));
+    const policy = readOtpIssuancePolicy(this.env);
+
+    this.refuseIfCapped(await this.repo.evaluateOtpIssuance(phone, policy), policy);
+
+    if (this.issuing.has(phone)) throw this.refuse('busy', policy.cooldownSec);
+    this.issuing.add(phone);
+
+    let code = '';
+    let outcome: IssueOtpOutcome;
+    try {
+      code = generateNumericCode(OTP_LENGTH);
+      const codeHash = await this.hasher.hash(code);
+      outcome = await this.issueLimiter.run(() => this.repo.issueOtp({ phone, codeHash, policy }));
+    } catch (error) {
+      if (error instanceof OtpIssueSaturatedError) {
+        throw this.refuse('saturated', OTP_ISSUE_SATURATED_RETRY_SEC);
       }
+      throw error;
+    } finally {
+      this.issuing.delete(phone);
     }
 
-    const ttl = this.env.get('OTP_TTL_SECONDS');
-    const code = generateNumericCode(this.env.get('OTP_LENGTH'));
-    const hash = await this.hasher.hash(code);
-    await this.repo.createOtp(phone, hash, new Date(Date.now() + ttl * 1000));
+    if (outcome.kind === 'busy') throw this.refuse('busy', policy.cooldownSec);
+    if (outcome.kind === 'refused') {
+      this.refuseIfCapped(outcome.verdict, policy);
+      throw this.refuse('busy', policy.cooldownSec);
+    }
 
-    await this.sms.send(dto.phone, `Tu código VoyYa es ${code}`, 'otp');
+    this.reportGlobalUsage(outcome.globalCount, policy.globalLimit);
+    await this.deliverCode(dto.phone, code, outcome.insertedId);
 
-    return { sent: true, resend_in_sec: cooldown, expires_in_sec: ttl };
+    return { sent: true, resend_in_sec: policy.cooldownSec, expires_in_sec: policy.ttlSec };
   }
 
   async verifyOtp(dto: VerifyOtpDTO, userAgent?: string): Promise<SessionResponse> {
     const phone = normalizePhone(dto.phone);
-    const otp = await this.repo.getActiveOtp(phone);
-    if (!otp || otp.expiresAt.getTime() < Date.now()) {
-      throw new GoneException({ code: 'OTP_EXPIRED', message: 'El código venció, solicita otro' });
-    }
-    if (otp.attempts >= this.env.get('OTP_MAX_ATTEMPTS')) {
-      throw new HttpException(
-        { code: 'OTP_MAX_ATTEMPTS', message: 'Demasiados intentos, solicita otro código' },
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-    }
+    const maxAttempts = this.env.get('OTP_MAX_ATTEMPTS');
 
-    const ok = await this.hasher.compare(dto.code, otp.codeHash);
-    if (!ok) {
-      await this.repo.incrementOtpAttempts(otp.id);
-      throw invalidOtp();
-    }
+    const otpId = await this.repo.findLiveOtp(phone);
+    if (otpId === null) throw otpExpired();
 
-    const consumed = await this.repo.consumeOtp(otp.id);
+    const codeHash = await this.repo.reserveOtpAttempt(otpId, maxAttempts);
+    if (codeHash === null) throw await this.unreservedOtpError(otpId, maxAttempts);
+
+    const ok = await this.hasher.compare(dto.code, codeHash);
+    if (!ok) throw invalidOtp();
+
+    const consumed = await this.repo.consumeOtp(otpId);
     if (!consumed) {
       throw new UnauthorizedException({ code: 'OTP_INVALID', message: 'Código ya utilizado' });
     }
@@ -128,6 +155,59 @@ export class AuthService {
     }
 
     return this.issueSession(user, null, userAgent);
+  }
+
+  private async unreservedOtpError(otpId: number, maxAttempts: number): Promise<HttpException> {
+    const state = await this.repo.readOtpReservationState(otpId, maxAttempts);
+    const stillOpen = state !== null && state.alive && !state.consumed;
+    return stillOpen && state.exhausted ? otpMaxAttempts() : otpExpired();
+  }
+
+  private refuseIfCapped(verdict: OtpIssuanceVerdict, policy: OtpIssuancePolicy): void {
+    const refusal = decideRefusal(verdict.waits);
+    if (refusal === null) return;
+    if (refusal.globalCapReached) this.reportGlobalCapReached(verdict.globalCount, policy.globalLimit);
+    throw this.refuse(refusal.cap, refusal.retryInSec);
+  }
+
+  private refuse(cap: OtpRefusalCap, retryInSec: number): HttpException {
+    this.logger.warn({ msg: 'otp_issuance_refused', cap });
+    return otpRateLimit(retryInSec);
+  }
+
+  private reportGlobalUsage(globalCountBefore: number, limit: number): void {
+    if (crossesGlobalWarning(globalCountBefore, limit)) {
+      this.logger.warn({ msg: 'otp_global_daily_cap_warning', count: globalCountBefore + 1, limit });
+    }
+    if (reachesGlobalLimit(globalCountBefore, limit)) {
+      this.reportGlobalCapReached(globalCountBefore + 1, limit);
+    }
+  }
+
+  private reportGlobalCapReached(count: number, limit: number): void {
+    this.logger.warn({ msg: 'otp_global_daily_cap_reached', count, limit });
+    const now = Date.now();
+    const lastAlertAt = this.lastGlobalCapAlertAt;
+    if (lastAlertAt !== null && now - lastAlertAt < OTP_GLOBAL_CAP_ALERT_INTERVAL_MS) return;
+    this.lastGlobalCapAlertAt = now;
+    captureError(new OtpGlobalDailyCapReachedError(count, limit));
+  }
+
+  private async deliverCode(phone: string, code: string, insertedId: number): Promise<void> {
+    try {
+      await this.sms.send(phone, `Tu código VoyYa es ${code}`, 'otp');
+    } catch (error) {
+      await this.returnQuota(insertedId);
+      throw error;
+    }
+  }
+
+  private async returnQuota(insertedId: number): Promise<void> {
+    try {
+      await this.repo.refundOtpIssuance(insertedId);
+    } catch {
+      this.logger.warn({ msg: 'otp_refund_failed' });
+    }
   }
 
   async driverLogin(dto: DriverLoginDTO, userAgent?: string): Promise<SessionResponse> {
@@ -372,17 +452,6 @@ export class AuthService {
       code: 'STAFF_WITHOUT_COMPANY',
       message: 'Tu usuario no está vinculado a ninguna empresa',
     });
-  }
-
-  private otpRateLimit(retryInSec: number): HttpException {
-    return new HttpException(
-      {
-        code: 'OTP_RATE_LIMIT',
-        message: 'Demasiadas solicitudes de código, intenta más tarde',
-        retry_in_sec: retryInSec,
-      },
-      HttpStatus.TOO_MANY_REQUESTS,
-    );
   }
 }
 

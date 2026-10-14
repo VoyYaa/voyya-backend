@@ -301,3 +301,93 @@ describe('validateEnv — passenger push (ADR-034 sections 3.3, 4.3, 8.1, 11)', 
     });
   });
 });
+
+describe('validateEnv — OTP hardening (ADR-035 sections 7 and 10, P-13)', () => {
+  const OTP_WINDOW_VARIABLES = [
+    'OTP_RESEND_COOLDOWN_SECONDS',
+    'OTP_RATE_LIMIT_WINDOW_SECONDS',
+    'OTP_TTL_SECONDS',
+  ] as const;
+
+  it('defaults the new topes without making any variable mandatory', () => {
+    const env = validateEnv({ ...production });
+    expect(env.OTP_PHONE_DAILY_LIMIT).toBe(10);
+    expect(env.OTP_GLOBAL_DAILY_LIMIT).toBe(300);
+    expect(env.OTP_MAX_ATTEMPTS).toBe(5);
+    expect(env.OTP_TTL_SECONDS).toBe(300);
+    expect(env.OTP_RATE_LIMIT_MAX).toBe(5);
+  });
+
+  it('reads the new topes when they are set', () => {
+    const env = validateEnv({ ...base, OTP_PHONE_DAILY_LIMIT: '15', OTP_GLOBAL_DAILY_LIMIT: '1000' });
+    expect(env.OTP_PHONE_DAILY_LIMIT).toBe(15);
+    expect(env.OTP_GLOBAL_DAILY_LIMIT).toBe(1000);
+  });
+
+  it.each(['0', '-1', '1.5', 'abc'])('rejects OTP_PHONE_DAILY_LIMIT and OTP_GLOBAL_DAILY_LIMIT set to %s', (value) => {
+    expect(failureOf({ ...base, OTP_PHONE_DAILY_LIMIT: value })).toContain('OTP_PHONE_DAILY_LIMIT');
+    expect(failureOf({ ...base, OTP_GLOBAL_DAILY_LIMIT: value })).toContain('OTP_GLOBAL_DAILY_LIMIT');
+  });
+
+  it.each(OTP_WINDOW_VARIABLES)('rejects %s above 86400 seconds in every environment', (variable) => {
+    expect(failureOf({ ...base, NODE_ENV: 'development', [variable]: '86401' })).toContain(variable);
+    expect(failureOf({ ...base, NODE_ENV: 'test', [variable]: '86401' })).toContain(variable);
+    expect(failureOf({ ...production, [variable]: '86401' })).toContain(variable);
+  });
+
+  it('accepts a window of exactly 86400 seconds outside production', () => {
+    expect(failureOf({ ...base, NODE_ENV: 'development', OTP_RESEND_COOLDOWN_SECONDS: '86400' })).toBe('');
+    expect(failureOf({ ...base, NODE_ENV: 'development', OTP_RATE_LIMIT_WINDOW_SECONDS: '86400' })).toBe('');
+  });
+
+  it('drops OTP_LENGTH: a value left in the environment is ignored and cannot stop the start', () => {
+    for (const value of ['4', '8', '99', 'abc']) {
+      const env = validateEnv({ ...production, OTP_LENGTH: value }) as Record<string, unknown>;
+      expect(env).not.toHaveProperty('OTP_LENGTH');
+    }
+    expect(failureOf({ ...production, OTP_LENGTH: '4' })).toBe('');
+  });
+
+  describe('bounds that only apply in production (C-5)', () => {
+    it.each([
+      ['OTP_MAX_ATTEMPTS', '6'],
+      ['OTP_MAX_ATTEMPTS', '100'],
+      ['OTP_PHONE_DAILY_LIMIT', '21'],
+      ['OTP_TTL_SECONDS', '601'],
+    ])('rejects %s=%s in production', (variable, value) => {
+      expect(failureOf({ ...production, [variable]: value })).toContain(variable);
+    });
+
+    it.each([
+      ['OTP_MAX_ATTEMPTS', '5'],
+      ['OTP_MAX_ATTEMPTS', '1'],
+      ['OTP_PHONE_DAILY_LIMIT', '20'],
+      ['OTP_PHONE_DAILY_LIMIT', '1'],
+      ['OTP_TTL_SECONDS', '600'],
+      ['OTP_TTL_SECONDS', '60'],
+    ])('accepts %s=%s in production', (variable, value) => {
+      expect(failureOf({ ...production, [variable]: value })).toBe('');
+    });
+
+    it.each([
+      ['OTP_MAX_ATTEMPTS', '50'],
+      ['OTP_PHONE_DAILY_LIMIT', '500'],
+      ['OTP_TTL_SECONDS', '3600'],
+    ])('keeps %s=%s allowed outside production', (variable, value) => {
+      for (const nodeEnv of ['development', 'test']) {
+        expect(failureOf({ ...base, NODE_ENV: nodeEnv, [variable]: value })).toBe('');
+      }
+    });
+
+    it('explains in Spanish why the bound exists', () => {
+      expect(failureOf({ ...production, OTP_MAX_ATTEMPTS: '6' })).toMatch(/producción/);
+      expect(failureOf({ ...production, OTP_PHONE_DAILY_LIMIT: '21' })).toMatch(/producción/);
+      expect(failureOf({ ...production, OTP_TTL_SECONDS: '601' })).toMatch(/producción/);
+    });
+
+    it('does not bound OTP_RATE_LIMIT_MAX nor OTP_GLOBAL_DAILY_LIMIT in production', () => {
+      expect(failureOf({ ...production, OTP_RATE_LIMIT_MAX: '50' })).toBe('');
+      expect(failureOf({ ...production, OTP_GLOBAL_DAILY_LIMIT: '5000' })).toBe('');
+    });
+  });
+});

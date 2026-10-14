@@ -1,5 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
+import { type OtpIssuanceRow, otpIssuanceQuery, otpVerdictQuery, type OtpVerdictRow } from './otp-issuance-sql';
+import {
+  OTP_ISSUE_LOCK_NAMESPACE,
+  type OtpIssuancePolicy,
+  type OtpIssuanceVerdict,
+} from './otp-policy';
 
 export interface AuthUser {
   userId: number;
@@ -42,6 +49,31 @@ export interface CompanyIdentity {
   municipalityId: number;
   municipalityName: string;
 }
+
+export interface IssueOtpInput {
+  phone: string;
+  codeHash: string;
+  policy: OtpIssuancePolicy;
+}
+
+export type IssueOtpOutcome =
+  | { kind: 'busy' }
+  | { kind: 'refused'; verdict: OtpIssuanceVerdict }
+  | { kind: 'issued'; insertedId: number; globalCount: number };
+
+export interface OtpReservationState {
+  consumed: boolean;
+  alive: boolean;
+  exhausted: boolean;
+}
+
+const ISSUE_TRANSACTION_OPTIONS = {
+  isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+  maxWait: 2_000,
+  timeout: 5_000,
+} as const;
+
+const REQUIRED_ISOLATION = 'read committed';
 
 @Injectable()
 export class AuthRepository {
@@ -188,37 +220,72 @@ export class AuthRepository {
     return companies.map((c) => c.companyId);
   }
 
-  async countOtpSince(phone: string, since: Date): Promise<number> {
-    return this.prisma.otpCode.count({ where: { phone, createdAt: { gte: since } } });
+  async evaluateOtpIssuance(phone: string, policy: OtpIssuancePolicy): Promise<OtpIssuanceVerdict> {
+    const [row] = await this.prisma.$queryRaw<OtpVerdictRow[]>(otpVerdictQuery(phone, policy));
+    if (row === undefined) throw new Error('The OTP issuance verdict returned no row');
+    return toVerdict(row);
   }
 
-  async lastOtpCreatedAt(phone: string): Promise<Date | null> {
-    const row = await this.prisma.otpCode.findFirst({
-      where: { phone },
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
-    });
-    return row?.createdAt ?? null;
+  async issueOtp(input: IssueOtpInput): Promise<IssueOtpOutcome> {
+    return this.prisma.$transaction(async (tx) => {
+      const [lock] = await tx.$queryRaw<Array<{ locked: boolean; isolation: string }>>(Prisma.sql`
+        SELECT pg_try_advisory_xact_lock(${OTP_ISSUE_LOCK_NAMESPACE}::int, hashtext(${input.phone}::text)) AS locked,
+               current_setting('transaction_isolation') AS isolation`);
+      if (lock?.isolation !== REQUIRED_ISOLATION) {
+        throw new Error(`OTP issuance requires the ${REQUIRED_ISOLATION} isolation level`);
+      }
+      if (lock.locked !== true) return { kind: 'busy' } as const;
+
+      const [row] = await tx.$queryRaw<OtpIssuanceRow[]>(
+        otpIssuanceQuery(input.phone, input.codeHash, input.policy),
+      );
+      if (row === undefined) throw new Error('The OTP issuance statement returned no row');
+      if (row.inserted_id === null) return { kind: 'refused', verdict: toVerdict(row) } as const;
+      return { kind: 'issued', insertedId: row.inserted_id, globalCount: row.global_count } as const;
+    }, ISSUE_TRANSACTION_OPTIONS);
   }
 
-  async createOtp(phone: string, codeHash: string, expires: Date): Promise<void> {
-    await this.prisma.otpCode.create({
-      data: { phone, codeHash, expiresAt: expires },
-    });
+  async refundOtpIssuance(id: number): Promise<boolean> {
+    const deleted = await this.prisma.$executeRaw`
+      DELETE FROM auth.otp_code
+       WHERE id = ${id}
+         AND attempts = 0
+         AND consumed = false`;
+    return deleted === 1;
   }
 
-  async getActiveOtp(
-    phone: string,
-  ): Promise<{ id: number; codeHash: string; attempts: number; expiresAt: Date } | null> {
-    return this.prisma.otpCode.findFirst({
-      where: { phone, consumed: false },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, codeHash: true, attempts: true, expiresAt: true },
-    });
+  async findLiveOtp(phone: string): Promise<number | null> {
+    const [row] = await this.prisma.$queryRaw<Array<{ id: number }>>`
+      SELECT id
+        FROM auth.otp_code
+       WHERE phone = ${phone}
+         AND consumed = false
+         AND expires_at > timezone('utc', now())
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`;
+    return row?.id ?? null;
   }
 
-  async incrementOtpAttempts(id: number): Promise<void> {
-    await this.prisma.otpCode.update({ where: { id }, data: { attempts: { increment: 1 } } });
+  async reserveOtpAttempt(id: number, maxAttempts: number): Promise<string | null> {
+    const [row] = await this.prisma.$queryRaw<Array<{ code_hash: string }>>`
+      UPDATE auth.otp_code
+         SET attempts = attempts + 1
+       WHERE id = ${id}
+         AND consumed = false
+         AND expires_at > timezone('utc', now())
+         AND attempts < ${maxAttempts}::int
+      RETURNING code_hash`;
+    return row?.code_hash ?? null;
+  }
+
+  async readOtpReservationState(id: number, maxAttempts: number): Promise<OtpReservationState | null> {
+    const [row] = await this.prisma.$queryRaw<OtpReservationState[]>`
+      SELECT consumed,
+             expires_at > timezone('utc', now()) AS alive,
+             attempts >= ${maxAttempts}::int AS exhausted
+        FROM auth.otp_code
+       WHERE id = ${id}`;
+    return row ?? null;
   }
 
   async consumeOtp(id: number): Promise<boolean> {
@@ -228,6 +295,18 @@ export class AuthRepository {
     });
     return r.count === 1;
   }
+}
+
+function toVerdict(row: OtpVerdictRow): OtpIssuanceVerdict {
+  return {
+    waits: {
+      cooldown: row.cooldown_retry_sec,
+      hourly: row.hourly_retry_sec,
+      daily: row.daily_retry_sec,
+      global: row.global_retry_sec,
+    },
+    globalCount: row.global_count,
+  };
 }
 
 const userSelect = {

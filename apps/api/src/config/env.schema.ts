@@ -5,6 +5,7 @@ import {
 } from '@voyyaa/shared';
 import { z } from 'zod';
 import { isHttpsOrigin, parseCorsOrigins } from './cors-origins';
+import { OTP_DAILY_WINDOW_SECONDS } from './otp-limits';
 
 const ActiveServiceTypesFromEnv = z
   .string()
@@ -23,6 +24,12 @@ const ActiveServiceTypesFromEnv = z
   });
 
 const PUSH_TOKEN_TTL_DAYS_MAX = 60;
+
+const OTP_PRODUCTION_BOUNDS = [
+  { key: 'OTP_MAX_ATTEMPTS', max: 5, reason: 'más intentos por código multiplican la probabilidad de adivinarlo' },
+  { key: 'OTP_PHONE_DAILY_LIMIT', max: 20, reason: 'más códigos por día y por teléfono multiplican la probabilidad de adivinarlo' },
+  { key: 'OTP_TTL_SECONDS', max: 600, reason: 'un código que vive más tiempo da más margen para adivinarlo' },
+] as const;
 
 const BaseEnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -49,12 +56,13 @@ const BaseEnvSchema = z.object({
   JWT_REFRESH_TTL_DAYS: z.coerce.number().int().positive().default(30),
   BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
 
-  OTP_LENGTH: z.coerce.number().int().min(4).max(8).default(4),
-  OTP_TTL_SECONDS: z.coerce.number().int().positive().default(300),
+  OTP_TTL_SECONDS: z.coerce.number().int().positive().max(OTP_DAILY_WINDOW_SECONDS).default(300),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
-  OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().default(30),
+  OTP_RESEND_COOLDOWN_SECONDS: z.coerce.number().int().positive().max(OTP_DAILY_WINDOW_SECONDS).default(30),
   OTP_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(5),
-  OTP_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().default(3600),
+  OTP_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().max(OTP_DAILY_WINDOW_SECONDS).default(3600),
+  OTP_PHONE_DAILY_LIMIT: z.coerce.number().int().positive().default(10),
+  OTP_GLOBAL_DAILY_LIMIT: z.coerce.number().int().positive().default(300),
 
   LOGIN_MAX_ATTEMPTS: z.coerce.number().int().positive().default(5),
   LOGIN_BLOCK_MINUTES: z.coerce.number().int().positive().default(15),
@@ -178,6 +186,15 @@ export const EnvSchema = BaseEnvSchema.superRefine((env, ctx) => {
   }
 
   if (isProduction) {
+    for (const { key, max, reason } of OTP_PRODUCTION_BOUNDS) {
+      if (env[key] > max) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [key],
+          message: `${key} debe ser como máximo ${max} en producción (${reason})`,
+        });
+      }
+    }
     const maxPurgeHours = DRIVER_LOCATION_RETENTION_MAX_HOURS - 1;
     if (env.LOCATION_PURGE_HOURS < 1 || env.LOCATION_PURGE_HOURS > maxPurgeHours) {
       ctx.addIssue({

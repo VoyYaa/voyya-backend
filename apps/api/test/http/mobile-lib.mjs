@@ -60,7 +60,7 @@ export async function openPassengerPage(browser, phone) {
   await page.getByLabel('Número de celular').fill(phone);
   const mark = logMark();
   await page.getByRole('button', { name: 'Enviar código' }).click();
-  const pattern = new RegExp(String.raw`to=\*+${phone.slice(-4)} message=Tu código VoyYa es (\d+)`);
+  const pattern = new RegExp(String.raw`to=\*+${phone.slice(-4)} message=Tu código VoyYa es (\d{6})`);
   const otp = (await waitForLog(pattern, mark, 8000))[1];
   await page.waitForTimeout(1200);
   await page.keyboard.type(otp, { delay: 80 });

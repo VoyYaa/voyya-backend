@@ -5,6 +5,7 @@ import * as bcrypt from 'bcryptjs';
 import { randomInt } from 'node:crypto';
 import { PrismaService } from '../../src/infrastructure/prisma/prisma.service';
 import { SMS_PROVIDER } from '../../src/modules/assignment/ports/sms-provider.port';
+import { HASHER, type Hasher } from '../../src/modules/auth/hasher.service';
 import { AllExceptionsFilter } from '../../src/shared/all-exceptions.filter';
 
 export interface PinApp {
@@ -34,18 +35,25 @@ const BCRYPT_ROUNDS_FOR_TESTS = 10;
 const MUNICIPALITY_ID = 9131;
 const COMPANY_TAX_ID = '_pin-change-co';
 
-export async function bootPinApp(): Promise<PinApp> {
-  const url = process.env.PG_TEST_URL;
-  process.env.DATABASE_URL = url;
+export interface BootPinAppOptions {
+  hasher?: Hasher;
+  databaseUrl?: string;
+}
+
+export async function bootPinApp(options: BootPinAppOptions = {}): Promise<PinApp> {
+  process.env.DATABASE_URL = options.databaseUrl ?? process.env.PG_TEST_URL;
   process.env.LOGIN_MAX_ATTEMPTS = '3';
   process.env.LOGIN_BLOCK_MINUTES = '15';
 
   const sms = { send: jest.fn().mockResolvedValue(undefined) };
   const { AppModule } = await import('../../src/app.module');
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  const builder = Test.createTestingModule({ imports: [AppModule] })
     .overrideProvider(SMS_PROVIDER)
-    .useValue(sms)
-    .compile();
+    .useValue(sms);
+  const moduleRef = await (options.hasher
+    ? builder.overrideProvider(HASHER).useValue(options.hasher)
+    : builder
+  ).compile();
   const app = moduleRef.createNestApplication();
   app.useGlobalFilters(new AllExceptionsFilter());
   await app.init();

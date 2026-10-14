@@ -113,7 +113,7 @@ export async function passengerLogin(phone) {
   if (requested.status !== 200)
     throw new Error(`otp request ${requested.status} ${requested.text}`);
   const suffix = phone.slice(-4);
-  const pattern = new RegExp(String.raw`to=\*+${suffix} message=Tu código VoyYa es (\d+)`);
+  const pattern = new RegExp(String.raw`to=\*+${suffix} message=Tu código VoyYa es (\d{6})`);
   const match = await waitForLog(pattern, mark, 1500).catch(() => waitForLog(pattern, 0, 500));
   const verified = await http('POST', '/auth/otp/verify', { body: { phone, code: match[1] } });
   if (verified.status !== 200) throw new Error(`otp verify ${verified.status} ${verified.text}`);

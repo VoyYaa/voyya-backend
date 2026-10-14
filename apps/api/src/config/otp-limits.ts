@@ -1,0 +1,1 @@
+export const OTP_DAILY_WINDOW_SECONDS = 86_400;
