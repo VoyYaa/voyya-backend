@@ -108,7 +108,9 @@ async function capture(p: Promise<unknown>): Promise<HttpException> {
 }
 function code(e: HttpException): string {
   const r = e.getResponse();
-  return typeof r === 'object' && r !== null && 'code' in r ? String((r as { code: unknown }).code) : '';
+  return typeof r === 'object' && r !== null && 'code' in r
+    ? String((r as { code: unknown }).code)
+    : '';
 }
 
 const inFuture = (): Date => new Date(Date.now() + 60_000);
@@ -173,7 +175,11 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
     });
     expect(hasher.hash).toHaveBeenCalledTimes(1);
     expect(sms.send).toHaveBeenCalledTimes(1);
-    expect(sms.send).toHaveBeenCalledWith('3001112233', `Tu código VoyYa es ${codeSent(sms)}`, 'otp');
+    expect(sms.send).toHaveBeenCalledWith(
+      '3001112233',
+      `Tu código VoyYa es ${codeSent(sms)}`,
+      'otp',
+    );
   });
 
   it('normalizes the phone for the repository and sends the SMS to the number as typed', async () => {
@@ -182,7 +188,9 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
     await service.requestOtp({ phone: '+57 300 111 2233' });
 
     expect((repo as RepoMock).evaluateOtpIssuance.mock.calls[0]?.[0]).toBe('3001112233');
-    expect(((repo as RepoMock).issueOtp.mock.calls[0]?.[0] as { phone: string }).phone).toBe('3001112233');
+    expect(((repo as RepoMock).issueOtp.mock.calls[0]?.[0] as { phone: string }).phone).toBe(
+      '3001112233',
+    );
     expect(sms.send.mock.calls[0]?.[0]).toBe('+57 300 111 2233');
   });
 
@@ -223,6 +231,60 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
       sms.send.mock.invocationCallOrder[0],
     ] as number[];
     expect(order).toEqual([...order].sort((a, b) => a - b));
+  });
+
+  describe('the pre-check and the hash run inside the limiter turn (ADR-035 16.1, P-5)', () => {
+    it('with the turn held by phone A, phone B neither pre-checks nor hashes until A resolves', async () => {
+      const { service, repo, hasher } = create();
+      const hold = deferred<unknown>();
+      (repo as RepoMock).issueOtp.mockReturnValueOnce(hold.promise);
+
+      const first = service.requestOtp({ phone: '3001112233' });
+      await settle();
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
+
+      const second = service.requestOtp({ phone: '3001112244' });
+      await settle();
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
+
+      hold.resolve({ kind: 'issued', insertedId: 1, globalCount: 0 });
+      await first;
+      await second;
+
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(2);
+      expect(hasher.hash).toHaveBeenCalledTimes(2);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(2);
+    });
+
+    it('asks for the turn before any await: nothing is queried or hashed in the tick of the call', () => {
+      const { service, repo, hasher } = create();
+
+      const pending = service.requestOtp({ phone: '3001112233' });
+
+      expect((repo as RepoMock).evaluateOtpIssuance).not.toHaveBeenCalled();
+      expect(hasher.hash).not.toHaveBeenCalled();
+      return pending.then(() => undefined);
+    });
+
+    it('a cap exhausted at the pre-check is answered inside the turn and the turn is given back', async () => {
+      const { service, repo, hasher } = create();
+      (repo as RepoMock).evaluateOtpIssuance.mockResolvedValueOnce({
+        waits: { cooldown: 12, hourly: null, daily: null, global: null },
+        globalCount: 0,
+      });
+
+      const refused = await capture(service.requestOtp({ phone: '3001112233' }));
+      const next = await service.requestOtp({ phone: '3001112244' });
+
+      expect(refused.getResponse()).toMatchObject({ code: 'OTP_RATE_LIMIT', retry_in_sec: 12 });
+      expect(next.sent).toBe(true);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('a cap exhausted at the pre-check costs no hash and opens no transaction (P-5)', () => {
@@ -278,7 +340,7 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
   });
 
   describe('the in-process gate (ADR-035 3.2)', () => {
-    it('refuses a second request for a phone that is already being issued, with no hash', async () => {
+    it('refuses a second request for a phone that is already being issued, with no pre-check and no hash', async () => {
       const { service, repo, hasher } = create();
       const hold = deferred<unknown>();
       (repo as RepoMock).issueOtp.mockReturnValueOnce(hold.promise);
@@ -289,6 +351,7 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
 
       expect(second.getStatus()).toBe(429);
       expect(second.getResponse()).toMatchObject({ code: 'OTP_RATE_LIMIT', retry_in_sec: 30 });
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
       expect(hasher.hash).toHaveBeenCalledTimes(1);
       expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
 
@@ -310,7 +373,7 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
       expect(other.sent).toBe(true);
     });
 
-    it('checks and registers the phone synchronously: simultaneous requests in one tick hash once', async () => {
+    it('checks and registers the phone synchronously: simultaneous requests in one tick pre-check and hash once', async () => {
       const { service, repo, hasher } = create();
       const hold = deferred<unknown>();
       (repo as RepoMock).issueOtp.mockReturnValue(hold.promise);
@@ -327,6 +390,7 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
 
       expect(outcomes.filter((o) => o === 'ok')).toHaveLength(1);
       expect(outcomes.filter((o) => o === 429)).toHaveLength(9);
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
       expect(hasher.hash).toHaveBeenCalledTimes(1);
       expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
     });
@@ -364,12 +428,34 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
         await nextAttemptWorks(service);
       });
 
-      it('the pre-check fails', async () => {
-        const { service, repo } = create();
+      it('the pre-check fails: the turn and the gate are free, no hash and no transaction were spent', async () => {
+        const { service, repo, hasher } = create();
         (repo as RepoMock).evaluateOtpIssuance.mockRejectedValueOnce(new Error('db down'));
 
         await expect(service.requestOtp({ phone })).rejects.toThrow('db down');
+        expect(hasher.hash).not.toHaveBeenCalled();
+        expect((repo as RepoMock).issueOtp).not.toHaveBeenCalled();
 
+        await expect(service.requestOtp({ phone: '3001112299' })).resolves.toMatchObject({
+          sent: true,
+        });
+        await nextAttemptWorks(service);
+      });
+
+      it('a cap refused at the pre-check: the turn and the gate are free', async () => {
+        const { service, repo, hasher } = create();
+        (repo as RepoMock).evaluateOtpIssuance.mockResolvedValueOnce({
+          waits: { cooldown: null, hourly: 600, daily: null, global: null },
+          globalCount: 0,
+        });
+
+        const e = await capture(service.requestOtp({ phone }));
+        expect(e.getResponse()).toMatchObject({ retry_in_sec: 600 });
+        expect(hasher.hash).not.toHaveBeenCalled();
+
+        await expect(service.requestOtp({ phone: '3001112299' })).resolves.toMatchObject({
+          sent: true,
+        });
         await nextAttemptWorks(service);
       });
 
@@ -398,7 +484,10 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
         const { service, repo } = create();
         (repo as RepoMock).issueOtp.mockResolvedValueOnce({
           kind: 'refused',
-          verdict: { waits: { cooldown: 7, hourly: null, daily: null, global: null }, globalCount: 0 },
+          verdict: {
+            waits: { cooldown: 7, hourly: null, daily: null, global: null },
+            globalCount: 0,
+          },
         });
 
         const e = await capture(service.requestOtp({ phone }));
@@ -409,15 +498,19 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
 
       it('the SMS fails (the quota is returned and the phone is free)', async () => {
         const { service, sms } = create();
-        sms.send.mockRejectedValueOnce(new ServiceUnavailableException({ code: 'SMS_SEND_FAILED' }));
+        sms.send.mockRejectedValueOnce(
+          new ServiceUnavailableException({ code: 'SMS_SEND_FAILED' }),
+        );
 
-        await expect(service.requestOtp({ phone })).rejects.toBeInstanceOf(ServiceUnavailableException);
+        await expect(service.requestOtp({ phone })).rejects.toBeInstanceOf(
+          ServiceUnavailableException,
+        );
 
         await nextAttemptWorks(service);
       });
 
-      it('the limiter saturates', async () => {
-        const { service, repo } = create();
+      it('the limiter saturates: the refused request made no pre-check and no hash', async () => {
+        const { service, repo, hasher } = create();
         const hold = deferred<unknown>();
         (repo as RepoMock).issueOtp.mockReturnValue(hold.promise);
         const running = Array.from({ length: 6 }, (_, i) =>
@@ -426,6 +519,8 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
         await settle();
         const e = await capture(service.requestOtp({ phone }));
         expect(e.getStatus()).toBe(429);
+        expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+        expect(hasher.hash).toHaveBeenCalledTimes(1);
         expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
 
         hold.resolve({ kind: 'issued', insertedId: 1, globalCount: 0 });
@@ -435,12 +530,12 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
     });
   });
 
-  describe('the in-process limiter of issuing transactions (ADR-035 3.5)', () => {
+  describe('the in-process limiter of issuing turns (ADR-035 3.5 and 16)', () => {
     afterEach(() => {
       jest.useRealTimers();
     });
 
-    it('opens one transaction at a time and refuses the seventh simultaneous phone with 429 and a 5 s wait, without a transaction', async () => {
+    it('serves one turn at a time: a burst of 7 phones runs 1 pre-check, 1 hash and 1 transaction while the turn is held', async () => {
       const { service, repo, hasher } = create();
       const hold = deferred<unknown>();
       (repo as RepoMock).issueOtp.mockReturnValue(hold.promise);
@@ -453,8 +548,10 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
       );
       await settle();
 
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
       expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
-      expect(hasher.hash).toHaveBeenCalledTimes(7);
+
       hold.resolve({ kind: 'issued', insertedId: 1, globalCount: 0 });
       const outcomes = await Promise.all(burst);
       const refused = outcomes.filter((o): o is HttpException => o !== 'ok');
@@ -466,26 +563,63 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
         message: 'Demasiadas solicitudes de código, intenta más tarde',
         retry_in_sec: 5,
       });
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(6);
+      expect(hasher.hash).toHaveBeenCalledTimes(6);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(6);
     });
 
-    it('refuses with a 5 s wait a request whose turn does not come in 3 s, and opens no transaction for it', async () => {
+    it('the seventh phone is refused with 5 s while the turn is held, before it queries, hashes or opens a transaction', async () => {
+      const { service, repo, hasher } = create();
+      const hold = deferred<unknown>();
+      (repo as RepoMock).issueOtp.mockReturnValue(hold.promise);
+      const running = Array.from({ length: 6 }, (_, i) =>
+        service.requestOtp({ phone: `30011340${i}0` }).catch(() => undefined),
+      );
+      await settle();
+
+      const refused = await capture(service.requestOtp({ phone: '3001134099' }));
+
+      expect(refused.getResponse()).toMatchObject({ code: 'OTP_RATE_LIMIT', retry_in_sec: 5 });
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
+      expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
+
+      hold.resolve({ kind: 'issued', insertedId: 1, globalCount: 0 });
+      await Promise.all(running);
+    });
+
+    it('refuses with a 5 s wait a request whose turn does not come in 6 s: no refusal at 5,999 ms, refusal at 6,001 ms, with no pre-check and no hash', async () => {
       jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
-      const { service, repo } = create();
+      const { service, repo, hasher } = create();
       const hold = deferred<unknown>();
       (repo as RepoMock).issueOtp.mockReturnValueOnce(hold.promise);
 
       const first = service.requestOtp({ phone: '3001114401' });
       await settle();
+      let settled = false;
       const waiting = service.requestOtp({ phone: '3001114402' }).then(
         () => 'ok' as const,
         (e: HttpException) => e,
       );
+      void waiting.then(() => {
+        settled = true;
+      });
       await settle();
-      await jest.advanceTimersByTimeAsync(3_001);
+
+      await jest.advanceTimersByTimeAsync(5_999);
+      await settle();
+      expect(settled).toBe(false);
+
+      await jest.advanceTimersByTimeAsync(2);
       const outcome = await waiting;
 
       expect(outcome).toBeInstanceOf(HttpException);
-      expect((outcome as HttpException).getResponse()).toMatchObject({ code: 'OTP_RATE_LIMIT', retry_in_sec: 5 });
+      expect((outcome as HttpException).getResponse()).toMatchObject({
+        code: 'OTP_RATE_LIMIT',
+        retry_in_sec: 5,
+      });
+      expect((repo as RepoMock).evaluateOtpIssuance).toHaveBeenCalledTimes(1);
+      expect(hasher.hash).toHaveBeenCalledTimes(1);
       expect((repo as RepoMock).issueOtp).toHaveBeenCalledTimes(1);
 
       hold.resolve({ kind: 'issued', insertedId: 1, globalCount: 0 });
@@ -510,8 +644,15 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
   describe('the quota is returned when the SMS fails (ADR-035 3.7)', () => {
     it('deletes the inserted row and answers the provider error', async () => {
       const { service, repo, sms } = create();
-      (repo as RepoMock).issueOtp.mockResolvedValue({ kind: 'issued', insertedId: 42, globalCount: 5 });
-      const failure = new ServiceUnavailableException({ code: 'SMS_SEND_FAILED', message: 'No se pudo enviar el SMS' });
+      (repo as RepoMock).issueOtp.mockResolvedValue({
+        kind: 'issued',
+        insertedId: 42,
+        globalCount: 5,
+      });
+      const failure = new ServiceUnavailableException({
+        code: 'SMS_SEND_FAILED',
+        message: 'No se pudo enviar el SMS',
+      });
       sms.send.mockRejectedValueOnce(failure);
 
       const e = await capture(service.requestOtp({ phone: '3001112233' }));
@@ -599,7 +740,10 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
       const { service, repo } = create();
       (repo as RepoMock).issueOtp.mockResolvedValue({
         kind: 'refused',
-        verdict: { waits: { cooldown: null, hourly: 55, daily: null, global: null }, globalCount: 0 },
+        verdict: {
+          waits: { cooldown: null, hourly: 55, daily: null, global: null },
+          globalCount: 0,
+        },
       });
 
       await capture(service.requestOtp({ phone: PHONE }));
@@ -634,11 +778,19 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
 
     it('warns at 80%: the emission that makes the count reach 240 of 300', async () => {
       const { service, repo } = create();
-      (repo as RepoMock).issueOtp.mockResolvedValue({ kind: 'issued', insertedId: 1, globalCount: 239 });
+      (repo as RepoMock).issueOtp.mockResolvedValue({
+        kind: 'issued',
+        insertedId: 1,
+        globalCount: 239,
+      });
 
       await service.requestOtp({ phone: PHONE });
 
-      expect(warn).toHaveBeenCalledWith({ msg: 'otp_global_daily_cap_warning', count: 240, limit: 300 });
+      expect(warn).toHaveBeenCalledWith({
+        msg: 'otp_global_daily_cap_warning',
+        count: 240,
+        limit: 300,
+      });
       expect(captureError).not.toHaveBeenCalled();
       expect(everythingLogged()).not.toContain(PHONE);
     });
@@ -646,26 +798,42 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
     it('does not warn before 80% nor after it', async () => {
       const { service, repo } = create();
       for (const globalCount of [10, 238, 240, 270]) {
-        (repo as RepoMock).issueOtp.mockResolvedValueOnce({ kind: 'issued', insertedId: 1, globalCount });
+        (repo as RepoMock).issueOtp.mockResolvedValueOnce({
+          kind: 'issued',
+          insertedId: 1,
+          globalCount,
+        });
         await service.requestOtp({ phone: `30011770${String(globalCount).slice(-2)}` });
       }
 
-      expect(warn).not.toHaveBeenCalledWith(expect.objectContaining({ msg: 'otp_global_daily_cap_warning' }));
+      expect(warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ msg: 'otp_global_daily_cap_warning' }),
+      );
     });
 
     it('at 100% logs otp_global_daily_cap_reached and raises one Sentry event that is a plain Error', async () => {
       const { service, repo } = create();
-      (repo as RepoMock).issueOtp.mockResolvedValue({ kind: 'issued', insertedId: 1, globalCount: 299 });
+      (repo as RepoMock).issueOtp.mockResolvedValue({
+        kind: 'issued',
+        insertedId: 1,
+        globalCount: 299,
+      });
 
       await service.requestOtp({ phone: PHONE });
 
-      expect(warn).toHaveBeenCalledWith({ msg: 'otp_global_daily_cap_reached', count: 300, limit: 300 });
+      expect(warn).toHaveBeenCalledWith({
+        msg: 'otp_global_daily_cap_reached',
+        count: 300,
+        limit: 300,
+      });
       expect(captureError).toHaveBeenCalledTimes(1);
       const raised = (captureError as jest.Mock).mock.calls[0]?.[0];
       expect(raised).toBeInstanceOf(OtpGlobalDailyCapReachedError);
       expect(raised).toBeInstanceOf(Error);
       expect(raised).not.toBeInstanceOf(HttpException);
-      expect(String((raised as Error).message)).toBe('OTP global daily cap reached: count=300 limit=300');
+      expect(String((raised as Error).message)).toBe(
+        'OTP global daily cap reached: count=300 limit=300',
+      );
       expect(String((raised as Error).message)).not.toContain(PHONE);
     });
 
@@ -678,7 +846,11 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
 
       await capture(service.requestOtp({ phone: PHONE }));
 
-      expect(warn).toHaveBeenCalledWith({ msg: 'otp_global_daily_cap_reached', count: 300, limit: 300 });
+      expect(warn).toHaveBeenCalledWith({
+        msg: 'otp_global_daily_cap_reached',
+        count: 300,
+        limit: 300,
+      });
       expect(captureError).toHaveBeenCalledTimes(1);
     });
 
@@ -691,7 +863,8 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
         globalCount: 300,
       });
 
-      for (let i = 0; i < 20; i += 1) await capture(service.requestOtp({ phone: `30011880${String(i).padStart(2, '0')}` }));
+      for (let i = 0; i < 20; i += 1)
+        await capture(service.requestOtp({ phone: `30011880${String(i).padStart(2, '0')}` }));
       expect(captureError).toHaveBeenCalledTimes(1);
 
       now.mockReturnValue(start + 59 * 60_000);
@@ -701,7 +874,11 @@ describe('AuthService.requestOtp (ADR-035 section 3.1)', () => {
       now.mockReturnValue(start + 61 * 60_000);
       await capture(service.requestOtp({ phone: '3001188098' }));
       expect(captureError).toHaveBeenCalledTimes(2);
-      expect(warn.mock.calls.filter(([m]) => (m as { msg?: string }).msg === 'otp_global_daily_cap_reached').length).toBe(22);
+      expect(
+        warn.mock.calls.filter(
+          ([m]) => (m as { msg?: string }).msg === 'otp_global_daily_cap_reached',
+        ).length,
+      ).toBe(22);
     });
 
     it('never puts the code in any log, in the happy path or in the refund path', async () => {
@@ -760,7 +937,10 @@ describe('AuthService.verifyOtp (ADR-035 section 1: reserve the attempt before c
     const e = await capture(service.verifyOtp({ phone: '3001112233', code: '123456' }));
 
     expect(e).toBeInstanceOf(GoneException);
-    expect(e.getResponse()).toEqual({ code: 'OTP_EXPIRED', message: 'El código venció, solicita otro' });
+    expect(e.getResponse()).toEqual({
+      code: 'OTP_EXPIRED',
+      message: 'El código venció, solicita otro',
+    });
     expect((repo as RepoMock).reserveOtpAttempt).not.toHaveBeenCalled();
     expect(hasher.compare).not.toHaveBeenCalled();
   });
@@ -799,7 +979,9 @@ describe('AuthService.verifyOtp (ADR-035 section 1: reserve the attempt before c
     liveOtpFor(repo, '123456');
     (hasher.compare as jest.Mock).mockRejectedValueOnce(new Error('bcrypt exploded'));
 
-    await expect(service.verifyOtp({ phone: '3001112233', code: '123456' })).rejects.toThrow('bcrypt exploded');
+    await expect(service.verifyOtp({ phone: '3001112233', code: '123456' })).rejects.toThrow(
+      'bcrypt exploded',
+    );
 
     expect((repo as RepoMock).reserveOtpAttempt).toHaveBeenCalledTimes(1);
     expect((repo as RepoMock).consumeOtp).not.toHaveBeenCalled();
@@ -812,10 +994,30 @@ describe('AuthService.verifyOtp (ADR-035 section 1: reserve the attempt before c
       ['the row no longer exists', null, 410, 'OTP_EXPIRED'],
       ['the row was consumed meanwhile', { ...live, consumed: true }, 410, 'OTP_EXPIRED'],
       ['the row expired meanwhile', { ...live, alive: false }, 410, 'OTP_EXPIRED'],
-      ['the row was consumed and also exhausted', { ...live, consumed: true, exhausted: true }, 410, 'OTP_EXPIRED'],
-      ['the row expired and also exhausted', { ...live, alive: false, exhausted: true }, 410, 'OTP_EXPIRED'],
-      ['the row is alive, unconsumed and exhausted', { ...live, exhausted: true }, 429, 'OTP_MAX_ATTEMPTS'],
-      ['the row is alive, unconsumed and still has free attempts (should not happen)', live, 410, 'OTP_EXPIRED'],
+      [
+        'the row was consumed and also exhausted',
+        { ...live, consumed: true, exhausted: true },
+        410,
+        'OTP_EXPIRED',
+      ],
+      [
+        'the row expired and also exhausted',
+        { ...live, alive: false, exhausted: true },
+        410,
+        'OTP_EXPIRED',
+      ],
+      [
+        'the row is alive, unconsumed and exhausted',
+        { ...live, exhausted: true },
+        429,
+        'OTP_MAX_ATTEMPTS',
+      ],
+      [
+        'the row is alive, unconsumed and still has free attempts (should not happen)',
+        live,
+        410,
+        'OTP_EXPIRED',
+      ],
     ])('%s', async (_case, state, status, expectedCode) => {
       const { service, repo, hasher } = create();
       (repo as RepoMock).findLiveOtp.mockResolvedValue(9);
@@ -836,7 +1038,11 @@ describe('AuthService.verifyOtp (ADR-035 section 1: reserve the attempt before c
       const { service, repo } = create();
       (repo as RepoMock).findLiveOtp.mockResolvedValue(9);
       (repo as RepoMock).reserveOtpAttempt.mockResolvedValue(null);
-      (repo as RepoMock).readOtpReservationState.mockResolvedValue({ consumed: false, alive: true, exhausted: true });
+      (repo as RepoMock).readOtpReservationState.mockResolvedValue({
+        consumed: false,
+        alive: true,
+        exhausted: true,
+      });
 
       const e = await capture(service.verifyOtp({ phone: '3001112233', code: '123456' }));
 
@@ -876,7 +1082,10 @@ describe('AuthService.driverLogin', () => {
 
   it('wrong PIN (below cap) -> 401 INVALID_CREDENTIALS and records failure', async () => {
     const { service, repo } = create();
-    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 0 });
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      failedAttempts: 0,
+    });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
     expect((repo as RepoMock).registerDriverFailure).toHaveBeenCalledWith(5, 2, null);
     expect(e).toBeInstanceOf(UnauthorizedException);
@@ -885,7 +1094,10 @@ describe('AuthService.driverLogin', () => {
 
   it('wrong PIN reaching the cap -> 429 ACCOUNT_TEMPORARILY_BLOCKED', async () => {
     const { service, repo } = create();
-    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, failedAttempts: 2 });
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      failedAttempts: 2,
+    });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '0000' }));
     const call = (repo as RepoMock).registerDriverFailure.mock.calls[0];
     expect(call?.[1]).toBe(2);
@@ -906,7 +1118,10 @@ describe('AuthService.driverLogin', () => {
 
   it('suspended driver -> 403 ACCOUNT_SUSPENDED', async () => {
     const { service, repo } = create();
-    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({ ...driverBase, status: 'suspended' });
+    (repo as RepoMock).getDriverByNationalId.mockResolvedValue({
+      ...driverBase,
+      status: 'suspended',
+    });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
     expect(e).toBeInstanceOf(ForbiddenException);
     expect(code(e)).toBe('ACCOUNT_SUSPENDED');
@@ -926,7 +1141,7 @@ describe('AuthService.driverLogin', () => {
       pinDeliveredAt: null,
     });
     const e = await capture(service.driverLogin({ national_id: '71000001', pin: '1234' }));
-    expect((hasher.compare as jest.Mock)).toHaveBeenCalledWith('1234', 'hashed:1234');
+    expect(hasher.compare as jest.Mock).toHaveBeenCalledWith('1234', 'hashed:1234');
     expect(e).toBeInstanceOf(ForbiddenException);
     expect(code(e)).toBe('PIN_NOT_DELIVERED');
   });
@@ -1153,7 +1368,10 @@ describe('AuthService.adminLogin', () => {
 describe('AuthService.refresh / logout / revocation', () => {
   it('refresh: uses the rotated token, issues a new access and returns the user', async () => {
     const { service, repo, refreshTokens } = create();
-    (refreshTokens as RefreshMock).rotate.mockResolvedValue({ userId: 5, refreshToken: 'new-refresh' });
+    (refreshTokens as RefreshMock).rotate.mockResolvedValue({
+      userId: 5,
+      refreshToken: 'new-refresh',
+    });
     (repo as RepoMock).getUser.mockResolvedValue({
       ...driverBase,
       userId: 5,
@@ -1466,20 +1684,23 @@ describe('AuthService.verifyOtp: the OTP only opens passenger sessions (S-01)', 
     expect(hasher.hash).not.toHaveBeenCalled();
   });
 
-  it.each(STAFF_ROLES)('%s rejection logs user_id and role, never the phone nor the code', async (role) => {
-    const { service, repo } = create();
-    liveOtpFor(repo);
-    (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role, { userId: 77 }));
+  it.each(STAFF_ROLES)(
+    '%s rejection logs user_id and role, never the phone nor the code',
+    async (role) => {
+      const { service, repo } = create();
+      liveOtpFor(repo);
+      (repo as RepoMock).getUserByPhone.mockResolvedValue(accountWithRole(role, { userId: 77 }));
 
-    await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+      await capture(service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
 
-    expect(warn).toHaveBeenCalledTimes(1);
-    const line = String(warn.mock.calls[0]?.[0]);
-    expect(line).toContain('user_id=77');
-    expect(line).toContain(`role=${role}`);
-    expect(line).not.toContain(OTP_PHONE);
-    expect(line).not.toContain(OTP_CODE);
-  });
+      expect(warn).toHaveBeenCalledTimes(1);
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).toContain('user_id=77');
+      expect(line).toContain(`role=${role}`);
+      expect(line).not.toContain(OTP_PHONE);
+      expect(line).not.toContain(OTP_CODE);
+    },
+  );
 
   it('suspended passenger -> 403 ACCOUNT_SUSPENDED (as before)', async () => {
     const { service, repo, refreshTokens } = create();
@@ -1526,7 +1747,9 @@ describe('AuthService.verifyOtp: the OTP only opens passenger sessions (S-01)', 
   it('keeps the OTP error ladder: expired 410, attempts cap 429, consume lost 401 "Código ya utilizado"', async () => {
     const expired = create();
     (expired.repo as RepoMock).findLiveOtp.mockResolvedValue(null);
-    const expiredError = await capture(expired.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+    const expiredError = await capture(
+      expired.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }),
+    );
     expect(expiredError.getStatus()).toBe(410);
 
     const capped = create();
@@ -1537,7 +1760,9 @@ describe('AuthService.verifyOtp: the OTP only opens passenger sessions (S-01)', 
       alive: true,
       exhausted: true,
     });
-    const cappedError = await capture(capped.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
+    const cappedError = await capture(
+      capped.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }),
+    );
     expect(cappedError.getStatus()).toBe(429);
     expect(capped.hasher.compare).not.toHaveBeenCalled();
 
@@ -1545,7 +1770,10 @@ describe('AuthService.verifyOtp: the OTP only opens passenger sessions (S-01)', 
     liveOtpFor(lost.repo);
     (lost.repo as RepoMock).consumeOtp.mockResolvedValue(false);
     const lostError = await capture(lost.service.verifyOtp({ phone: OTP_PHONE, code: OTP_CODE }));
-    expect(lostError.getResponse()).toEqual({ code: 'OTP_INVALID', message: 'Código ya utilizado' });
+    expect(lostError.getResponse()).toEqual({
+      code: 'OTP_INVALID',
+      message: 'Código ya utilizado',
+    });
   });
 });
 
@@ -1567,24 +1795,30 @@ describe('AuthService.issueSession: company roles need a company (S-01, defense 
     },
   );
 
-  it.each(['passenger', 'platform_admin'])('%s without a company still gets the session', async (role) => {
-    const { service, refreshTokens, emitter } = create();
+  it.each(['passenger', 'platform_admin'])(
+    '%s without a company still gets the session',
+    async (role) => {
+      const { service, refreshTokens, emitter } = create();
 
-    const r = await service.issueSession(profile(role), null);
+      const r = await service.issueSession(profile(role), null);
 
-    expect(r.user.role).toBe(role);
-    expect(r.user.tenant).toBeNull();
-    expect((refreshTokens as RefreshMock).issue).toHaveBeenCalledTimes(1);
-    expect((emitter as { emit: jest.Mock }).emit).toHaveBeenCalledTimes(1);
-  });
+      expect(r.user.role).toBe(role);
+      expect(r.user.tenant).toBeNull();
+      expect((refreshTokens as RefreshMock).issue).toHaveBeenCalledTimes(1);
+      expect((emitter as { emit: jest.Mock }).emit).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it.each(['driver', 'admin', 'operator'])('%s with a company gets the session with its tenant', async (role) => {
-    const { service, repo } = create();
-    (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(7));
+  it.each(['driver', 'admin', 'operator'])(
+    '%s with a company gets the session with its tenant',
+    async (role) => {
+      const { service, repo } = create();
+      (repo as RepoMock).getCompanyIdentity.mockResolvedValue(companyIdentityFixture(7));
 
-    const r = await service.issueSession(profile(role), 7);
+      const r = await service.issueSession(profile(role), 7);
 
-    expect(r.user.role).toBe(role);
-    expect(r.user.tenant?.company_id).toBe(7);
-  });
+      expect(r.user.role).toBe(role);
+      expect(r.user.tenant?.company_id).toBe(7);
+    },
+  );
 });

@@ -1,4 +1,5 @@
 import { OtpIssueLimiter, OtpIssueSaturatedError } from './otp-issue-limiter';
+import { OTP_ISSUE_QUEUE_TIMEOUT_MS } from './otp-policy';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -10,11 +11,13 @@ function deferred<T = void>() {
   return { promise, resolve, reject };
 }
 
+const EXPLICIT_DEADLINE_MS = 2_000;
+
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 5; i += 1) await Promise.resolve();
 }
 
-describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, waiting in memory', () => {
+describe('OtpIssueLimiter (ADR-035 3.5): one issuing turn at a time, waiting in memory', () => {
   afterEach(() => {
     jest.useRealTimers();
   });
@@ -25,7 +28,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('never runs two works at once with a concurrency of one', async () => {
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     let running = 0;
     let peak = 0;
     const works = Array.from({ length: 5 }, () =>
@@ -41,7 +44,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('runs the queued works in arrival order', async () => {
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     const gate = deferred();
     const order: number[] = [];
     const first = limiter.run(async () => {
@@ -55,7 +58,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('allows the configured number of works at once', async () => {
-    const limiter = new OtpIssueLimiter(2, 5, 3_000);
+    const limiter = new OtpIssueLimiter(2, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     const gate = deferred();
     let running = 0;
     let peak = 0;
@@ -74,7 +77,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('rejects at once when the queue is full: 1 running + 5 waiting accepted, the seventh refused', async () => {
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     const gate = deferred();
     const accepted = Array.from({ length: 6 }, () => limiter.run(() => gate.promise));
     await flushMicrotasks();
@@ -83,9 +86,29 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
     await Promise.all(accepted);
   });
 
+  it('a refused work never starts, so a refused request makes no query and no hash', async () => {
+    const limiter = new OtpIssueLimiter(1, 0, OTP_ISSUE_QUEUE_TIMEOUT_MS);
+    const gate = deferred();
+    const started: string[] = [];
+    const first = limiter.run(async () => {
+      started.push('first');
+      await gate.promise;
+    });
+    const second = limiter
+      .run(async () => {
+        started.push('second');
+      })
+      .catch((error: unknown) => error);
+
+    expect(await second).toBeInstanceOf(OtpIssueSaturatedError);
+    gate.resolve();
+    await first;
+    expect(started).toEqual(['first']);
+  });
+
   it('rejects a waiter whose turn does not come before the deadline, and keeps serving the rest', async () => {
     jest.useFakeTimers();
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, EXPLICIT_DEADLINE_MS);
     const gate = deferred();
     const running = limiter.run(() => gate.promise);
     const waiter = limiter.run(async () => 'never');
@@ -93,7 +116,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
       () => 'resolved',
       (error: unknown) => error,
     );
-    await jest.advanceTimersByTimeAsync(2_999);
+    await jest.advanceTimersByTimeAsync(EXPLICIT_DEADLINE_MS - 1);
     await flushMicrotasks();
     let settled = false;
     void outcome.then(() => {
@@ -111,11 +134,11 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
 
   it('does not count a timed-out waiter in the queue', async () => {
     jest.useFakeTimers();
-    const limiter = new OtpIssueLimiter(1, 1, 3_000);
+    const limiter = new OtpIssueLimiter(1, 1, EXPLICIT_DEADLINE_MS);
     const gate = deferred();
     const running = limiter.run(() => gate.promise);
     const waiter = limiter.run(async () => 'never').catch((error: unknown) => error);
-    await jest.advanceTimersByTimeAsync(3_001);
+    await jest.advanceTimersByTimeAsync(EXPLICIT_DEADLINE_MS + 1);
     expect(await waiter).toBeInstanceOf(OtpIssueSaturatedError);
     const replacement = limiter.run(async () => 'second wait').catch((error: unknown) => error);
     gate.resolve();
@@ -124,7 +147,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('returns the turn when the work throws, so the next work runs', async () => {
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     await expect(
       limiter.run(async () => {
         throw new Error('transaction failed');
@@ -134,7 +157,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
   });
 
   it('returns the turn when the work throws while another is waiting', async () => {
-    const limiter = new OtpIssueLimiter(1, 5, 3_000);
+    const limiter = new OtpIssueLimiter(1, 5, OTP_ISSUE_QUEUE_TIMEOUT_MS);
     const gate = deferred();
     const failing = limiter.run(async () => {
       await gate.promise;
@@ -146,7 +169,7 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
     await expect(waiting).resolves.toBe('served');
   });
 
-  it('uses the ADR values by default', async () => {
+  it('uses the ADR values by default: one running, five waiting, the seventh refused', async () => {
     const limiter = new OtpIssueLimiter();
     const gate = deferred();
     const accepted = Array.from({ length: 6 }, () => limiter.run(() => gate.promise));
@@ -154,5 +177,54 @@ describe('OtpIssueLimiter (ADR-035 3.5): one issuing transaction at a time, wait
     await expect(limiter.run(async () => 'seventh')).rejects.toBeInstanceOf(OtpIssueSaturatedError);
     gate.resolve();
     await Promise.all(accepted);
+  });
+
+  it('by default does not refuse a waiter at 5,999 ms and refuses it at 6,001 ms (ADR-035 16.4)', async () => {
+    jest.useFakeTimers();
+    const limiter = new OtpIssueLimiter();
+    const gate = deferred();
+    const running = limiter.run(() => gate.promise);
+    let settled = false;
+    const outcome = limiter
+      .run(async () => 'never')
+      .then(
+        () => 'resolved',
+        (error: unknown) => error,
+      )
+      .then((value) => {
+        settled = true;
+        return value;
+      });
+
+    await jest.advanceTimersByTimeAsync(5_999);
+    await flushMicrotasks();
+    expect(settled).toBe(false);
+
+    await jest.advanceTimersByTimeAsync(2);
+    expect(await outcome).toBeInstanceOf(OtpIssueSaturatedError);
+
+    gate.resolve();
+    await running;
+  });
+
+  it('a deadline that fires for a waiter that already left the queue removes nobody else (EO-23)', async () => {
+    jest.useFakeTimers();
+    const limiter = new OtpIssueLimiter(1, 5, EXPLICIT_DEADLINE_MS);
+    const gate = deferred();
+    const running = limiter.run(() => gate.promise);
+    const first = limiter.run(async () => 'first').catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(EXPLICIT_DEADLINE_MS / 2);
+    const second = limiter.run(async () => 'second');
+
+    const internals = limiter as unknown as { queue: Array<{ grant: () => void }> };
+    const departed = internals.queue.shift();
+    expect(departed).toBeDefined();
+    await jest.advanceTimersByTimeAsync(EXPLICIT_DEADLINE_MS / 2 + 1);
+    expect(await first).toBeInstanceOf(OtpIssueSaturatedError);
+    expect(internals.queue).toHaveLength(1);
+
+    gate.resolve();
+    await running;
+    await expect(second).resolves.toBe('second');
   });
 });

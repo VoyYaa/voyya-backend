@@ -45,7 +45,7 @@ import {
   otpRateLimit,
   temporaryPinExpired,
 } from './auth-errors';
-import { AuthRepository, type IssueOtpOutcome } from './auth.repository';
+import { AuthRepository } from './auth.repository';
 import { HASHER, type Hasher } from './hasher.service';
 import { lockoutAfterFailure } from './login-lockout';
 import { OtpIssueLimiter, OtpIssueSaturatedError } from './otp-issue-limiter';
@@ -61,6 +61,12 @@ import {
   readOtpIssuancePolicy,
 } from './otp-policy';
 import { RefreshTokenService } from './refresh-token.service';
+
+interface IssuedOtp {
+  code: string;
+  insertedId: number;
+  globalCount: number;
+}
 
 export interface SessionProfile {
   userId: number;
@@ -91,20 +97,14 @@ export class AuthService {
 
   async requestOtp(dto: RequestOtpDTO): Promise<RequestOtpResponse> {
     const phone = normalizePhone(dto.phone);
-
     const policy = readOtpIssuancePolicy(this.env);
-
-    this.refuseIfCapped(await this.repo.evaluateOtpIssuance(phone, policy), policy);
 
     if (this.issuing.has(phone)) throw this.refuse('busy', policy.cooldownSec);
     this.issuing.add(phone);
 
-    let code = '';
-    let outcome: IssueOtpOutcome;
+    let issued: IssuedOtp;
     try {
-      code = generateNumericCode(OTP_LENGTH);
-      const codeHash = await this.hasher.hash(code);
-      outcome = await this.issueLimiter.run(() => this.repo.issueOtp({ phone, codeHash, policy }));
+      issued = await this.issueLimiter.run(() => this.issueWithinTurn(phone, policy));
     } catch (error) {
       if (error instanceof OtpIssueSaturatedError) {
         throw this.refuse('saturated', OTP_ISSUE_SATURATED_RETRY_SEC);
@@ -114,16 +114,23 @@ export class AuthService {
       this.issuing.delete(phone);
     }
 
+    this.reportGlobalUsage(issued.globalCount, policy.globalLimit);
+    await this.deliverCode(dto.phone, issued.code, issued.insertedId);
+
+    return { sent: true, resend_in_sec: policy.cooldownSec, expires_in_sec: policy.ttlSec };
+  }
+
+  private async issueWithinTurn(phone: string, policy: OtpIssuancePolicy): Promise<IssuedOtp> {
+    this.refuseIfCapped(await this.repo.evaluateOtpIssuance(phone, policy), policy);
+    const code = generateNumericCode(OTP_LENGTH);
+    const codeHash = await this.hasher.hash(code);
+    const outcome = await this.repo.issueOtp({ phone, codeHash, policy });
     if (outcome.kind === 'busy') throw this.refuse('busy', policy.cooldownSec);
     if (outcome.kind === 'refused') {
       this.refuseIfCapped(outcome.verdict, policy);
       throw this.refuse('busy', policy.cooldownSec);
     }
-
-    this.reportGlobalUsage(outcome.globalCount, policy.globalLimit);
-    await this.deliverCode(dto.phone, code, outcome.insertedId);
-
-    return { sent: true, resend_in_sec: policy.cooldownSec, expires_in_sec: policy.ttlSec };
+    return { code, insertedId: outcome.insertedId, globalCount: outcome.globalCount };
   }
 
   async verifyOtp(dto: VerifyOtpDTO, userAgent?: string): Promise<SessionResponse> {
@@ -145,9 +152,12 @@ export class AuthService {
     }
 
     const user =
-      (await this.repo.getUserByPhone(phone)) ?? (await this.repo.createPassengerAutoRegister(phone));
+      (await this.repo.getUserByPhone(phone)) ??
+      (await this.repo.createPassengerAutoRegister(phone));
     if (user.role !== 'passenger') {
-      this.logger.warn(`OTP rejected for a non-passenger account user_id=${user.userId} role=${user.role}`);
+      this.logger.warn(
+        `OTP rejected for a non-passenger account user_id=${user.userId} role=${user.role}`,
+      );
       throw invalidOtp();
     }
     if (user.accountStatus === 'suspended') {
@@ -166,7 +176,8 @@ export class AuthService {
   private refuseIfCapped(verdict: OtpIssuanceVerdict, policy: OtpIssuancePolicy): void {
     const refusal = decideRefusal(verdict.waits);
     if (refusal === null) return;
-    if (refusal.globalCapReached) this.reportGlobalCapReached(verdict.globalCount, policy.globalLimit);
+    if (refusal.globalCapReached)
+      this.reportGlobalCapReached(verdict.globalCount, policy.globalLimit);
     throw this.refuse(refusal.cap, refusal.retryInSec);
   }
 
@@ -177,7 +188,11 @@ export class AuthService {
 
   private reportGlobalUsage(globalCountBefore: number, limit: number): void {
     if (crossesGlobalWarning(globalCountBefore, limit)) {
-      this.logger.warn({ msg: 'otp_global_daily_cap_warning', count: globalCountBefore + 1, limit });
+      this.logger.warn({
+        msg: 'otp_global_daily_cap_warning',
+        count: globalCountBefore + 1,
+        limit,
+      });
     }
     if (reachesGlobalLimit(globalCountBefore, limit)) {
       this.reportGlobalCapReached(globalCountBefore + 1, limit);
@@ -259,7 +274,9 @@ export class AuthService {
   async adminLogin(dto: AdminLoginDTO, userAgent?: string): Promise<SessionResponse> {
     const u = await this.repo.getUserByEmail(dto.email.toLowerCase());
     const enabled =
-      u && u.passwordHash && (u.role === 'admin' || u.role === 'operator' || u.role === 'platform_admin');
+      u &&
+      u.passwordHash &&
+      (u.role === 'admin' || u.role === 'operator' || u.role === 'platform_admin');
     if (!enabled) {
       await this.hasher.compare(dto.password, await this.dummyHash);
       throw invalidCredentials();
@@ -318,7 +335,12 @@ export class AuthService {
     let pinChangeRequired = false;
     if (u.role === 'driver') {
       const d = await this.repo.getDriverCompany(userId);
-      if (!d || d.status === 'suspended' || d.status === 'documents_blocked' || d.status === 'inactive') {
+      if (
+        !d ||
+        d.status === 'suspended' ||
+        d.status === 'documents_blocked' ||
+        d.status === 'inactive'
+      ) {
         await this.refreshTokens.revokeAllForUser(userId);
         throw this.refreshRevoked();
       }

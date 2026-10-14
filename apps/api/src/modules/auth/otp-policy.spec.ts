@@ -33,7 +33,7 @@ describe('the design constants of the OTP issuance (ADR-035 3.3 and 3.5)', () =>
     expect(OTP_ISSUE_LOCK_NAMESPACE).toBe(91_101);
     expect(OTP_ISSUE_CONCURRENCY).toBe(1);
     expect(OTP_ISSUE_QUEUE_MAX).toBe(5);
-    expect(OTP_ISSUE_QUEUE_TIMEOUT_MS).toBe(3_000);
+    expect(OTP_ISSUE_QUEUE_TIMEOUT_MS).toBe(6_000);
     expect(OTP_ISSUE_SATURATED_RETRY_SEC).toBe(5);
   });
 });
@@ -85,8 +85,15 @@ describe('otpRetentionSeconds (RN-EO-05: the cutoff follows the longest window)'
     ['the hourly window', 'OTP_RATE_LIMIT_WINDOW_SECONDS'],
     ['the TTL', 'OTP_TTL_SECONDS'],
   ])('is at least %s even at the largest value the environment accepts', (_name, variable) => {
-    const policy = readOtpIssuancePolicy(envServiceFor({ [variable]: String(OTP_DAILY_WINDOW_SECONDS) }));
-    const windows = [policy.cooldownSec, policy.hourlyWindowSec, policy.ttlSec, policy.dailyWindowSec];
+    const policy = readOtpIssuancePolicy(
+      envServiceFor({ [variable]: String(OTP_DAILY_WINDOW_SECONDS) }),
+    );
+    const windows = [
+      policy.cooldownSec,
+      policy.hourlyWindowSec,
+      policy.ttlSec,
+      policy.dailyWindowSec,
+    ];
     for (const window of windows) {
       expect(otpRetentionSeconds()).toBeGreaterThanOrEqual(window);
     }
@@ -95,7 +102,9 @@ describe('otpRetentionSeconds (RN-EO-05: the cutoff follows the longest window)'
   it.each(['OTP_RESEND_COOLDOWN_SECONDS', 'OTP_RATE_LIMIT_WINDOW_SECONDS', 'OTP_TTL_SECONDS'])(
     'the environment rejects %s above the daily window',
     (variable) => {
-      expect(() => validateEnv({ ...requiredEnv, [variable]: String(OTP_DAILY_WINDOW_SECONDS + 1) })).toThrow(variable);
+      expect(() =>
+        validateEnv({ ...requiredEnv, [variable]: String(OTP_DAILY_WINDOW_SECONDS + 1) }),
+      ).toThrow(variable);
     },
   );
 });

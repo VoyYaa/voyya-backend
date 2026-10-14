@@ -4,7 +4,7 @@ import type { EnvService } from '../../config/env.service';
 export const OTP_ISSUE_LOCK_NAMESPACE = 91_101;
 export const OTP_ISSUE_CONCURRENCY = 1;
 export const OTP_ISSUE_QUEUE_MAX = 5;
-export const OTP_ISSUE_QUEUE_TIMEOUT_MS = 3_000;
+export const OTP_ISSUE_QUEUE_TIMEOUT_MS = 6_000;
 export const OTP_ISSUE_SATURATED_RETRY_SEC = 5;
 export const OTP_GLOBAL_CAP_ALERT_INTERVAL_MS = 3_600_000;
 

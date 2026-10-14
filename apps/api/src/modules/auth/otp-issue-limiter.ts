@@ -1,4 +1,8 @@
-import { OTP_ISSUE_CONCURRENCY, OTP_ISSUE_QUEUE_MAX, OTP_ISSUE_QUEUE_TIMEOUT_MS } from './otp-policy';
+import {
+  OTP_ISSUE_CONCURRENCY,
+  OTP_ISSUE_QUEUE_MAX,
+  OTP_ISSUE_QUEUE_TIMEOUT_MS,
+} from './otp-policy';
 
 export class OtpIssueSaturatedError extends Error {
   constructor() {
@@ -43,7 +47,8 @@ export class OtpIssueLimiter {
       const waiter: Waiter = {
         grant: resolve,
         timer: setTimeout(() => {
-          this.queue.splice(this.queue.indexOf(waiter), 1);
+          const index = this.queue.indexOf(waiter);
+          if (index !== -1) this.queue.splice(index, 1);
           reject(new OtpIssueSaturatedError());
         }, this.timeoutMs),
       };
